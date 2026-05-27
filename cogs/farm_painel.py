@@ -1,0 +1,629 @@
+"""
+cogs/farm_painel.py - Painel fixo de farm com 5 botões.
+
+Usa a mesma lógica do painel de operações para:
+- 🚜 Lançar Farm  → LancarModal      (is_permitido_farm)
+- 📊 Ver Meu Farm → build_farm_embed  (is_permitido_farm)
+- 💵 Lançar Dinheiro → LancarDinheiroModal (is_permitido_farm)
+- 👥 Farm Membro → seletor de membro + LancarModal/LancarDinheiroModal (is_lideranca)
+- ✏️ Editar Farm  → EditarUltimoModal (is_lideranca)
+"""
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+from core.logger import get_logger
+from core.permissions import is_lideranca, is_permitido_farm
+from services.db_service import (
+    current_week_id,
+    fmt_dt,
+    db_eventos_usuario,
+    db_get_editores_farm_role_ids,
+    db_get_lideranca_role_ids,
+    db_get_meta,
+    db_get_permitidos_role_ids,
+    db_get_progresso,
+    db_get_system_config,
+    db_get_ultimo_evento,
+    db_evento_itens,
+    db_is_farm_configured,
+    db_meta_itens,
+    db_meta_itens_ativos,
+    db_meta_tipo_efetivo,
+)
+
+log = get_logger("farm_painel", "farm.log")
+
+COR_FARM   = 0xFFD700
+FOOTER_FARM = "Morro do Mineiro — Sistema de Farm"
+
+
+class FarmPainelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    # ── Lançar Farm ───────────────────────────────────────────────────────────
+
+    @discord.ui.button(
+        label="🚜 Lançar Farm",
+        style=discord.ButtonStyle.primary,
+        custom_id="farm_painel:lancar",
+        row=0,
+    )
+    async def lancar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild_id       = str(interaction.guild_id)
+        member         = interaction.user
+        permitidos_ids = db_get_permitidos_role_ids(guild_id)
+
+        if not is_permitido_farm(member, permitidos_ids):
+            await interaction.response.send_message(
+                "❌ Você não tem permissão para lançar farm.", ephemeral=True
+            )
+            return
+
+        week_id = current_week_id()
+        meta    = db_get_meta(guild_id, week_id)
+
+        itens = db_meta_itens(meta)
+        if not itens:
+            await interaction.response.send_message(
+                "❌ A meta de produtos ainda não foi definida. Use `/meta` para defini-la.",
+                ephemeral=True,
+            )
+            return
+
+        farm_cog = interaction.client.get_cog("FarmCog")
+        if not farm_cog:
+            await interaction.response.send_message(
+                "❌ Erro interno: FarmCog não carregado.", ephemeral=True
+            )
+            return
+
+        from cogs.farm import LancarModal
+        await interaction.response.send_modal(
+            LancarModal(farm_cog, week_id, guild_id, str(member.id), itens)
+        )
+        log.info("lancar_farm via painel: %s (guild %s)", member.name, guild_id)
+
+    # ── Ver Meu Farm ──────────────────────────────────────────────────────────
+
+    @discord.ui.button(
+        label="📊 Ver Meu Farm",
+        style=discord.ButtonStyle.primary,
+        custom_id="farm_painel:ver",
+        row=0,
+    )
+    async def ver(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild_id       = str(interaction.guild_id)
+        member         = interaction.user
+        permitidos_ids = db_get_permitidos_role_ids(guild_id)
+
+        if not is_permitido_farm(member, permitidos_ids):
+            await interaction.response.send_message(
+                "❌ Você não tem permissão para ver farm.", ephemeral=True
+            )
+            return
+
+        week_id = current_week_id()
+        prog    = db_get_progresso(guild_id, week_id, str(member.id))
+        meta    = db_get_meta(guild_id, week_id)
+
+        if not prog and not meta:
+            await interaction.response.send_message(
+                "⚠️ Nenhum farm registrado esta semana.", ephemeral=True
+            )
+            return
+
+        from cogs.farm import build_farm_embed
+        embed = build_farm_embed(meta, prog, member, week_id)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        log.info("ver_meu_farm via painel: %s (guild %s)", member.name, guild_id)
+
+    # ── Lançar Dinheiro ───────────────────────────────────────────────────────
+
+    @discord.ui.button(
+        label="💵 Lançar Dinheiro",
+        style=discord.ButtonStyle.success,
+        custom_id="farm_painel:lancar_dinheiro",
+        row=0,
+    )
+    async def lancar_dinheiro(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild_id       = str(interaction.guild_id)
+        member         = interaction.user
+        permitidos_ids = db_get_permitidos_role_ids(guild_id)
+
+        if not is_permitido_farm(member, permitidos_ids):
+            await interaction.response.send_message(
+                "❌ Você não tem permissão para lançar farm.", ephemeral=True
+            )
+            return
+
+        week_id = current_week_id()
+        meta    = db_get_meta(guild_id, week_id)
+
+        if not meta or (meta["meta_dinheiro"] or 0) <= 0:
+            await interaction.response.send_message(
+                "❌ A meta de dinheiro ainda não foi definida.",
+                ephemeral=True,
+            )
+            return
+
+        farm_cog = interaction.client.get_cog("FarmCog")
+        if not farm_cog:
+            await interaction.response.send_message(
+                "❌ Erro interno: FarmCog não carregado.", ephemeral=True
+            )
+            return
+
+        from cogs.farm import LancarDinheiroModal
+        await interaction.response.send_modal(
+            LancarDinheiroModal(farm_cog, week_id, guild_id, str(member.id))
+        )
+        log.info("lancar_dinheiro via painel: %s (guild %s)", member.name, guild_id)
+
+    # ── Editar Farm ───────────────────────────────────────────────────────────
+
+    @discord.ui.button(
+        label="✏️ Editar Farm",
+        style=discord.ButtonStyle.secondary,
+        custom_id="farm_painel:editar",
+        row=1,
+    )
+    async def editar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild_id      = str(interaction.guild_id)
+        member        = interaction.user
+        lideranca_ids = db_get_lideranca_role_ids(guild_id)
+        editores_ids  = db_get_editores_farm_role_ids(guild_id)
+
+        if not is_lideranca(member, lideranca_ids) and not is_lideranca(member, editores_ids):
+            await interaction.response.send_message(
+                "❌ Você não tem permissão para editar farms.", ephemeral=True
+            )
+            return
+
+        week_id = current_week_id()
+        ultimo  = db_get_ultimo_evento(guild_id, week_id, str(member.id))
+
+        if not ultimo:
+            await interaction.response.send_message(
+                "❌ Nenhum lançamento encontrado para editar.", ephemeral=True
+            )
+            return
+
+        farm_cog = interaction.client.get_cog("FarmCog")
+        if not farm_cog:
+            await interaction.response.send_message(
+                "❌ Erro interno: FarmCog não carregado.", ephemeral=True
+            )
+            return
+
+        from cogs.farm import EditarUltimoModal
+        await interaction.response.send_modal(
+            EditarUltimoModal(farm_cog, week_id, guild_id, str(member.id), db_evento_itens(ultimo))
+        )
+        log.info("editar_farm via painel: %s (guild %s)", member.name, guild_id)
+
+    # ── Farm Membro ──────────────────────────────────────────────────────────
+
+    @discord.ui.button(
+        label="👥 Farm Membro",
+        style=discord.ButtonStyle.secondary,
+        custom_id="farm_painel:farm_membro",
+        row=1,
+    )
+    async def farm_membro(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cog = interaction.client.get_cog("FarmPainelCog")
+        if not cog:
+            await interaction.response.send_message(
+                "❌ Erro interno: FarmPainelCog não carregado.",
+                ephemeral=True,
+            )
+            return
+
+        await cog.mostrar_acoes_farm_membro(interaction)
+
+
+class FarmMembroSelect(discord.ui.UserSelect):
+    def __init__(self, cog: "FarmPainelCog", acao: str):
+        placeholder = (
+            "Selecione o membro que receberá o farm"
+            if acao == "lancar"
+            else "Selecione o membro que terá farm editado"
+        )
+        super().__init__(
+            placeholder=placeholder,
+            min_values=1,
+            max_values=1,
+        )
+        self.cog = cog
+        self.acao = acao
+
+    async def callback(self, interaction: discord.Interaction):
+        membro = self.values[0]
+        if not isinstance(membro, discord.Member):
+            if not interaction.guild:
+                await interaction.response.send_message(
+                    "❌ Não consegui identificar o servidor desta interação.",
+                    ephemeral=True,
+                )
+                return
+            try:
+                membro = await interaction.guild.fetch_member(membro.id)
+            except Exception:
+                await interaction.response.send_message(
+                    "❌ Não consegui encontrar esse membro no servidor.",
+                    ephemeral=True,
+                )
+                return
+
+        await self.cog.processar_farm_membro(interaction, self.acao, membro)
+
+
+class FarmMembroSelectView(discord.ui.View):
+    def __init__(self, cog: "FarmPainelCog", acao: str):
+        super().__init__(timeout=180)
+        self.add_item(FarmMembroSelect(cog, acao))
+
+
+class FarmMembroActionView(discord.ui.View):
+    def __init__(self, cog: "FarmPainelCog"):
+        super().__init__(timeout=180)
+        self.cog = cog
+
+    @discord.ui.button(label="🚜 Lançar Farm", style=discord.ButtonStyle.primary)
+    async def lancar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.mostrar_seletor_farm_membro(interaction, "lancar")
+
+    @discord.ui.button(label="✏️ Editar Farm", style=discord.ButtonStyle.secondary)
+    async def editar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.mostrar_seletor_farm_membro(interaction, "editar")
+
+
+class FarmMembroEventoSelect(discord.ui.Select):
+    def __init__(self, cog: "FarmPainelCog", membro: discord.Member, eventos: list):
+        self.cog = cog
+        self.membro = membro
+        options = []
+        for ev in eventos[:25]:
+            itens = db_evento_itens(ev)
+            resumo = " | ".join(f"{nome}: {qtd}" for nome, qtd in itens.items() if qtd > 0) or "todos zerados"
+            options.append(discord.SelectOption(
+                label=f"#{ev['id']} - {fmt_dt(ev['criado_em'])}"[:100],
+                value=str(ev["id"]),
+                description=resumo[:100],
+            ))
+        super().__init__(
+            placeholder="Selecione o lançamento que deseja editar",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.cog.abrir_edicao_evento_membro(
+            interaction,
+            self.membro,
+            int(self.values[0]),
+        )
+
+
+class FarmMembroEventoSelectView(discord.ui.View):
+    def __init__(self, cog: "FarmPainelCog", membro: discord.Member, eventos: list):
+        super().__init__(timeout=180)
+        self.add_item(FarmMembroEventoSelect(cog, membro, eventos))
+
+
+# ── Embed fixo do painel ──────────────────────────────────────────────────────
+
+def _build_painel_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🌾 Painel de Farm — Morro do Mineiro",
+        description=(
+            "**🚜 Lançar Farm** — Registre sua produção com print obrigatório.\n"
+            "**💵 Lançar Dinheiro** — Lance dinheiro sujo e limpo com print obrigatório.\n"
+            "**📊 Ver Meu Farm** — Veja seu progresso e percentual atingido.\n"
+            "**👥 Farm Membro** — Liderança lança ou edita farm de um membro.\n"
+            "**✏️ Editar Farm** — Corrija o valor do seu último lançamento."
+        ),
+        color=COR_FARM,
+    )
+    embed.set_footer(text=FOOTER_FARM)
+    return embed
+
+
+# ── Cog ──────────────────────────────────────────────────────────────────────
+
+class FarmPainelCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        bot.add_view(FarmPainelView())
+
+    @app_commands.command(
+        name="farm_membro",
+        description="Lança ou edita farm para outro membro (liderança).",
+    )
+    @app_commands.describe(
+        acao="Escolha se deseja lançar ou editar farm.",
+        membro="Membro que receberá a ação.",
+    )
+    @app_commands.choices(acao=[
+        app_commands.Choice(name="Lançar Farm", value="lancar"),
+        app_commands.Choice(name="Editar Farm", value="editar"),
+    ])
+    async def farm_membro(
+        self,
+        interaction: discord.Interaction,
+        acao: str,
+        membro: discord.Member,
+    ):
+        await self.processar_farm_membro(interaction, acao, membro)
+
+    async def mostrar_acoes_farm_membro(self, interaction: discord.Interaction):
+        guild_id = str(interaction.guild_id)
+        executor = interaction.user
+
+        if not await self._validar_lideranca_farm(interaction, guild_id, executor):
+            return
+
+        await interaction.response.send_message(
+            "Escolha o que deseja fazer para um membro:",
+            view=FarmMembroActionView(self),
+            ephemeral=True,
+        )
+
+    async def mostrar_seletor_farm_membro(self, interaction: discord.Interaction, acao: str):
+        guild_id = str(interaction.guild_id)
+        executor = interaction.user
+
+        if not await self._validar_lideranca_farm(interaction, guild_id, executor):
+            return
+
+        verbo = "receberá o lançamento" if acao == "lancar" else "terá um lançamento editado"
+        await interaction.response.send_message(
+            f"Selecione o membro que {verbo}:",
+            view=FarmMembroSelectView(self, acao),
+            ephemeral=True,
+        )
+
+    async def processar_farm_membro(self, interaction: discord.Interaction, acao: str, membro: discord.Member):
+        if acao == "lancar":
+            await self.abrir_lancamento_membro(interaction, membro)
+        elif acao == "editar":
+            await self.mostrar_lancamentos_edicao_membro(interaction, membro)
+        else:
+            await interaction.response.send_message("❌ Ação inválida.", ephemeral=True)
+
+    async def _validar_lideranca_farm(
+        self,
+        interaction: discord.Interaction,
+        guild_id: str,
+        executor: discord.Member,
+    ) -> bool:
+        guild_id = str(interaction.guild_id)
+        if not db_is_farm_configured(guild_id):
+            await interaction.response.send_message(
+                "❌ O módulo Farm não está configurado. Um administrador deve usar `/setup_farm`.",
+                ephemeral=True,
+            )
+            return False
+
+        lideranca_ids = db_get_lideranca_role_ids(guild_id)
+        if not is_lideranca(executor, lideranca_ids):
+            await interaction.response.send_message(
+                "❌ Apenas liderança pode lançar farm para outro membro.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def _validar_membro_alvo(
+        self,
+        interaction: discord.Interaction,
+        guild_id: str,
+        membro: discord.Member,
+    ) -> bool:
+        if membro.bot:
+            await interaction.response.send_message(
+                "❌ Não é possível lançar farm para bots.",
+                ephemeral=True,
+            )
+            return False
+
+        permitidos_ids = db_get_permitidos_role_ids(guild_id)
+        if not is_permitido_farm(membro, permitidos_ids):
+            await interaction.response.send_message(
+                "❌ O membro escolhido não tem permissão/cargo para participar do farm.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def abrir_lancamento_membro(self, interaction: discord.Interaction, membro: discord.Member):
+        guild_id = str(interaction.guild_id)
+        executor = interaction.user
+
+        if not await self._validar_lideranca_farm(interaction, guild_id, executor):
+            return
+        if not await self._validar_membro_alvo(interaction, guild_id, membro):
+            return
+
+        farm_cog = interaction.client.get_cog("FarmCog")
+        if not farm_cog:
+            await interaction.response.send_message(
+                "❌ Erro interno: FarmCog não carregado.",
+                ephemeral=True,
+            )
+            return
+
+        week_id = current_week_id()
+        meta = db_get_meta(guild_id, week_id)
+        if not meta:
+            await interaction.response.send_message(
+                "❌ A meta da semana ainda não foi definida. Use `/meta` para defini-la.",
+                ephemeral=True,
+            )
+            return
+
+        meta_tipo = db_meta_tipo_efetivo(meta)
+        if meta_tipo == "dinheiro":
+            if (meta["meta_dinheiro"] or 0) <= 0:
+                await interaction.response.send_message(
+                    "❌ A meta de dinheiro ainda não foi definida.",
+                    ephemeral=True,
+                )
+                return
+
+            from cogs.farm import LancarDinheiroModal
+            await interaction.response.send_modal(
+                LancarDinheiroModal(farm_cog, week_id, guild_id, str(membro.id))
+            )
+        else:
+            itens = db_meta_itens_ativos(meta)
+            if not itens or not any((qtd or 0) > 0 for qtd in itens.values()):
+                await interaction.response.send_message(
+                    "❌ A meta de produtos ainda não foi definida. Use `/meta` para defini-la.",
+                    ephemeral=True,
+                )
+                return
+
+            from cogs.farm import LancarModal
+            await interaction.response.send_modal(
+                LancarModal(farm_cog, week_id, guild_id, str(membro.id), itens)
+            )
+
+        log.info(
+            "farm_membro via painel: executor=%s alvo=%s (guild %s)",
+            executor.id,
+            membro.id,
+            guild_id,
+        )
+
+    async def mostrar_lancamentos_edicao_membro(self, interaction: discord.Interaction, membro: discord.Member):
+        guild_id = str(interaction.guild_id)
+        executor = interaction.user
+
+        if not await self._validar_lideranca_farm(interaction, guild_id, executor):
+            return
+        if not await self._validar_membro_alvo(interaction, guild_id, membro):
+            return
+
+        week_id = current_week_id()
+        eventos = list(reversed(db_eventos_usuario(guild_id, week_id, str(membro.id))))[:25]
+        if not eventos:
+            await interaction.response.send_message(
+                "❌ Nenhum lançamento encontrado para esse membro nesta semana.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(
+            f"Selecione qual lançamento de {membro.mention} deseja editar:",
+            view=FarmMembroEventoSelectView(self, membro, eventos),
+            ephemeral=True,
+        )
+
+    async def abrir_edicao_evento_membro(
+        self,
+        interaction: discord.Interaction,
+        membro: discord.Member,
+        event_id: int,
+    ):
+        guild_id = str(interaction.guild_id)
+        executor = interaction.user
+
+        if not await self._validar_lideranca_farm(interaction, guild_id, executor):
+            return
+        if not await self._validar_membro_alvo(interaction, guild_id, membro):
+            return
+
+        week_id = current_week_id()
+        evento = next(
+            (ev for ev in db_eventos_usuario(guild_id, week_id, str(membro.id)) if int(ev["id"]) == event_id),
+            None,
+        )
+        if not evento:
+            await interaction.response.send_message(
+                "❌ Lançamento não encontrado para esse membro nesta semana.",
+                ephemeral=True,
+            )
+            return
+
+        farm_cog = interaction.client.get_cog("FarmCog")
+        if not farm_cog:
+            await interaction.response.send_message(
+                "❌ Erro interno: FarmCog não carregado.",
+                ephemeral=True,
+            )
+            return
+
+        from cogs.farm import EditarUltimoModal
+        await interaction.response.send_modal(
+            EditarUltimoModal(
+                farm_cog,
+                week_id,
+                guild_id,
+                str(membro.id),
+                db_evento_itens(evento),
+                event_id=event_id,
+            )
+        )
+
+        log.info(
+            "editar_farm_membro via painel: executor=%s alvo=%s evento=%s (guild %s)",
+            executor.id,
+            membro.id,
+            event_id,
+            guild_id,
+        )
+
+    @app_commands.command(
+        name="setup_farm_painel",
+        description="Posta o painel de farm no canal configurado no dashboard.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def setup_farm_painel(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild_id = str(interaction.guild_id)
+
+        row = db_get_system_config(guild_id, "farm")
+        if not row or not row["canal_interacao_id"]:
+            await interaction.followup.send(
+                "❌ Configure o canal do sistema de Farm no dashboard primeiro (`/setup_dashboard`).",
+                ephemeral=True,
+            )
+            return
+
+        channel = interaction.guild.get_channel(int(row["canal_interacao_id"]))
+        if channel is None:
+            try:
+                channel = await interaction.guild.fetch_channel(int(row["canal_interacao_id"]))
+            except Exception:
+                await interaction.followup.send(
+                    "❌ Canal configurado não encontrado.", ephemeral=True
+                )
+                return
+
+        await channel.send(embed=_build_painel_embed(), view=FarmPainelView())
+        await interaction.followup.send(
+            f"✅ Painel de farm postado em {channel.mention}!", ephemeral=True
+        )
+        log.info("Painel farm postado (guild %s, canal %s)", guild_id, channel.id)
+
+    @setup_farm_painel.error
+    async def _error(self, interaction: discord.Interaction, error):
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message(
+                "❌ Você precisa da permissão **Gerenciar Servidor**.", ephemeral=True
+            )
+        else:
+            log.error("Erro em /setup_farm_painel: %s", error, exc_info=True)
+            try:
+                await interaction.response.send_message("❌ Erro inesperado.", ephemeral=True)
+            except discord.InteractionResponded:
+                await interaction.followup.send("❌ Erro inesperado.", ephemeral=True)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(FarmPainelCog(bot))
+    log.info("FarmPainelCog carregado com sucesso.")
