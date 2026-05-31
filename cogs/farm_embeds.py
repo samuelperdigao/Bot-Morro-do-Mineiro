@@ -8,6 +8,7 @@ from services.db_service import (
     DINHEIRO_LIMPO_ITEM,
     DINHEIRO_SUJO_ITEM,
     db_meta_dinheiro_ativo,
+    db_meta_dinheiro_itens_ativos,
     db_meta_itens_ativos,
     db_meta_tipo_efetivo,
     db_get_meta,
@@ -46,12 +47,20 @@ def build_farm_embed(meta, prog, member: discord.Member, week_id: str) -> discor
     antecipada = bool(prog and prog["aprovacao_antecipada"])
     meta_tipo = db_meta_tipo_efetivo(meta)
     meta_itens = db_meta_itens_ativos(meta)
+    meta_dinheiro_itens = db_meta_dinheiro_itens_ativos(meta)
     prog_itens = db_prog_itens(prog)
     meta_valor = db_meta_dinheiro_ativo(meta)
 
     if meta_tipo == "dinheiro" and meta_valor > 0:
-        total_dinheiro = sum(prog_itens.get(nome, 0) for nome in DINHEIRO_ITEMS)
-        concluida_ativa = total_dinheiro >= meta_valor
+        if meta_dinheiro_itens:
+            concluida_ativa = all(
+                prog_itens.get(nome, 0) >= meta_val
+                for nome, meta_val in meta_dinheiro_itens.items()
+                if meta_val > 0
+            )
+        else:
+            total_dinheiro = sum(prog_itens.get(nome, 0) for nome in DINHEIRO_ITEMS)
+            concluida_ativa = total_dinheiro >= meta_valor
     elif meta_itens:
         concluida_ativa = all(
             prog_itens.get(nome, 0) >= meta_val
@@ -87,7 +96,19 @@ def build_farm_embed(meta, prog, member: discord.Member, week_id: str) -> discor
                 inline=True,
             )
 
-    if meta_valor > 0:
+    if meta_dinheiro_itens:
+        for nome, meta_item_val in meta_dinheiro_itens.items():
+            prog_item_val = prog_itens.get(nome, 0)
+            pct = _pct_produto(prog_item_val, meta_item_val)
+            meta_fmt = f"R$ {meta_item_val:,.0f}".replace(",", ".")
+            prog_fmt = f"R$ {prog_item_val:,.0f}".replace(",", ".")
+            embed.add_field(
+                name=f"{_status_emoji(pct)} 💵 {nome}",
+                value=f"{_progress_bar(pct)}\n`{prog_fmt}` / `{meta_fmt}` — **{pct:.0f}%**",
+                inline=True,
+            )
+
+    elif meta_valor > 0:
         sujo = prog_itens.get(DINHEIRO_SUJO_ITEM, 0)
         limpo = prog_itens.get(DINHEIRO_LIMPO_ITEM, 0)
         prog_valor = sum(prog_itens.get(nome, 0) for nome in DINHEIRO_ITEMS)
@@ -147,7 +168,15 @@ def build_meta_embed(meta, week_id: str) -> discord.Embed:
             for nome, qtd in itens.items():
                 embed.add_field(name=nome, value=f"`{qtd}`", inline=True)
         valor = db_meta_dinheiro_ativo(meta)
-        if valor > 0:
+        dinheiro_itens = db_meta_dinheiro_itens_ativos(meta)
+        if dinheiro_itens:
+            for nome, qtd in dinheiro_itens.items():
+                embed.add_field(
+                    name=f"💵 {nome}",
+                    value=f"**R$ {qtd:,.0f}**".replace(",", "."),
+                    inline=True,
+                )
+        elif valor > 0:
             embed.add_field(name="💵 Dinheiro", value=f"**R$ {valor:,.0f}**".replace(",", "."), inline=False)
         if not itens and valor <= 0:
             embed.add_field(name="⚠️ Metas não definidas", value="Use o botão abaixo para definir.", inline=False)

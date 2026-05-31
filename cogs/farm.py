@@ -17,7 +17,7 @@ from services.log_service import send_log
 from services.db_service import (
     DINHEIRO_ITEMS, DINHEIRO_LIMPO_ITEM, DINHEIRO_SUJO_ITEM,
     init_db, current_week_id, now_tz, janela_valida, fmt_dt,
-    db_meta_dinheiro_ativo, db_meta_itens_ativos,
+    db_meta_dinheiro_ativo, db_meta_dinheiro_itens_ativos, db_meta_itens_ativos,
     db_meta_tipo_efetivo, db_prog_itens, db_evento_itens, db_get_ultimo_evento,
     db_get_meta, db_set_meta, db_set_meta_dinheiro,
     db_get_progresso, db_ensure_progresso, db_lancar,
@@ -180,42 +180,64 @@ class DefinirMetasModal(discord.ui.Modal, title="Kit Desmanche"):
 
 
 class DefinirMetasDinheiroModal(discord.ui.Modal, title="Definir Meta — Dinheiro"):
-    """Modal para definir a meta semanal como um valor único em R$."""
+    """Modal para definir metas separadas de dinheiro sujo e limpo."""
 
-    _valor_input = discord.ui.TextInput(
-        label="Valor da Meta (R$)",
-        style=discord.TextStyle.short,
-        placeholder="Ex: 50000 ou R$ 50.000",
-        required=True,
-        max_length=20,
-    )
-
-    def __init__(self, cog: "FarmCog", week_id: str, guild_id: str):
+    def __init__(self, cog: "FarmCog", week_id: str, guild_id: str, meta=None):
         super().__init__()
         self.cog = cog
         self.week_id = week_id
         self.guild_id = guild_id
+        metas_atuais = db_meta_dinheiro_itens_ativos(meta) if meta else {}
+        if not metas_atuais and db_meta_dinheiro_ativo(meta) > 0:
+            metas_atuais = {DINHEIRO_SUJO_ITEM: db_meta_dinheiro_ativo(meta)}
+        self._inputs: list[tuple[str, discord.ui.TextInput]] = []
+
+        for nome in DINHEIRO_ITEMS:
+            valor_atual = metas_atuais.get(nome, 0)
+            ti = discord.ui.TextInput(
+                label=f"Valor do {nome} (R$)",
+                style=discord.TextStyle.short,
+                placeholder="Ex: 50000 ou R$ 50.000",
+                default=str(int(valor_atual)) if valor_atual else None,
+                required=False,
+                max_length=20,
+            )
+            self.add_item(ti)
+            self._inputs.append((nome, ti))
 
     async def on_submit(self, interaction: discord.Interaction):
-        raw = self._valor_input.value.strip()
-        raw = raw.replace("R$", "").replace(".", "").replace(",", ".").strip()
-        try:
-            valor = float(raw)
-            if valor <= 0:
-                raise ValueError
-        except ValueError:
+        valores: dict[str, float] = {}
+        for nome, ti in self._inputs:
+            raw = (ti.value or "0").strip()
+            try:
+                valor = _parse_money(raw)
+                if valor < 0:
+                    raise ValueError
+            except ValueError:
+                await interaction.response.send_message(
+                    f"❌ Valor inválido para **{nome}**. Use `50000` ou `R$ 50.000`.",
+                    ephemeral=True,
+                )
+                return
+            if valor > 0:
+                valores[nome] = valor
+
+        if not valores:
             await interaction.response.send_message(
-                "❌ Valor inválido. Use apenas o número, ex: `50000` ou `R$ 50.000`.",
+                "❌ Defina pelo menos uma meta de dinheiro acima de zero.",
                 ephemeral=True,
             )
             return
 
-        db_set_meta_dinheiro(self.guild_id, self.week_id, valor, str(interaction.user.id))
-        _farm_audit("META_DINHEIRO_DEFINIDA", interaction.user.id, week_id=self.week_id, valor=valor)
+        db_set_meta_dinheiro(self.guild_id, self.week_id, valores, str(interaction.user.id))
+        _farm_audit("META_DINHEIRO_DEFINIDA", interaction.user.id, week_id=self.week_id, valores=str(valores))
 
-        valor_fmt = f"R$ {valor:,.0f}".replace(",", ".")
+        resumo = "\n".join(
+            f"• **{nome}**: `{_fmt_money(valor)}`"
+            for nome, valor in valores.items()
+        )
         await interaction.response.send_message(
-            f"✅ Meta de dinheiro da semana `{self.week_id}` definida: **{valor_fmt}**",
+            f"✅ Meta de dinheiro da semana `{self.week_id}` definida:\n{resumo}",
             ephemeral=True,
         )
         await self.cog._atualizar_ranking_fixo(self.guild_id)
@@ -552,7 +574,8 @@ class EscolherTipoMetaView(discord.ui.View):
 
     @discord.ui.button(label="💵 Dinheiro", style=discord.ButtonStyle.success)
     async def btn_dinheiro(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await _safe_send_modal(interaction, DefinirMetasDinheiroModal(self.cog, self.week_id, self.guild_id))
+        meta = db_get_meta(self.guild_id, self.week_id)
+        await _safe_send_modal(interaction, DefinirMetasDinheiroModal(self.cog, self.week_id, self.guild_id, meta))
 
 
 class FarmView(discord.ui.View):
@@ -907,6 +930,7 @@ class FarmCog(commands.Cog):
         prog       = db_get_progresso(str(guild.id), week_id, user_id)
         meta_tipo  = db_meta_tipo_efetivo(meta)
         meta_itens = db_meta_itens_ativos(meta) if meta else {}
+        meta_dinheiro_itens = db_meta_dinheiro_itens_ativos(meta) if meta else {}
         prog_itens = db_prog_itens(prog) if prog else {}
 
         if meta and meta_tipo == "dinheiro":
@@ -918,11 +942,15 @@ class FarmCog(commands.Cog):
         pct_total  = round(total_prog / total_meta * 100, 1)
 
         if meta_tipo == "dinheiro":
-            classificacao = "elite" if pct_total >= 130 else "meta_batida"
+            if meta_dinheiro_itens:
+                classificacao = classificar_resultado(meta_dinheiro_itens, prog_itens)
+            else:
+                classificacao = "elite" if pct_total >= 130 else "meta_batida"
+            entregue_txt = f"{_fmt_money(total_prog)} entregues ({pct_total:.0f}% da meta)"
         else:
             classificacao = classificar_resultado(meta_itens, prog_itens) if meta_itens else "meta_batida"
+            entregue_txt = f"{total_prog:g} entregues ({pct_total:.0f}% da meta)"
         status_str    = "🔥 Elite" if classificacao == "elite" else "✅ Meta Batida"
-        entregue_txt = f"{total_prog:g} entregues ({pct_total:.0f}% da meta)"
 
         embed = discord.Embed(
             title="🏆 META BATIDA — Morro do Mineiro",

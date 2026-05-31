@@ -167,7 +167,24 @@ def db_meta_dinheiro_ativo(meta) -> float:
     """Valor em dinheiro que conta para a meta ativa."""
     if meta is None or db_meta_tipo_efetivo(meta) != "dinheiro":
         return 0
-    return meta["meta_dinheiro"] or 0
+    itens = db_meta_itens(meta)
+    valores = [
+        float(itens.get(nome, 0) or 0)
+        for nome in DINHEIRO_ITEMS
+    ]
+    total_itens = sum(valores)
+    return total_itens if total_itens > 0 else (meta["meta_dinheiro"] or 0)
+
+def db_meta_dinheiro_itens_ativos(meta) -> dict:
+    """Retorna metas separadas de dinheiro sujo/limpo quando definidas."""
+    if meta is None or db_meta_tipo_efetivo(meta) != "dinheiro":
+        return {}
+    itens = db_meta_itens(meta)
+    return {
+        nome: float(itens.get(nome, 0) or 0)
+        for nome in DINHEIRO_ITEMS
+        if float(itens.get(nome, 0) or 0) > 0
+    }
 
 def db_prog_itens(prog) -> dict:
     """Retorna {nome: quantidade_atual} para uma linha de progresso (JSON ou colunas fixas)."""
@@ -454,10 +471,20 @@ def db_set_meta(guild_id: str, week_id: str, valores: dict, definido_por: str):
           definido_por, now_tz().isoformat()))
     conn.commit()
 
-def db_set_meta_dinheiro(guild_id: str, week_id: str, valor: float, definido_por: str):
-    """Salva a meta de dinheiro (valor único em R$), preservando meta de produtos se existir."""
+def db_set_meta_dinheiro(guild_id: str, week_id: str, valores: dict | float, definido_por: str):
+    """Salva a meta de dinheiro em R$, com suporte a sujo/limpo separados."""
     conn = get_conn()
-    itens_json = None
+    if isinstance(valores, dict):
+        dinheiro_itens = {
+            nome: float(qtd or 0)
+            for nome, qtd in valores.items()
+            if nome in DINHEIRO_ITEMS and float(qtd or 0) > 0
+        }
+        valor = sum(dinheiro_itens.values())
+        itens_json = json.dumps(dinheiro_itens, ensure_ascii=False)
+    else:
+        valor = float(valores or 0)
+        itens_json = None
     meta_tipo = "dinheiro"
     legacy = {"folha": 0, "opio": 0, "seringa": 0, "agulha": 0}
     conn.execute("""
@@ -591,12 +618,19 @@ def db_verificar_conclusao(guild_id: str, week_id: str, user_id: str):
     meta_tipo = db_meta_tipo_efetivo(meta)
     meta_itens = db_meta_itens_ativos(meta)
     meta_valor = db_meta_dinheiro_ativo(meta)
+    meta_dinheiro_itens = db_meta_dinheiro_itens_ativos(meta)
     prog_itens = db_prog_itens(prog)
 
     if meta_tipo == "dinheiro":
         if meta_valor <= 0:
             return
-        concluido = sum(prog_itens.get(nome, 0) for nome in DINHEIRO_ITEMS) >= meta_valor
+        if meta_dinheiro_itens:
+            concluido = all(
+                prog_itens.get(nome, 0) >= qtd
+                for nome, qtd in meta_dinheiro_itens.items()
+            )
+        else:
+            concluido = sum(prog_itens.get(nome, 0) for nome in DINHEIRO_ITEMS) >= meta_valor
     else:
         if not meta_itens:
             return
@@ -706,7 +740,10 @@ def db_ranking_semana(guild_id: str, week_id: str, user_ids: list[str] | None = 
         if row and row["aprovacao_antecipada"] and row["aprovacao_nivel"]:
             classificacao = row["aprovacao_nivel"]
         elif meta_tipo == "dinheiro":
-            if pct >= 130:
+            meta_dinheiro_itens = db_meta_dinheiro_itens_ativos(meta)
+            if meta_dinheiro_itens:
+                classificacao = classificar_resultado(meta_dinheiro_itens, prog_itens)
+            elif pct >= 130:
                 classificacao = "elite"
             elif pct >= 100:
                 classificacao = "meta_batida"
