@@ -35,6 +35,7 @@ from services.db_service import (
 log       = get_logger("farm", "farm.log")
 audit_log = logging.getLogger("audit")
 RELATORIO_NAO_ENTREGOU_CATEGORY_ID = 1494699491742191708
+META_AVISOS_CHANNEL_ID = 1474869321506488447
 FARM_PRINT_TIMEOUT_SECONDS = 180.0
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 
@@ -173,6 +174,18 @@ class DefinirMetasModal(discord.ui.Modal, title="Kit Desmanche"):
             f"✅ Metas da semana `{self.week_id}` definidas:\n{resumo}", ephemeral=True
         )
         await self.cog._atualizar_ranking_fixo(self.guild_id)
+        await self.cog._enviar_aviso_meta_atualizada(
+            interaction.guild,
+            self.guild_id,
+            self.week_id,
+            "Kit Desmanche",
+            [
+                f"{emoji} **{nome}**: `{valores.get(nome, 0)}`"
+                for nome, emoji in FARM_PRODUTOS
+                if nome in valores
+            ],
+            interaction.user,
+        )
 
     async def on_error(self, interaction, error):
         log.error(f"Erro no DefinirMetasModal: {error}", exc_info=True)
@@ -241,6 +254,17 @@ class DefinirMetasDinheiroModal(discord.ui.Modal, title="Definir Meta — Dinhei
             ephemeral=True,
         )
         await self.cog._atualizar_ranking_fixo(self.guild_id)
+        await self.cog._enviar_aviso_meta_atualizada(
+            interaction.guild,
+            self.guild_id,
+            self.week_id,
+            "Dinheiro",
+            [
+                f"💵 **{nome}**: `{_fmt_money(valor)}`"
+                for nome, valor in valores.items()
+            ],
+            interaction.user,
+        )
 
     async def on_error(self, interaction, error):
         log.error(f"Erro no DefinirMetasDinheiroModal: {error}", exc_info=True)
@@ -874,6 +898,39 @@ class FarmCog(commands.Cog):
             await cog.atualizar_ranking_fixo(guild_id)
         except Exception as e:
             log.warning(f"Falha ao atualizar ranking fixo da guild {guild_id}: {e}")
+
+    async def _enviar_aviso_meta_atualizada(
+        self,
+        guild: discord.Guild | None,
+        guild_id: str,
+        week_id: str,
+        tipo: str,
+        linhas: list[str],
+        definido_por: discord.Member | discord.User,
+    ):
+        guild = guild or self.bot.get_guild(int(guild_id))
+        if not guild:
+            return
+
+        canal_id = META_AVISOS_CHANNEL_ID
+        canal = guild.get_channel(canal_id) or await _safe_fetch_channel(guild, canal_id)
+        if not canal:
+            log.warning("Canal de avisos de meta nao encontrado: guild=%s canal=%s", guild_id, canal_id)
+            return
+
+        embed = discord.Embed(
+            title=f"🎯 Meta Atualizada — {tipo}",
+            description=f"Semana: `{week_id}`\n\n" + "\n".join(linhas),
+            color=0xFFD700,
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="Definida por", value=definido_por.mention, inline=True)
+        embed.set_footer(text="Morro do Mineiro — Sistema de Farm")
+
+        try:
+            await canal.send(embed=embed)
+        except Exception as e:
+            log.warning("Falha ao enviar aviso de meta atualizada: %s", e)
 
     async def _notificar_aprovacao(
         self, guild: discord.Guild, user_id: str,
