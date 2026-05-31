@@ -11,7 +11,7 @@ from services.db_service import (
     db_get_permitidos_role_ids,
     db_get_progresso,
     db_get_meta,
-    db_meta_itens,
+    db_meta_itens_ativos,
     db_get_ultimo_evento,
     db_evento_itens,
     db_lista_progresso,
@@ -99,11 +99,11 @@ class PaineisCog(commands.Cog):
 
                 week_id = current_week_id()
                 meta    = db_get_meta(guild_id, week_id)
-                itens   = db_meta_itens(meta)
+                itens   = db_meta_itens_ativos(meta)
 
-                if not itens:
+                if not itens or not any((qtd or 0) > 0 for qtd in itens.values()):
                     await interaction.response.send_message(
-                        "❌ A meta de produtos ainda não foi definida. Use `/meta` para defini-la.",
+                        "❌ A meta Kit Desmanche ainda não foi definida. Use `/meta` para defini-la.",
                         ephemeral=True,
                     )
                     return

@@ -289,8 +289,8 @@ class ApprovalView(discord.ui.View):
             farm_embed.add_field(
                 name="1️⃣ Escolha o tipo certo",
                 value=(
-                    "**🚜 Lançar Farm:** use quando a meta for de produtos "
-                    "como Folha, Ópio, Seringa ou Agulha.\n"
+                    "**🚜 Lançar Farm:** use quando a meta for o Kit Desmanche "
+                    "com Borracha, Aluminio, Cobre ou Plastico.\n"
                     "**💵 Lançar Dinheiro:** use quando a meta da semana for em dinheiro "
                     "sujo, dinheiro limpo ou os dois."
                 ),
@@ -301,7 +301,7 @@ class ApprovalView(discord.ui.View):
                 value=(
                     "Vá ao canal do **Painel de Farm/Painel de Operações**, clique no botão correto "
                     "e preencha apenas os campos que você realmente entregou.\n"
-                    "Use números inteiros nos produtos. Para dinheiro, pode usar `50000` ou `R$ 50.000`."
+                    "Use números inteiros nos itens. Para dinheiro, pode usar `50000` ou `R$ 50.000`."
                 ),
                 inline=False,
             )

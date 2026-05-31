@@ -17,10 +17,10 @@ from services.db_service import (
 )
 
 FARM_PRODUTOS = [
-    ("Folha", "🍃"),
-    ("Ópio", "🧪"),
-    ("Seringa", "💊"),
-    ("Agulha", "💉"),
+    ("Borracha", "🛞"),
+    ("Aluminio", "⚙️"),
+    ("Cobre", "🔶"),
+    ("Plastico", "🧴"),
 ]
 
 

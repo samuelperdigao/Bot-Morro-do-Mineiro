@@ -28,7 +28,6 @@ from services.db_service import (
     db_get_ultimo_evento,
     db_evento_itens,
     db_is_farm_configured,
-    db_meta_itens,
     db_meta_itens_ativos,
     db_meta_tipo_efetivo,
 )
@@ -65,10 +64,10 @@ class FarmPainelView(discord.ui.View):
         week_id = current_week_id()
         meta    = db_get_meta(guild_id, week_id)
 
-        itens = db_meta_itens(meta)
-        if not itens:
+        itens = db_meta_itens_ativos(meta)
+        if not itens or not any((qtd or 0) > 0 for qtd in itens.values()):
             await interaction.response.send_message(
-                "❌ A meta de produtos ainda não foi definida. Use `/meta` para defini-la.",
+                "❌ A meta Kit Desmanche ainda não foi definida. Use `/meta` para defini-la.",
                 ephemeral=True,
             )
             return
@@ -482,7 +481,7 @@ class FarmPainelCog(commands.Cog):
             itens = db_meta_itens_ativos(meta)
             if not itens or not any((qtd or 0) > 0 for qtd in itens.values()):
                 await interaction.response.send_message(
-                    "❌ A meta de produtos ainda não foi definida. Use `/meta` para defini-la.",
+                    "❌ A meta Kit Desmanche ainda não foi definida. Use `/meta` para defini-la.",
                     ephemeral=True,
                 )
                 return

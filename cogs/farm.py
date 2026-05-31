@@ -17,7 +17,7 @@ from services.log_service import send_log
 from services.db_service import (
     DINHEIRO_ITEMS, DINHEIRO_LIMPO_ITEM, DINHEIRO_SUJO_ITEM,
     init_db, current_week_id, now_tz, janela_valida, fmt_dt,
-    db_meta_dinheiro_ativo, db_meta_itens, db_meta_itens_ativos,
+    db_meta_dinheiro_ativo, db_meta_itens_ativos,
     db_meta_tipo_efetivo, db_prog_itens, db_evento_itens, db_get_ultimo_evento,
     db_get_meta, db_set_meta, db_set_meta_dinheiro,
     db_get_progresso, db_ensure_progresso, db_lancar,
@@ -110,7 +110,7 @@ def _farm_audit(action: str, executor_id: int, target_id: int | None = None, **k
 from cogs.farm_embeds import FARM_PRODUTOS, build_farm_embed, build_meta_embed, build_ranking_embed
 
 
-class DefinirMetasModal(discord.ui.Modal, title="Definir Metas da Semana"):
+class DefinirMetasModal(discord.ui.Modal, title="Kit Desmanche"):
     """
     Modal com campos fixos para cada produto definido em FARM_PRODUTOS.
     Pré-preenche com os valores atuais da meta.
@@ -225,7 +225,7 @@ class DefinirMetasDinheiroModal(discord.ui.Modal, title="Definir Meta — Dinhei
         await _safe_respond(interaction, "❌ Erro ao definir meta de dinheiro.")
 
 
-class LancarModal(discord.ui.Modal, title="Lançar Produção"):
+class LancarModal(discord.ui.Modal, title="Lançar Kit Desmanche"):
     """Modal dinâmico gerado a partir dos itens definidos na meta da semana."""
 
     def __init__(self, cog: "FarmCog", week_id: str, guild_id: str, user_id: str, itens: dict):
@@ -545,7 +545,7 @@ class EscolherTipoMetaView(discord.ui.View):
         for item in self.children:
             item.disabled = True
 
-    @discord.ui.button(label="📦 Itens de Produção", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="📦 Kit Desmanche", style=discord.ButtonStyle.primary)
     async def btn_itens(self, interaction: discord.Interaction, button: discord.ui.Button):
         meta = db_get_meta(self.guild_id, self.week_id)
         await _safe_send_modal(interaction, DefinirMetasModal(self.cog, self.week_id, self.guild_id, meta))
@@ -572,10 +572,10 @@ class FarmView(discord.ui.View):
             await interaction.response.send_message("❌ Este painel não é seu.", ephemeral=True)
             return
         meta = db_get_meta(self.guild_id, self.week_id)
-        itens = db_meta_itens(meta)
-        if not itens:
+        itens = db_meta_itens_ativos(meta)
+        if not itens or not any((qtd or 0) > 0 for qtd in itens.values()):
             await interaction.response.send_message(
-                "❌ A meta de produtos ainda não foi definida.", ephemeral=True
+                "❌ A meta Kit Desmanche ainda não foi definida.", ephemeral=True
             )
             return
         await _safe_send_modal(interaction, LancarModal(self.cog, self.week_id, self.guild_id, self.user_id, itens))
@@ -1012,7 +1012,7 @@ class FarmCog(commands.Cog):
                 total_meta = sum(meta_itens.values())
                 partes = []
                 if total_meta:
-                    partes.append(f"{total_meta} produtos")
+                    partes.append(f"{total_meta} itens do Kit Desmanche")
                 meta_str = " + ".join(partes) if partes else "A definir"
 
             embed = discord.Embed(

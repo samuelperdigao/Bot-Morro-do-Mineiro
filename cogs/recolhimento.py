@@ -40,7 +40,12 @@ from services.db_service import (
 
 log = get_logger("recolhimento", "recolhimento.log")
 
-_KEY_LABELS = {"folha": "Folha", "opio": "Ópio", "seringa": "Seringa", "agulha": "Agulha"}
+_KEY_LABELS = {
+    "folha": "Borracha",
+    "opio": "Aluminio",
+    "seringa": "Cobre",
+    "agulha": "Plastico",
+}
 
 
 # ── Helpers de formatação ─────────────────────────────────────────────────────
@@ -111,7 +116,12 @@ def _verificar_meta_atingida(ciclo, meta, entregas: list) -> bool:
         meta_itens = db_meta_itens(meta)
         if not meta_itens:
             return False
-        nome_to_key = {"Folha": "folha", "Ópio": "opio", "Seringa": "seringa", "Agulha": "agulha"}
+        nome_to_key = {
+            "Borracha": "folha",
+            "Aluminio": "opio",
+            "Cobre": "seringa",
+            "Plastico": "agulha",
+        }
         totais = {k: sum(e[k] or 0 for e in entregas) for k in ("folha", "opio", "seringa", "agulha")}
         return all(
             totais.get(nome_to_key.get(nome, ""), 0) >= qtd
@@ -277,11 +287,11 @@ class RecolhimentoDinheiroModal(discord.ui.Modal, title="💰 Registrar Recolhim
             await interaction.response.send_message("❌ Erro ao registrar.", ephemeral=True)
 
 
-class RecolhimentoFarmModal(discord.ui.Modal, title="🌿 Registrar Recolhimento Farm"):
-    folha_input   = discord.ui.TextInput(label="Folha",   placeholder="0", required=False, max_length=10)
-    opio_input    = discord.ui.TextInput(label="Ópio",    placeholder="0", required=False, max_length=10)
-    seringa_input = discord.ui.TextInput(label="Seringa", placeholder="0", required=False, max_length=10)
-    agulha_input  = discord.ui.TextInput(label="Agulha",  placeholder="0", required=False, max_length=10)
+class RecolhimentoFarmModal(discord.ui.Modal, title="Kit Desmanche"):
+    folha_input   = discord.ui.TextInput(label="Borracha",  placeholder="0", required=False, max_length=10)
+    opio_input    = discord.ui.TextInput(label="Aluminio",  placeholder="0", required=False, max_length=10)
+    seringa_input = discord.ui.TextInput(label="Cobre",     placeholder="0", required=False, max_length=10)
+    agulha_input  = discord.ui.TextInput(label="Plastico",  placeholder="0", required=False, max_length=10)
 
     def __init__(
         self,
@@ -327,7 +337,7 @@ class RecolhimentoFarmModal(discord.ui.Modal, title="🌿 Registrar Recolhimento
         )
         await interaction.response.send_message(
             f"✅ Recolhimento registrado para **{self.alvo_nome}**! "
-            f"Folha: {folha} | Ópio: {opio} | Seringa: {seringa} | Agulha: {agulha}",
+            f"Borracha: {folha} | Aluminio: {opio} | Cobre: {seringa} | Plastico: {agulha}",
             ephemeral=True,
         )
         cog = interaction.client.get_cog("RecolhimentoCog")
