@@ -15,7 +15,7 @@ from core.logger import get_logger
 log = get_logger("disparo", "disparo.log")
 
 BROADCAST_CATEGORY_ID = 1474869322387292362
-BROADCAST_CHANNEL_PATTERN = re.compile(r"^┃?\d+-.+-\d+$")
+BROADCAST_CHANNEL_PATTERN = re.compile(r"^(?:┃📁-)?┃?\d+-.+-\d+$")
 BROADCAST_HISTORY_FILE = Path(__file__).resolve().parent.parent / "data" / "broadcast_messages.json"
 MAX_STORED_BATCHES = 10
 

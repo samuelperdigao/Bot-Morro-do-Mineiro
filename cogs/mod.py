@@ -14,12 +14,18 @@ from core.logger import get_logger
 log = get_logger("mod", "mod.log")
 
 SEPARADOR_CANAIS = "┃"
+ICONE_PASTA = "📁"
 MAX_CHANNEL_NAME_LENGTH = 100
 
 
 def _nome_com_separador(nome: str) -> str | None:
     if SEPARADOR_CANAIS in nome:
         return None
+
+    nome_limpo = nome.lstrip("-")
+    numero = nome_limpo.split("-", 1)[0]
+    if numero.isdigit():
+        return f"{SEPARADOR_CANAIS}{ICONE_PASTA}-{nome_limpo}"[:MAX_CHANNEL_NAME_LENGTH]
     return f"{SEPARADOR_CANAIS}{nome}"[:MAX_CHANNEL_NAME_LENGTH]
 
 

@@ -215,14 +215,14 @@ class PontoCog(commands.Cog):
         self.bot = bot
         bot.add_view(PontoPainelView(self))
 
-    async def _fetch_category(self, guild: discord.Guild, category_id: int) -> discord.CategoryChannel | None:
-        channel = guild.get_channel(category_id)
+    async def _fetch_channel(self, guild: discord.Guild, channel_id: int):
+        channel = guild.get_channel(channel_id)
         if channel is None:
             try:
-                channel = await guild.fetch_channel(category_id)
+                channel = await guild.fetch_channel(channel_id)
             except Exception:
                 return None
-        return channel if isinstance(channel, discord.CategoryChannel) else None
+        return channel
 
     async def _get_or_create_text_channel(
         self,
@@ -343,30 +343,52 @@ class PontoCog(commands.Cog):
         guild = interaction.guild
         guild_id = str(interaction.guild_id)
 
-        ponto_category = await self._fetch_category(guild, PONTO_CATEGORY_ID)
-        log_category = await self._fetch_category(guild, LOG_CATEGORY_ID)
-        if ponto_category is None:
+        ponto_target = await self._fetch_channel(guild, PONTO_CATEGORY_ID)
+        log_target = await self._fetch_channel(guild, LOG_CATEGORY_ID)
+        if ponto_target is None:
             await interaction.followup.send(
-                f"Categoria de ponto `{PONTO_CATEGORY_ID}` nao encontrada.",
+                f"Nao encontrei o destino do painel de ponto `{PONTO_CATEGORY_ID}`. "
+                "Confirme se o ID e de um canal/categoria deste servidor e se o bot consegue ver.",
                 ephemeral=True,
             )
             return
-        if log_category is None:
+        if log_target is None:
             await interaction.followup.send(
-                f"Categoria de log `{LOG_CATEGORY_ID}` nao encontrada.",
+                f"Nao encontrei o destino de logs `{LOG_CATEGORY_ID}`. "
+                "Confirme se o ID e de um canal/categoria deste servidor e se o bot consegue ver.",
                 ephemeral=True,
             )
             return
 
-        painel_channel = await self._get_or_create_text_channel(
-            guild, ponto_category, PAINEL_CHANNEL_NAME, read_only=True
-        )
-        log_channel = await self._get_or_create_text_channel(
-            guild, log_category, LOG_CHANNEL_NAME, read_only=True
-        )
-        ranking_channel = await self._get_or_create_text_channel(
-            guild, log_category, RANKING_CHANNEL_NAME, read_only=True
-        )
+        if isinstance(ponto_target, discord.CategoryChannel):
+            painel_channel = await self._get_or_create_text_channel(
+                guild, ponto_target, PAINEL_CHANNEL_NAME, read_only=True
+            )
+        elif isinstance(ponto_target, discord.TextChannel):
+            painel_channel = ponto_target
+        else:
+            await interaction.followup.send(
+                f"O destino do painel `{PONTO_CATEGORY_ID}` precisa ser uma categoria ou canal de texto.",
+                ephemeral=True,
+            )
+            return
+
+        if isinstance(log_target, discord.CategoryChannel):
+            log_channel = await self._get_or_create_text_channel(
+                guild, log_target, LOG_CHANNEL_NAME, read_only=True
+            )
+            ranking_channel = await self._get_or_create_text_channel(
+                guild, log_target, RANKING_CHANNEL_NAME, read_only=True
+            )
+        elif isinstance(log_target, discord.TextChannel):
+            log_channel = log_target
+            ranking_channel = log_target
+        else:
+            await interaction.followup.send(
+                f"O destino de logs `{LOG_CATEGORY_ID}` precisa ser uma categoria ou canal de texto.",
+                ephemeral=True,
+            )
+            return
 
         painel_msg = await painel_channel.send(embed=_build_painel_embed(), view=PontoPainelView(self))
         week_id = current_week_id()

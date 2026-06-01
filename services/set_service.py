@@ -25,6 +25,8 @@ _ultimo_numero: dict[int, int] = {}
 
 log = logging.getLogger("bot")
 SEPARADOR_PASTA = "┃"
+ICONE_PASTA = "📁"
+PREFIXO_PASTA = f"{SEPARADOR_PASTA}{ICONE_PASTA}-"
 MAX_CHANNEL_NAME_LENGTH = 100
 
 
@@ -38,16 +40,18 @@ def safe_channel_name(text: str) -> str:
 
 
 def nome_sem_separador(nome: str) -> str:
+    if nome.startswith(PREFIXO_PASTA):
+        return nome[len(PREFIXO_PASTA):]
     return nome[len(SEPARADOR_PASTA):] if nome.startswith(SEPARADOR_PASTA) else nome
 
 
 def numero_da_pasta(nome: str) -> int | None:
-    numero = nome_sem_separador(nome).split("-", 1)[0]
+    numero = nome_sem_separador(nome).lstrip("-").split("-", 1)[0]
     return int(numero) if numero.isdigit() else None
 
 
 def montar_nome_pasta(numero: int | str, sufixo: str) -> str:
-    return f"{SEPARADOR_PASTA}{numero}-{sufixo}"[:MAX_CHANNEL_NAME_LENGTH]
+    return f"{PREFIXO_PASTA}{numero}-{sufixo}"[:MAX_CHANNEL_NAME_LENGTH]
 
 
 # ── Helpers de canal ──────────────────────────────────────────────────────────
