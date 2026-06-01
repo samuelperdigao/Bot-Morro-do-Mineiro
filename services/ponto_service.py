@@ -22,6 +22,12 @@ def ponto_get_config(guild_id: str) -> sqlite3.Row | None:
     ).fetchone()
 
 
+def ponto_all_configs() -> list[sqlite3.Row]:
+    return get_conn().execute(
+        "SELECT * FROM ponto_config",
+    ).fetchall()
+
+
 def ponto_set_config(
     guild_id: str,
     ponto_category_id: str,

@@ -6,11 +6,12 @@ from datetime import datetime
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from core.logger import get_logger
-from services.db_service import current_week_id
+from services.db_service import current_week_id, now_tz
 from services.ponto_service import (
+    ponto_all_configs,
     ponto_abrir,
     ponto_atualizar_ranking_message,
     ponto_fechar,
@@ -215,6 +216,10 @@ class PontoCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         bot.add_view(PontoPainelView(self))
+        self.atualizar_ranking_diario.start()
+
+    def cog_unload(self):
+        self.atualizar_ranking_diario.cancel()
 
     async def _fetch_channel(self, guild: discord.Guild, channel_id: int):
         channel = guild.get_channel(channel_id)
@@ -363,6 +368,22 @@ class PontoCog(commands.Cog):
         except Exception as exc:
             log.error("Erro ao atualizar ranking de ponto: %s", exc, exc_info=True)
             return False
+
+    @tasks.loop(minutes=1)
+    async def atualizar_ranking_diario(self):
+        agora = now_tz()
+        if agora.hour != 23 or agora.minute != 59:
+            return
+
+        atualizados = 0
+        for cfg in ponto_all_configs():
+            if await self.atualizar_ranking_fixo(str(cfg["guild_id"])):
+                atualizados += 1
+        log.info("Ranking diario de ponto atualizado: %s guild(s)", atualizados)
+
+    @atualizar_ranking_diario.before_loop
+    async def before_atualizar_ranking_diario(self):
+        await self.bot.wait_until_ready()
 
     @app_commands.command(name="setup_ponto", description="Cria ou recria o painel e canais do sistema de ponto.")
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -524,7 +545,6 @@ class PontoCog(commands.Cog):
             return
 
         await self.enviar_log_ponto(interaction.guild, interaction.user, sessao, "saida")
-        await self.atualizar_ranking_fixo(guild_id)
         await interaction.followup.send(
             embed=_build_result_embed(interaction.user, sessao, "saida"),
             ephemeral=True,
@@ -614,7 +634,6 @@ class PontoCog(commands.Cog):
             return
 
         await self.enviar_log_ponto(interaction.guild, membro, sessao, "saida")
-        await self.atualizar_ranking_fixo(guild_id)
         await interaction.followup.send(
             f"Ponto de {membro.mention} fechado. Duracao: **{_fmt_duration(sessao['duracao_segundos'])}**.",
             ephemeral=True,
