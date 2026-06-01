@@ -193,7 +193,7 @@ class PontoPainelView(discord.ui.View):
         self.cog = cog
 
     @discord.ui.button(
-        label="Bater Ponto",
+        label="Bater Ponto - Abrir Entrada",
         style=discord.ButtonStyle.success,
         custom_id="ponto_painel:bater",
         row=0,
@@ -202,7 +202,7 @@ class PontoPainelView(discord.ui.View):
         await self.cog.abrir_ponto(interaction)
 
     @discord.ui.button(
-        label="Fechar Ponto",
+        label="Fechar Ponto - Encerrar Saida",
         style=discord.ButtonStyle.danger,
         custom_id="ponto_painel:fechar",
         row=0,
