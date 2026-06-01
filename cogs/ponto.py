@@ -238,6 +238,7 @@ class PontoCog(commands.Cog):
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(
+                read_message_history=True,
                 send_messages=not read_only,
             )
         }
@@ -254,6 +255,36 @@ class PontoCog(commands.Cog):
             overwrites=overwrites,
             reason="Criacao do sistema de ponto",
         )
+
+    async def _bloquear_envio_membros(
+        self,
+        target: discord.CategoryChannel | discord.TextChannel,
+        public_view: bool = False,
+    ) -> None:
+        everyone = target.guild.default_role
+        overwrite = target.overwrites_for(everyone)
+        overwrite.send_messages = False
+        overwrite.add_reactions = False
+        if public_view:
+            overwrite.view_channel = True
+            overwrite.read_message_history = True
+        await target.set_permissions(
+            everyone,
+            overwrite=overwrite,
+            reason="Sistema de ponto: bloquear mensagens de membros",
+        )
+
+        if target.guild.me:
+            bot_overwrite = target.overwrites_for(target.guild.me)
+            bot_overwrite.view_channel = True
+            bot_overwrite.read_message_history = True
+            bot_overwrite.send_messages = True
+            bot_overwrite.manage_messages = True
+            await target.set_permissions(
+                target.guild.me,
+                overwrite=bot_overwrite,
+                reason="Sistema de ponto: permitir mensagens do bot",
+            )
 
     async def enviar_log_ponto(
         self,
@@ -362,6 +393,7 @@ class PontoCog(commands.Cog):
             return
 
         if isinstance(ponto_target, discord.CategoryChannel):
+            await self._bloquear_envio_membros(ponto_target, public_view=True)
             painel_channel = await self._get_or_create_text_channel(
                 guild, ponto_target, PAINEL_CHANNEL_NAME, read_only=True
             )
@@ -375,6 +407,7 @@ class PontoCog(commands.Cog):
             return
 
         if isinstance(log_target, discord.CategoryChannel):
+            await self._bloquear_envio_membros(log_target)
             log_channel = await self._get_or_create_text_channel(
                 guild, log_target, LOG_CHANNEL_NAME, read_only=True
             )
@@ -390,6 +423,11 @@ class PontoCog(commands.Cog):
                 ephemeral=True,
             )
             return
+
+        await self._bloquear_envio_membros(painel_channel, public_view=True)
+        await self._bloquear_envio_membros(log_channel)
+        if ranking_channel.id != log_channel.id:
+            await self._bloquear_envio_membros(ranking_channel)
 
         painel_msg = await painel_channel.send(embed=_build_painel_embed(), view=PontoPainelView(self))
         week_id = current_week_id()
