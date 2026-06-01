@@ -52,6 +52,10 @@ def _fmt_dt(value: str | None) -> str:
     return dt.strftime("%d/%m/%Y %H:%M")
 
 
+def _fmt_date_br(value: str) -> str:
+    return datetime.fromisoformat(value).strftime("%d/%m/%Y")
+
+
 def _fmt_duration(seconds: int | float | None) -> str:
     total = int(seconds or 0)
     horas, resto = divmod(total, 3600)
@@ -88,7 +92,7 @@ def _build_painel_embed() -> discord.Embed:
     )
     embed.add_field(
         name="Semana atual",
-        value=f"`{current_week_id()}`",
+        value=f"`{_fmt_date_br(current_week_id())}`",
         inline=True,
     )
     embed.set_footer(text=FOOTER)
