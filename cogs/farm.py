@@ -36,6 +36,7 @@ audit_log = logging.getLogger("audit")
 META_AVISOS_CHANNEL_ID = 1474869321506488447
 FARM_PRINT_TIMEOUT_SECONDS = 180.0
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+FARM_EXTRA_ITEM = "Ferro"
 
 
 def _parse_money(raw: str) -> float:
@@ -46,6 +47,43 @@ def _parse_money(raw: str) -> float:
 
 def _fmt_money(valor: float) -> str:
     return f"R$ {valor:,.0f}".replace(",", ".")
+
+
+def _fmt_qtd(valor: int | float) -> str:
+    return f"{valor:g}" if isinstance(valor, float) else str(valor)
+
+
+def _format_entregas_separadas(
+    prog_itens: dict,
+    meta_itens: dict | None = None,
+    *,
+    dinheiro: bool = False,
+) -> str:
+    meta_itens = meta_itens or {}
+    nomes = list(meta_itens.keys())
+    nomes.extend(nome for nome in prog_itens if nome not in nomes and (prog_itens.get(nome, 0) or 0) > 0)
+    if not nomes and dinheiro:
+        nomes = [nome for nome in DINHEIRO_ITEMS if (prog_itens.get(nome, 0) or 0) > 0]
+
+    linhas = []
+    for nome in nomes:
+        entregue = prog_itens.get(nome, 0) or 0
+        meta = meta_itens.get(nome, 0) or 0
+        if entregue <= 0 and meta <= 0:
+            continue
+
+        entregue_txt = _fmt_money(entregue) if dinheiro else _fmt_qtd(entregue)
+        if meta > 0:
+            meta_txt = _fmt_money(meta) if dinheiro else _fmt_qtd(meta)
+            pct = entregue / meta * 100
+            linhas.append(f"**{nome}**: `{entregue_txt}` / `{meta_txt}` ({pct:.0f}%)")
+        else:
+            linhas.append(f"**{nome}**: `{entregue_txt}`")
+
+    texto = "\n".join(linhas) or "_nenhuma entrega registrada_"
+    if len(texto) <= 1024:
+        return texto
+    return texto[:1000].rsplit("\n", 1)[0] + "\n*...*"
 
 
 def _is_image_attachment(attachment: discord.Attachment) -> bool:
@@ -279,14 +317,11 @@ class LancarModal(discord.ui.Modal, title="Lançar Kit Desmanche"):
         self.guild_id = guild_id
         self.user_id = user_id
         self.item_names = list(itens.keys())
-        if DINHEIRO_LIMPO_ITEM not in self.item_names and len(self.item_names) < 5:
-            self.item_names.append(DINHEIRO_LIMPO_ITEM)
+        if FARM_EXTRA_ITEM not in self.item_names and len(self.item_names) < 5:
+            self.item_names.append(FARM_EXTRA_ITEM)
         self._inputs: list[discord.ui.TextInput] = []
         for nome in self.item_names:
-            placeholder = "Ex: 50000 ou R$ 50.000" if nome == DINHEIRO_LIMPO_ITEM else "0"
-            ti = discord.ui.TextInput(
-                label=nome, placeholder=placeholder, required=False, default="0"
-            )
+            ti = discord.ui.TextInput(label=nome, placeholder="0", required=False, default="0")
             self.add_item(ti)
             self._inputs.append(ti)
 
@@ -299,7 +334,7 @@ class LancarModal(discord.ui.Modal, title="Lançar Kit Desmanche"):
         try:
             valores = {}
             for nome, ti in zip(self.item_names, self._inputs):
-                v = _parse_money(ti.value) if nome == DINHEIRO_LIMPO_ITEM else int(ti.value or 0)
+                v = int(ti.value or 0)
                 if v < 0:
                     raise ValueError
                 if v > 0:
@@ -991,9 +1026,11 @@ class FarmCog(commands.Cog):
         if meta and meta_tipo == "dinheiro":
             total_prog = sum(prog_itens.get(nome, 0) for nome in DINHEIRO_ITEMS)
             total_meta = db_meta_dinheiro_ativo(meta) or 1
+            entregas_base = meta_dinheiro_itens or {nome: 0 for nome in DINHEIRO_ITEMS}
         else:
             total_prog = sum(prog_itens.get(nome, 0) for nome in meta_itens)
             total_meta = sum(meta_itens.values()) or 1
+            entregas_base = meta_itens
         pct_total  = round(total_prog / total_meta * 100, 1)
 
         if meta_tipo == "dinheiro":
@@ -1001,10 +1038,13 @@ class FarmCog(commands.Cog):
                 classificacao = classificar_resultado(meta_dinheiro_itens, prog_itens)
             else:
                 classificacao = "elite" if pct_total >= 130 else "meta_batida"
-            entregue_txt = f"{_fmt_money(total_prog)} entregues ({pct_total:.0f}% da meta)"
         else:
             classificacao = classificar_resultado(meta_itens, prog_itens) if meta_itens else "meta_batida"
-            entregue_txt = f"{total_prog:g} entregues ({pct_total:.0f}% da meta)"
+        entregue_txt = _format_entregas_separadas(
+            prog_itens,
+            entregas_base,
+            dinheiro=meta_tipo == "dinheiro",
+        )
         status_str    = "🔥 Elite" if classificacao == "elite" else "✅ Meta Batida"
 
         embed = discord.Embed(
@@ -1014,13 +1054,8 @@ class FarmCog(commands.Cog):
         )
         embed.set_thumbnail(url=membro.display_avatar.url)
         embed.add_field(name="👤 Membro",   value=membro.mention,                                      inline=True)
-        embed.add_field(name="📦 Entregou", value=entregue_txt, inline=True)
         embed.add_field(name="🏅 Status",   value=status_str,                                          inline=True)
-        embed.add_field(
-            name="\u200b",
-            value="Recompensa liberada. Procure a liderança no domingo.",
-            inline=False,
-        )
+        embed.add_field(name="📦 Entregou", value=entregue_txt, inline=False)
         embed.set_footer(text=f"Morro do Mineiro • Semana {week_id}")
 
         cfg             = db_get_guild_config(str(guild.id))
@@ -1105,10 +1140,9 @@ class FarmCog(commands.Cog):
             )
             embed.add_field(name="🎯 Meta da Semana", value=meta_str,                  inline=True)
             embed.add_field(name="📅 Prazo",          value="Segunda 00:00 → Domingo 23:59", inline=True)
-            embed.add_field(name="🏆 Recompensa",     value="Assim que bater a meta",  inline=True)
             embed.add_field(
                 name="\u200b",
-                value="💬 Baú aberto. Quem entregar leva recompensa assim que a meta for batida.",
+                value="💬 Baú aberto. Registre seu farm dentro do prazo.",
                 inline=False,
             )
             embed.set_footer(text=f"Morro do Mineiro • Semana {week_id}")

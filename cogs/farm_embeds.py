@@ -22,6 +22,7 @@ FARM_PRODUTOS = [
     ("Aluminio", "⚙️"),
     ("Cobre", "🔶"),
     ("Plastico", "🧴"),
+    ("Ferro", "🔩"),
 ]
 
 
