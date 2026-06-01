@@ -24,6 +24,8 @@ _pasta_lock = asyncio.Lock()
 _ultimo_numero: dict[int, int] = {}
 
 log = logging.getLogger("bot")
+SEPARADOR_PASTA = "┃"
+MAX_CHANNEL_NAME_LENGTH = 100
 
 
 # ── Helpers de nome ───────────────────────────────────────────────────────────
@@ -33,6 +35,19 @@ def safe_channel_name(text: str) -> str:
         c if c.isalnum() or c in "-_" else "-"
         for c in text.lower().replace(" ", "-")
     ).strip("-")[:50]
+
+
+def nome_sem_separador(nome: str) -> str:
+    return nome[len(SEPARADOR_PASTA):] if nome.startswith(SEPARADOR_PASTA) else nome
+
+
+def numero_da_pasta(nome: str) -> int | None:
+    numero = nome_sem_separador(nome).split("-", 1)[0]
+    return int(numero) if numero.isdigit() else None
+
+
+def montar_nome_pasta(numero: int | str, sufixo: str) -> str:
+    return f"{SEPARADOR_PASTA}{numero}-{sufixo}"[:MAX_CHANNEL_NAME_LENGTH]
 
 
 # ── Helpers de canal ──────────────────────────────────────────────────────────
@@ -66,11 +81,9 @@ def proximo_numero_pasta(guild: discord.Guild, private_cat_id: int) -> int:
     maior = _ultimo_numero.get(private_cat_id, 0)
     if category and hasattr(category, "channels"):
         for ch in category.channels:
-            partes = ch.name.split("-")
-            if partes and partes[0].isdigit():
-                n = int(partes[0])
-                if n > maior:
-                    maior = n
+            numero = numero_da_pasta(ch.name)
+            if numero is not None and numero > maior:
+                maior = numero
     proximo = maior + 1
     _ultimo_numero[private_cat_id] = proximo
     return proximo
@@ -82,9 +95,9 @@ def encontrar_pasta_livre(guild: discord.Guild, private_cat_id: int) -> discord.
         return None
     livres = []
     for ch in category.channels:
-        partes = ch.name.split("-")
-        if partes and partes[0].isdigit() and ch.name.endswith("-livre"):
-            livres.append((int(partes[0]), ch))
+        numero = numero_da_pasta(ch.name)
+        if numero is not None and nome_sem_separador(ch.name).endswith("-livre"):
+            livres.append((numero, ch))
     if not livres:
         return None
     livres.sort(key=lambda x: x[0])
@@ -136,8 +149,8 @@ async def criar_pasta(
         pasta_livre = encontrar_pasta_livre(guild, private_cat_id)
 
         if pasta_livre:
-            numero    = pasta_livre.name.split("-")[0]
-            novo_nome = f"{numero}-{safe_name}{sufixo}"
+            numero    = numero_da_pasta(pasta_livre.name)
+            novo_nome = montar_nome_pasta(numero, f"{safe_name}{sufixo}")
             try:
                 await pasta_livre.edit(
                     name=novo_nome,
@@ -150,7 +163,7 @@ async def criar_pasta(
                 log.error(f"Erro ao reutilizar pasta livre: {e}")
 
         numero       = proximo_numero_pasta(guild, private_cat_id)
-        channel_name = f"{numero}-{safe_name}{sufixo}"
+        channel_name = montar_nome_pasta(numero, f"{safe_name}{sufixo}")
         try:
             channel = await guild.create_text_channel(
                 name=channel_name,
@@ -191,9 +204,11 @@ async def liberar_pasta(
         return False
 
     async with _pasta_lock:
-        partes = canal.name.split("-")
-        numero = partes[0] if partes and partes[0].isdigit() else canal.name
-        novo_nome = f"{numero}-livre"
+        numero = numero_da_pasta(canal.name)
+        if numero is not None:
+            novo_nome = montar_nome_pasta(numero, "livre")
+        else:
+            novo_nome = f"{SEPARADOR_PASTA}{nome_sem_separador(canal.name)}-livre"[:MAX_CHANNEL_NAME_LENGTH]
 
         try:
             overwrites = dict(canal.overwrites)

@@ -154,6 +154,38 @@ CREATE TABLE IF NOT EXISTS lideranca_pendencias (
 
 CREATE INDEX IF NOT EXISTS idx_lideranca_pendencias_guild_status
 ON lideranca_pendencias (guild_id, status);
+
+CREATE TABLE IF NOT EXISTS ponto_config (
+    guild_id           TEXT PRIMARY KEY,
+    ponto_category_id  TEXT,
+    log_category_id    TEXT,
+    painel_channel_id  TEXT,
+    log_channel_id     TEXT,
+    ranking_channel_id TEXT,
+    ranking_message_id TEXT,
+    ranking_week_id    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ponto_sessoes (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id           TEXT NOT NULL,
+    week_id            TEXT NOT NULL,
+    user_id            TEXT NOT NULL,
+    entrada_em         TEXT NOT NULL,
+    saida_em           TEXT,
+    duracao_segundos   INTEGER DEFAULT 0,
+    observacao_entrada TEXT,
+    observacao_saida   TEXT,
+    fechado_por        TEXT,
+    status             TEXT DEFAULT 'aberto'
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ponto_sessoes_abertas
+ON ponto_sessoes (guild_id, user_id)
+WHERE status = 'aberto';
+
+CREATE INDEX IF NOT EXISTS idx_ponto_sessoes_guild_week_status
+ON ponto_sessoes (guild_id, week_id, status);
 """
 
 MIGRATIONS = (

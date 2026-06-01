@@ -3,7 +3,6 @@ cogs/farm.py - Extensão FARM: metas semanais, lançamentos e aprovações.
 """
 
 import asyncio
-import io
 import logging
 
 import discord
@@ -34,7 +33,6 @@ from services.db_service import (
 
 log       = get_logger("farm", "farm.log")
 audit_log = logging.getLogger("audit")
-RELATORIO_NAO_ENTREGOU_CATEGORY_ID = 1494699491742191708
 META_AVISOS_CHANNEL_ID = 1474869321506488447
 FARM_PRINT_TIMEOUT_SECONDS = 180.0
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
@@ -1228,64 +1226,6 @@ class FarmCog(commands.Cog):
     async def _before_quinta(self):
         await self.bot.wait_until_ready()
 
-    async def _enviar_relatorio_nao_entregou(
-        self,
-        guild: discord.Guild,
-        week_id: str,
-        zerados: list[str],
-        parciais: list[str],
-    ):
-        destino = guild.get_channel(RELATORIO_NAO_ENTREGOU_CATEGORY_ID)
-        if destino is None:
-            destino = await _safe_fetch_channel(guild, RELATORIO_NAO_ENTREGOU_CATEGORY_ID)
-        if destino is None:
-            log.warning("Categoria/canal de relatorio nao encontrado: %s", RELATORIO_NAO_ENTREGOU_CATEGORY_ID)
-            return
-
-        if isinstance(destino, discord.CategoryChannel):
-            channel_name = f"relatorio-farm-{week_id}"
-            canal = discord.utils.get(destino.text_channels, name=channel_name)
-            if canal is None:
-                canal = await guild.create_text_channel(
-                    channel_name,
-                    category=destino,
-                    reason="Relatorio semanal de farm nao entregue",
-                )
-        elif isinstance(destino, discord.TextChannel):
-            canal = destino
-        else:
-            log.warning("Destino do relatorio nao e categoria/canal de texto: %s", RELATORIO_NAO_ENTREGOU_CATEGORY_ID)
-            return
-
-        def _lista(linhas: list[str]) -> str:
-            if not linhas:
-                return "Nenhum."
-            texto = "\n".join(linhas)
-            return texto[:950] + ("\n... lista truncada pelo limite do Discord" if len(texto) > 950 else "")
-
-        embed = discord.Embed(
-            title="Relatorio de Farm Nao Entregue",
-            description=f"Semana `{week_id}`",
-            color=discord.Color.red(),
-            timestamp=discord.utils.utcnow(),
-        )
-        embed.add_field(name=f"Sem entrega ({len(zerados)})", value=_lista(zerados), inline=False)
-        embed.add_field(name=f"Parcial / abaixo da meta ({len(parciais)})", value=_lista(parciais), inline=False)
-        embed.set_footer(text="Gerado automaticamente no fechamento semanal")
-        conteudo = (
-            f"Relatorio de Farm Nao Entregue\nSemana {week_id}\n\n"
-            f"Sem entrega ({len(zerados)}):\n"
-            + ("\n".join(zerados) if zerados else "Nenhum.")
-            + f"\n\nParcial / abaixo da meta ({len(parciais)}):\n"
-            + ("\n".join(parciais) if parciais else "Nenhum.")
-            + "\n"
-        )
-        arquivo = discord.File(
-            fp=io.BytesIO(conteudo.encode("utf-8")),
-            filename=f"relatorio-farm-{week_id}.txt",
-        )
-        await canal.send(embed=embed, file=arquivo)
-
     # ── Task: fechamento de semana todo domingo às 23:59 ──────────────────────
 
     @tasks.loop(minutes=1)
@@ -1310,8 +1250,6 @@ class FarmCog(commands.Cog):
             elite_mentions   = []
             meta_mentions    = []
             parcial_mentions = []
-            relatorio_zerados = []
-            relatorio_parciais = []
             zero_count       = 0
             total_permitidos = 0
             total_sujo       = 0.0
@@ -1334,10 +1272,8 @@ class FarmCog(commands.Cog):
                     meta_mentions.append(member.mention)
                 elif classificacao == "parcial":
                     parcial_mentions.append(member.mention)
-                    relatorio_parciais.append(f"{member.mention} (`{member.id}`) - {row_rank.get('pct', 0):.0f}%")
                 else:
                     zero_count += 1
-                    relatorio_zerados.append(f"{member.mention} (`{member.id}`)")
 
             bateram_100 = len(elite_mentions) + len(meta_mentions)
             taxa        = round(bateram_100 / total_permitidos * 100) if total_permitidos else 0
@@ -1384,7 +1320,6 @@ class FarmCog(commands.Cog):
                 canal = guild.get_channel(int(cfg["canal_avisos_farm"])) or \
                         await guild.fetch_channel(int(cfg["canal_avisos_farm"]))
                 await canal.send(embed=embed)
-                await self._enviar_relatorio_nao_entregou(guild, week_id, relatorio_zerados, relatorio_parciais)
                 log.info(f"Fechamento de semana postado: guild={guild_id_str} semana={week_id}")
             except Exception as e:
                 log.error(f"Erro ao postar fechamento guild={guild_id_str}: {e}")

@@ -27,4 +27,5 @@ COG_EXTENSIONS = (
     "cogs.recolhimento",
     "cogs.bau_gerentes",
     "cogs.disparo",
+    "cogs.ponto",
 )
