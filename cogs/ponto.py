@@ -283,7 +283,7 @@ class PontoCog(commands.Cog):
             color=COR_SAIDA if is_saida else COR_PONTO,
             timestamp=discord.utils.utcnow(),
         )
-        embed.add_field(name="Membro", value=f"{member.mention}\n`{member.id}`", inline=True)
+        embed.add_field(name="Membro", value=f"**{member.display_name}**", inline=True)
         embed.add_field(name="Entrada", value=f"`{entrada}`", inline=True)
         if is_saida:
             embed.add_field(name="Saida", value=f"`{saida}`", inline=True)
