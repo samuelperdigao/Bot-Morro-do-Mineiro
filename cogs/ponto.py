@@ -70,13 +70,26 @@ def _safe_name(member: discord.Member | None, fallback: str, limit: int = 28) ->
 
 def _build_painel_embed() -> discord.Embed:
     embed = discord.Embed(
-        title="Sistema de Ponto",
+        title="Controle de Ponto",
         description=(
-            "Use o botao abaixo para registrar sua entrada ou saida.\n"
-            "Se voce estiver sem ponto aberto, sera registrada uma entrada. "
-            "Se ja houver ponto aberto, sera registrada a saida."
+            "**Registre sua entrada e saida de forma rapida.**\n"
+            "Abra o ponto ao iniciar e feche quando encerrar sua atividade."
         ),
         color=COR_INFO,
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(
+        name="Como funciona",
+        value=(
+            "`Bater Ponto` abre seu ponto se voce nao tiver outro aberto.\n"
+            "`Fechar Ponto` encerra seu ponto aberto e calcula o tempo."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Semana atual",
+        value=f"`{current_week_id()}`",
+        inline=True,
     )
     embed.set_footer(text=FOOTER)
     return embed
@@ -126,74 +139,48 @@ def _build_ranking_embed(guild: discord.Guild, guild_id: str, week_id: str) -> d
     return embed
 
 
-class PontoModal(discord.ui.Modal, title="Bater Ponto"):
-    observacao = discord.ui.TextInput(
-        label="Observacao (opcional)",
-        placeholder="Ex: inicio do turno, fim do turno, atividade feita...",
-        style=discord.TextStyle.paragraph,
-        max_length=300,
-        required=False,
+def _build_status_embed(member: discord.Member | discord.User, guild_id: str) -> discord.Embed:
+    user_id = str(member.id)
+    week_id = current_week_id()
+    aberto = ponto_get_aberto(guild_id, user_id)
+    total = ponto_total_usuario_semana(guild_id, week_id, user_id)
+    sessoes = ponto_sessoes_usuario_semana(guild_id, week_id, user_id)
+
+    embed = discord.Embed(
+        title="Meu Ponto",
+        description=f"Resumo de **{member.display_name}** nesta semana.",
+        color=COR_PONTO if aberto else COR_INFO,
+        timestamp=discord.utils.utcnow(),
     )
+    embed.add_field(name="Semana", value=f"`{week_id}`", inline=True)
+    embed.add_field(name="Status", value="`Aberto`" if aberto else "`Fechado`", inline=True)
+    embed.add_field(name="Total fechado", value=f"`{_fmt_duration(total)}`", inline=True)
+    embed.add_field(name="Sessoes na semana", value=f"`{len(sessoes)}`", inline=True)
+    if aberto:
+        embed.add_field(name="Entrada atual", value=f"`{_fmt_dt(aberto['entrada_em'])}`", inline=True)
+    embed.set_footer(text=FOOTER)
+    return embed
 
-    def __init__(self, cog: "PontoCog"):
-        super().__init__()
-        self.cog = cog
 
-    async def on_submit(self, interaction: discord.Interaction):
-        if interaction.guild is None:
-            await interaction.response.send_message(
-                "Este comando so pode ser usado em um servidor.",
-                ephemeral=True,
-            )
-            return
-
-        if getattr(interaction.user, "bot", False):
-            await interaction.response.send_message(
-                "Bots nao podem bater ponto.",
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.defer(ephemeral=True)
-
-        guild_id = str(interaction.guild_id)
-        user_id = str(interaction.user.id)
-        observacao = self.observacao.value.strip() or None
-
-        aberto = ponto_get_aberto(guild_id, user_id)
-        if aberto:
-            sessao = ponto_fechar(guild_id, user_id, observacao, fechado_por=user_id)
-            if sessao is None:
-                await interaction.followup.send(
-                    "Nao encontrei um ponto aberto para fechar. Tente novamente.",
-                    ephemeral=True,
-                )
-                return
-
-            await self.cog.enviar_log_ponto(interaction.guild, interaction.user, sessao, "saida")
-            await self.cog.atualizar_ranking_fixo(guild_id)
-            await interaction.followup.send(
-                f"Saida registrada. Duracao: **{_fmt_duration(sessao['duracao_segundos'])}**.",
-                ephemeral=True,
-            )
-            return
-
-        sessao = ponto_abrir(guild_id, user_id, observacao)
-        await self.cog.enviar_log_ponto(interaction.guild, interaction.user, sessao, "entrada")
-        await interaction.followup.send(
-            f"Entrada registrada as **{_fmt_dt(sessao['entrada_em'])}**.",
-            ephemeral=True,
-        )
-
-    async def on_error(self, interaction: discord.Interaction, error: Exception):
-        log.error("Erro no modal de ponto: %s", error, exc_info=True)
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send("Erro interno ao registrar ponto.", ephemeral=True)
-            else:
-                await interaction.response.send_message("Erro interno ao registrar ponto.", ephemeral=True)
-        except Exception:
-            pass
+def _build_result_embed(member: discord.Member | discord.User, sessao, acao: str) -> discord.Embed:
+    is_saida = acao == "saida"
+    embed = discord.Embed(
+        title="Saida registrada" if is_saida else "Entrada registrada",
+        description=(
+            "Seu ponto foi fechado com sucesso."
+            if is_saida
+            else "Seu ponto foi aberto com sucesso."
+        ),
+        color=COR_SAIDA if is_saida else COR_PONTO,
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(name="Membro", value=member.mention, inline=True)
+    embed.add_field(name="Entrada", value=f"`{_fmt_dt(sessao['entrada_em'])}`", inline=True)
+    if is_saida:
+        embed.add_field(name="Saida", value=f"`{_fmt_dt(sessao['saida_em'])}`", inline=True)
+        embed.add_field(name="Duracao", value=f"`{_fmt_duration(sessao['duracao_segundos'])}`", inline=True)
+    embed.set_footer(text=FOOTER)
+    return embed
 
 
 class PontoPainelView(discord.ui.View):
@@ -203,11 +190,21 @@ class PontoPainelView(discord.ui.View):
 
     @discord.ui.button(
         label="Bater Ponto",
-        style=discord.ButtonStyle.primary,
+        style=discord.ButtonStyle.success,
         custom_id="ponto_painel:bater",
+        row=0,
     )
     async def bater_ponto(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(PontoModal(self.cog))
+        await self.cog.abrir_ponto(interaction)
+
+    @discord.ui.button(
+        label="Fechar Ponto",
+        style=discord.ButtonStyle.danger,
+        custom_id="ponto_painel:fechar",
+        row=0,
+    )
+    async def fechar_ponto(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.fechar_ponto_usuario(interaction)
 
 
 class PontoCog(commands.Cog):
@@ -428,45 +425,92 @@ class PontoCog(commands.Cog):
             else:
                 await interaction.response.send_message("Erro inesperado ao configurar ponto.", ephemeral=True)
 
-    @app_commands.command(name="ponto", description="Mostra seu status e total semanal de ponto.")
-    async def ponto(self, interaction: discord.Interaction):
+    async def abrir_ponto(self, interaction: discord.Interaction):
         if interaction.guild is None:
-            await interaction.response.send_message("Use este comando em um servidor.", ephemeral=True)
+            await interaction.response.send_message("Use este recurso em um servidor.", ephemeral=True)
             return
+        if getattr(interaction.user, "bot", False):
+            await interaction.response.send_message("Bots nao podem bater ponto.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
 
         guild_id = str(interaction.guild_id)
         user_id = str(interaction.user.id)
-        week_id = current_week_id()
         aberto = ponto_get_aberto(guild_id, user_id)
-        total = ponto_total_usuario_semana(guild_id, week_id, user_id)
-        sessoes = ponto_sessoes_usuario_semana(guild_id, week_id, user_id)
-
-        embed = discord.Embed(
-            title="Meu Ponto",
-            color=COR_INFO,
-            timestamp=discord.utils.utcnow(),
-        )
-        embed.add_field(name="Semana", value=f"`{week_id}`", inline=True)
-        embed.add_field(name="Total fechado", value=f"`{_fmt_duration(total)}`", inline=True)
-        embed.add_field(name="Sessoes na semana", value=f"`{len(sessoes)}`", inline=True)
         if aberto:
-            embed.add_field(name="Status", value="Aberto", inline=True)
-            embed.add_field(name="Entrada atual", value=f"`{_fmt_dt(aberto['entrada_em'])}`", inline=True)
-        else:
-            embed.add_field(name="Status", value="Fechado", inline=True)
-        embed.set_footer(text=FOOTER)
+            await interaction.followup.send(
+                f"Voce ja tem um ponto aberto desde **{_fmt_dt(aberto['entrada_em'])}**. "
+                "Feche esse ponto antes de abrir outro.",
+                ephemeral=True,
+            )
+            return
+
+        sessao = ponto_abrir(guild_id, user_id)
+        await self.enviar_log_ponto(interaction.guild, interaction.user, sessao, "entrada")
+        await interaction.followup.send(
+            embed=_build_result_embed(interaction.user, sessao, "entrada"),
+            ephemeral=True,
+        )
+
+    async def fechar_ponto_usuario(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message("Use este recurso em um servidor.", ephemeral=True)
+            return
+        if getattr(interaction.user, "bot", False):
+            await interaction.response.send_message("Bots nao podem bater ponto.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        guild_id = str(interaction.guild_id)
+        user_id = str(interaction.user.id)
+        aberto = ponto_get_aberto(guild_id, user_id)
+        if not aberto:
+            await interaction.followup.send(
+                "Voce nao tem nenhum ponto aberto para fechar.",
+                ephemeral=True,
+            )
+            return
+
+        sessao = ponto_fechar(guild_id, user_id, fechado_por=user_id)
+        if sessao is None:
+            await interaction.followup.send(
+                "Nao encontrei um ponto aberto para fechar. Tente novamente.",
+                ephemeral=True,
+            )
+            return
+
+        await self.enviar_log_ponto(interaction.guild, interaction.user, sessao, "saida")
+        await self.atualizar_ranking_fixo(guild_id)
+        await interaction.followup.send(
+            embed=_build_result_embed(interaction.user, sessao, "saida"),
+            ephemeral=True,
+        )
+
+    async def enviar_status_pessoal(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message("Use este recurso em um servidor.", ephemeral=True)
+            return
+
+        embed = _build_status_embed(interaction.user, str(interaction.guild_id))
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def enviar_ranking(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message("Use este recurso em um servidor.", ephemeral=True)
+            return
+
+        embed = _build_ranking_embed(interaction.guild, str(interaction.guild_id), current_week_id())
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="ponto", description="Mostra seu status e total semanal de ponto.")
+    async def ponto(self, interaction: discord.Interaction):
+        await self.enviar_status_pessoal(interaction)
 
     @app_commands.command(name="ranking_ponto", description="Mostra o ranking semanal de ponto.")
     async def ranking_ponto(self, interaction: discord.Interaction):
-        if interaction.guild is None:
-            await interaction.response.send_message("Use este comando em um servidor.", ephemeral=True)
-            return
-
-        guild_id = str(interaction.guild_id)
-        week_id = current_week_id()
-        embed = _build_ranking_embed(interaction.guild, guild_id, week_id)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await self.enviar_ranking(interaction)
 
     @app_commands.command(name="ponto_abertos", description="Lista pontos abertos. Apenas admins.")
     @app_commands.checks.has_permissions(manage_guild=True)
