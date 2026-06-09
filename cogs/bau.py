@@ -741,13 +741,12 @@ class UndoView(RequesterView):
 
     def embed(self) -> discord.Embed:
         page_items = self.page_items()
-        lines = [
-            (
-                f"{'\u2705' if product in self.selected else '\u2b1c'} "
-                f"**{product}**: {_format_number(quantity)}"
+        lines = []
+        for product, quantity in page_items:
+            marker = "\u2705" if product in self.selected else "\u2b1c"
+            lines.append(
+                f"{marker} **{product}**: {_format_number(quantity)}"
             )
-            for product, quantity in page_items
-        ]
         return discord.Embed(
             title="\u21a9\ufe0f Desfazer minha ultima movimentacao",
             description=(
