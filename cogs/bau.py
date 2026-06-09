@@ -179,6 +179,37 @@ def _build_operation_log_embeds(
     result: OperationResult,
     user: discord.abc.User,
 ) -> list[discord.Embed]:
+    if len(result.lines) == 1 and result.origem != "lote":
+        line = result.lines[0]
+        is_entry = result.tipo == "entrada"
+        title_prefix = "\U0001f7e2 Entrada" if is_entry else "\U0001f534 Sa\u00edda"
+        quantity_prefix = "+" if is_entry else "-"
+        embed = discord.Embed(
+            title=f"{title_prefix} \u2014 {line.produto}",
+            color=discord.Color.green() if is_entry else discord.Color.red(),
+        )
+        embed.add_field(
+            name="\U0001f464 Usu\u00e1rio",
+            value=f"{user.display_name}\n(`{user.id}`)",
+            inline=True,
+        )
+        embed.add_field(
+            name="\U0001f4e6 Quantidade",
+            value=f"{quantity_prefix}{_format_number(line.quantidade)}",
+            inline=True,
+        )
+        embed.add_field(
+            name="\U0001f5c3\ufe0f Estoque ap\u00f3s",
+            value=f"{_format_number(line.estoque_depois)} unidades",
+            inline=True,
+        )
+        embed.add_field(
+            name="\U0001f550 Hor\u00e1rio",
+            value=result.criado_em,
+            inline=False,
+        )
+        return [embed]
+
     chunks = list(_chunk_lines(result.lines))
     embeds: list[discord.Embed] = []
     sign = "+" if result.tipo == "entrada" else "-"

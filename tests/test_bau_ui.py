@@ -1,8 +1,10 @@
 import unittest
+from types import SimpleNamespace
 
 import discord
 
 from cogs.bau import (
+    _build_operation_log_embeds,
     BauPainelView,
     MovementConfirmView,
     PREVIEW_PAGE_SIZE,
@@ -10,10 +12,73 @@ from cogs.bau import (
     UNDO_PAGE_SIZE,
     UndoView,
 )
-from cogs.bau_core import TOTAL_PRODUTOS, UndoOperation
+from cogs.bau_core import (
+    MovementLine,
+    OperationResult,
+    TOTAL_PRODUTOS,
+    UndoOperation,
+)
 
 
 class BauViewTests(unittest.IsolatedAsyncioTestCase):
+    async def test_individual_log_uses_classic_layout(self):
+        result = OperationResult(
+            "operation-id",
+            "entrada",
+            "individual",
+            "123",
+            "Gerente",
+            "09/06/2026 12:19:35",
+            (
+                MovementLine(
+                    "Kit de Desmanche",
+                    "\U0001f9f0 Kit de Desmanche",
+                    64,
+                    0,
+                    64,
+                ),
+            ),
+        )
+        user = SimpleNamespace(display_name="6 6 2 7 | Mineiro", id=123)
+
+        embeds = _build_operation_log_embeds(result, user)
+
+        self.assertEqual(len(embeds), 1)
+        embed = embeds[0]
+        self.assertEqual(embed.title, "\U0001f7e2 Entrada \u2014 Kit de Desmanche")
+        self.assertEqual(
+            [field.name for field in embed.fields],
+            [
+                "\U0001f464 Usu\u00e1rio",
+                "\U0001f4e6 Quantidade",
+                "\U0001f5c3\ufe0f Estoque ap\u00f3s",
+                "\U0001f550 Hor\u00e1rio",
+            ],
+        )
+        self.assertEqual(embed.fields[1].value, "+64")
+        self.assertEqual(embed.fields[2].value, "64 unidades")
+        self.assertEqual(embed.fields[3].value, "09/06/2026 12:19:35")
+
+    async def test_batch_log_remains_grouped(self):
+        result = OperationResult(
+            "operation-id",
+            "entrada",
+            "lote",
+            "123",
+            "Gerente",
+            "09/06/2026 12:19:35",
+            (
+                MovementLine("Colete", "Itens Gerais", 2, 0, 2),
+                MovementLine("5mm", "Municoes", 100, 0, 100),
+            ),
+        )
+        user = SimpleNamespace(display_name="Gerente", id=123)
+
+        embeds = _build_operation_log_embeds(result, user)
+
+        self.assertEqual(embeds[0].title, "Entrada no Bau")
+        self.assertIn("Operacao:", embeds[0].description)
+
     async def test_main_panel_has_all_persistent_actions(self):
         view = BauPainelView()
 
