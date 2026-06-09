@@ -37,8 +37,9 @@ CATEGORIAS = {
     ],
     "\U0001f52a Armas Brancas": [
         "Katana", "Pao (Arma Branca)", "Canivete", "Picareta",
-        "Placa (Arma Branca)", "Kit de Desmanche", "Tablet Corrida",
+        "Placa (Arma Branca)", "Tablet Corrida",
     ],
+    "\U0001f9f0 Kit de Desmanche": ["Kit de Desmanche"],
     "\U0001f52b Armas 1": [
         "Pistola Colt .45", "Pistola M1911", "Sub Skorpion VZ61",
         "Sub Uzi", "Sub M-Tar 21", "Fuzil AK-103",
@@ -317,6 +318,10 @@ class BauRepository:
                         "INSERT OR IGNORE INTO bau_estoque "
                         "(produto, categoria, quantidade) VALUES (?, ?, 0)",
                         (produto, categoria),
+                    )
+                    conn.execute(
+                        "UPDATE bau_estoque SET categoria=? WHERE produto=?",
+                        (categoria, produto),
                     )
 
     def get_stock(self) -> dict[str, int]:

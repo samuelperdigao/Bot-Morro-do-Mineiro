@@ -77,6 +77,40 @@ class BauRepositoryTests(unittest.TestCase):
         self.assertEqual(set(CATEGORIAS["\U0001f9f1 Materiais"]), expected)
         self.assertTrue(expected.issubset(self.repo.get_stock()))
 
+    def test_kit_de_desmanche_has_its_own_category(self):
+        self.assertNotIn(
+            "Kit de Desmanche",
+            CATEGORIAS["\U0001f52a Armas Brancas"],
+        )
+        self.assertEqual(
+            CATEGORIAS["\U0001f9f0 Kit de Desmanche"],
+            ["Kit de Desmanche"],
+        )
+
+    def test_initialize_moves_category_without_changing_stock(self):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "UPDATE bau_estoque "
+                "SET categoria='Categoria Antiga', quantidade=37 "
+                "WHERE produto='Kit de Desmanche'"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.repo.initialize()
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT categoria, quantidade FROM bau_estoque "
+                "WHERE produto='Kit de Desmanche'"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(row, ("\U0001f9f0 Kit de Desmanche", 37))
+
     def test_batch_is_atomic_when_one_withdrawal_is_insufficient(self):
         self.repo.apply_operation(
             "entrada",
