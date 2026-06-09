@@ -791,37 +791,51 @@ def db_set_painel_ranking(guild_id: str, channel_id: str, message_id: str, week_
     )
 
 
-# ── Heroína ───────────────────────────────────────────────────────────────────
+# ── Coletes ───────────────────────────────────────────────────────────────────
 
-def db_get_painel_heroina(guild_id: str) -> tuple[str | None, str | None]:
-    """Retorna (channel_id, message_id) do painel fixo de heroína."""
+def db_get_painel_colete(guild_id: str) -> tuple[str | None, str | None]:
+    """Retorna (channel_id, message_id) do painel fixo de coletes."""
     row = get_conn().execute(
-        "SELECT painel_heroina_channel_id, painel_heroina_message_id "
+        "SELECT painel_colete_channel_id, painel_colete_message_id "
         "FROM guild_config WHERE guild_id=?",
         (guild_id,),
     ).fetchone()
     if not row:
         return None, None
-    return row["painel_heroina_channel_id"], row["painel_heroina_message_id"]
+    return row["painel_colete_channel_id"], row["painel_colete_message_id"]
 
 
-def db_registrar_producao_heroina(
+def db_registrar_fabricacao_colete(
+    guild_id: str,
     user_id: str,
     user_name: str,
     quantidade: int,
-    opio: float,
-    agulha: float,
-    folha: float,
-    seringa: float,
-    custo: float,
+    ferro: int,
+    plastico: int,
+    tecido: int,
+    aluminio: int,
+    borracha: int,
+    custo: int,
 ):
     conn = get_conn()
     conn.execute(
-        """INSERT INTO producoes_heroina
-           (user_id, user_name, quantidade, opio, agulha, folha, seringa, custo, timestamp)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (user_id, user_name, quantidade, opio, agulha, folha, seringa, custo,
-         now_tz().isoformat()),
+        """INSERT INTO fabricacoes_colete
+           (guild_id, user_id, user_name, quantidade, ferro, plastico,
+            tecido, aluminio, borracha, custo, timestamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            guild_id,
+            user_id,
+            user_name,
+            quantidade,
+            ferro,
+            plastico,
+            tecido,
+            aluminio,
+            borracha,
+            custo,
+            now_tz().isoformat(),
+        ),
     )
     conn.commit()
 

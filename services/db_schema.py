@@ -84,16 +84,18 @@ CREATE TABLE IF NOT EXISTS eventos (
     agulha    INTEGER DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS producoes_heroina (
+CREATE TABLE IF NOT EXISTS fabricacoes_colete (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id   TEXT NOT NULL,
     user_id    TEXT NOT NULL,
     user_name  TEXT NOT NULL,
     quantidade INTEGER NOT NULL,
-    opio       REAL NOT NULL,
-    agulha     REAL NOT NULL,
-    folha      REAL NOT NULL,
-    seringa    REAL NOT NULL,
-    custo      REAL NOT NULL,
+    ferro      INTEGER NOT NULL,
+    plastico   INTEGER NOT NULL,
+    tecido     INTEGER NOT NULL,
+    aluminio   INTEGER NOT NULL,
+    borracha   INTEGER NOT NULL,
+    custo      INTEGER NOT NULL,
     timestamp  TEXT NOT NULL
 );
 
@@ -203,8 +205,8 @@ MIGRATIONS = (
     ("guild_config", "painel_set_channel_id", "TEXT"),
     ("guild_config", "painel_set_message_id", "TEXT"),
     ("guild_config", "canal_adv_id", "TEXT"),
-    ("guild_config", "painel_heroina_channel_id", "TEXT"),
-    ("guild_config", "painel_heroina_message_id", "TEXT"),
+    ("guild_config", "painel_colete_channel_id", "TEXT"),
+    ("guild_config", "painel_colete_message_id", "TEXT"),
     ("guild_config", "dashboard_channel_id", "TEXT"),
     ("guild_config", "dashboard_message_id", "TEXT"),
     ("guild_config", "canal_anuncio_id", "TEXT"),

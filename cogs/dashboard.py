@@ -8,7 +8,7 @@ Sistemas com modais especializados (campos extras além de canal_interacao/log):
   anuncio   → 3 campos (canal anúncio, log, cargos anunciantes)
 
 Sistemas com modal genérico (canal_interacao + canal_log):
-  meta, ausencia, encomenda, acao, hierarquia, adv, heroina
+  meta, ausencia, encomenda, acao, hierarquia, adv
 
 Para sistemas com dados em guild_config (ausencia, encomenda, adv, anuncio),
 o dashboard sincroniza automaticamente ao salvar.
@@ -56,7 +56,6 @@ SISTEMAS = [
     {"key": "anuncio",    "icon": "📢", "nome": "Sistema de Anúncio",    "desc": "Configure canal, log e cargos do sistema de anúncios."},
     {"key": "hierarquia", "icon": "👑", "nome": "Sistema de Hierarquia", "desc": "Configure o canal de hierarquia de cargos."},
     {"key": "adv",        "icon": "⚠️", "nome": "Sistema de Advertência","desc": "Configure o canal de advertências."},
-    {"key": "heroina",    "icon": "🧪", "nome": "Sistema de Heroína",    "desc": "Configure o canal de produção de heroína."},
 ]
 
 SISTEMAS_PAG1 = SISTEMAS[:7]

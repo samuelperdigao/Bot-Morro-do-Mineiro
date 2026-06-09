@@ -15,7 +15,7 @@ COG_EXTENSIONS = (
     "cogs.lideranca",
     "cogs.setup_lideranca",
     "cogs.adv",
-    "cogs.heroina",
+    "cogs.colete",
     "cogs.dashboard",
     "cogs.farm_painel",
     "cogs.ranking_painel",
