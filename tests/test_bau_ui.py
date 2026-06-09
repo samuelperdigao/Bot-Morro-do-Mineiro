@@ -1,9 +1,12 @@
 import unittest
 
+import discord
+
 from cogs.bau import (
     BauPainelView,
     MovementConfirmView,
     PREVIEW_PAGE_SIZE,
+    ProductActionView,
     UNDO_PAGE_SIZE,
     UndoView,
 )
@@ -20,7 +23,6 @@ class BauViewTests(unittest.IsolatedAsyncioTestCase):
             {
                 "bau:categoria_select",
                 "bau:lote_entrada",
-                "bau:lote_saida",
                 "bau:desfazer",
                 "bau:limpar",
             },
@@ -34,10 +36,21 @@ class BauViewTests(unittest.IsolatedAsyncioTestCase):
             buttons,
             {
                 "bau:lote_entrada": ("Adicionar Itens", 1),
-                "bau:lote_saida": ("Retirar Itens", 1),
                 "bau:desfazer": ("Desfazer A\u00e7\u00e3o", 2),
                 "bau:limpar": ("Zerar Estoque", 2),
             },
+        )
+        view.stop()
+
+    async def test_product_actions_use_only_entry_and_exit_buttons(self):
+        view = ProductActionView("Colete", 123)
+
+        self.assertEqual(
+            [(item.label, item.style) for item in view.children],
+            [
+                ("Entrada", discord.ButtonStyle.success),
+                ("Sa\u00edda", discord.ButtonStyle.danger),
+            ],
         )
         view.stop()
 

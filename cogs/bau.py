@@ -490,15 +490,42 @@ class CustomQuantityModal(discord.ui.Modal):
                 ephemeral=True,
             )
             return
-        view = MovementConfirmView(
-            self.movement_type,
-            [(self.product, int(raw))],
-            "personalizado",
-            interaction.user.id,
+        await interaction.response.defer(ephemeral=True)
+        try:
+            result = repo.apply_operation(
+                self.movement_type,
+                [(self.product, int(raw))],
+                str(interaction.user.id),
+                interaction.user.display_name,
+                "individual",
+            )
+        except StockInsufficientError as exc:
+            requested, available = exc.shortages[self.product]
+            await interaction.followup.send(
+                f"\u274c Estoque insuficiente! Disponivel: "
+                f"**{_format_number(available)}**; solicitado: "
+                f"**{_format_number(requested)}**.",
+                ephemeral=True,
+            )
+            return
+        except Exception:
+            log.error("Erro ao registrar movimentacao individual.", exc_info=True)
+            await interaction.followup.send(
+                "\u274c Erro ao registrar a movimentacao.",
+                ephemeral=True,
+            )
+            return
+
+        await _refresh_panel(interaction.client)
+        await _send_log(
+            interaction.client,
+            _build_operation_log_embeds(result, interaction.user),
         )
-        await interaction.response.send_message(
-            embed=view.embed(),
-            view=view,
+        line = result.lines[0]
+        await interaction.followup.send(
+            f"\u2705 **{_movement_label(result.tipo)}** de "
+            f"`{_format_number(line.quantidade)}x {line.produto}` registrada! "
+            f"Estoque atual: **{_format_number(line.estoque_depois)}**.",
             ephemeral=True,
         )
 
@@ -507,58 +534,34 @@ class ProductActionView(RequesterView):
     def __init__(self, product: str, requester_id: int) -> None:
         super().__init__(requester_id, timeout=180)
         self.product = product
-        for row, movement_type in enumerate(("entrada", "saida")):
-            prefix = "+" if movement_type == "entrada" else "-"
-            style = (
-                discord.ButtonStyle.success
-                if movement_type == "entrada"
-                else discord.ButtonStyle.danger
-            )
-            for quantity in (1, 10, 50, 100):
-                button = discord.ui.Button(
-                    label=f"{prefix}{quantity}",
-                    style=style,
-                    row=row,
-                )
-                button.callback = self._quick_callback(movement_type, quantity)
-                self.add_item(button)
 
-        entry_custom = discord.ui.Button(
-            label="+ Personalizado",
-            style=discord.ButtonStyle.success,
-            row=2,
+    @discord.ui.button(
+        label="Entrada",
+        emoji="\u2705",
+        style=discord.ButtonStyle.success,
+    )
+    async def entry(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.send_modal(
+            CustomQuantityModal("entrada", self.product)
         )
-        entry_custom.callback = self._custom_callback("entrada")
-        self.add_item(entry_custom)
-        exit_custom = discord.ui.Button(
-            label="- Personalizado",
-            style=discord.ButtonStyle.danger,
-            row=2,
+
+    @discord.ui.button(
+        label="Sa\u00edda",
+        emoji="\u274c",
+        style=discord.ButtonStyle.danger,
+    )
+    async def exit(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.send_modal(
+            CustomQuantityModal("saida", self.product)
         )
-        exit_custom.callback = self._custom_callback("saida")
-        self.add_item(exit_custom)
-
-    def _quick_callback(self, movement_type: str, quantity: int):
-        async def callback(interaction: discord.Interaction) -> None:
-            view = MovementConfirmView(
-                movement_type,
-                [(self.product, quantity)],
-                "rapido",
-                interaction.user.id,
-            )
-            await interaction.response.edit_message(
-                content=None,
-                embed=view.embed(),
-                view=view,
-            )
-        return callback
-
-    def _custom_callback(self, movement_type: str):
-        async def callback(interaction: discord.Interaction) -> None:
-            await interaction.response.send_modal(
-                CustomQuantityModal(movement_type, self.product)
-            )
-        return callback
 
 
 class ProductSelect(discord.ui.Select):
@@ -580,7 +583,7 @@ class ProductSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction) -> None:
         product = self.values[0]
         await interaction.response.edit_message(
-            content=f"\U0001f527 **{product}** - escolha a quantidade:",
+            content=f"\U0001f527 **{product}** - o que deseja fazer?",
             embed=None,
             view=ProductActionView(product, interaction.user.id),
         )
@@ -978,20 +981,6 @@ class BauPainelView(discord.ui.View):
         button: discord.ui.Button,
     ) -> None:
         await interaction.response.send_modal(BatchModal("entrada"))
-
-    @discord.ui.button(
-        label="Retirar Itens",
-        emoji="\u2796",
-        style=discord.ButtonStyle.danger,
-        custom_id="bau:lote_saida",
-        row=1,
-    )
-    async def batch_exit(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        await interaction.response.send_modal(BatchModal("saida"))
 
     @discord.ui.button(
         label="Desfazer A\u00e7\u00e3o",
