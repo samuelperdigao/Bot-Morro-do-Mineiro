@@ -965,8 +965,8 @@ class BauPainelView(discord.ui.View):
         self.add_item(CategorySelect())
 
     @discord.ui.button(
-        label="Entrada em lote",
-        emoji="\U0001f4e5",
+        label="Adicionar Itens",
+        emoji="\u2795",
         style=discord.ButtonStyle.success,
         custom_id="bau:lote_entrada",
         row=1,
@@ -979,8 +979,8 @@ class BauPainelView(discord.ui.View):
         await interaction.response.send_modal(BatchModal("entrada"))
 
     @discord.ui.button(
-        label="Retirada em lote",
-        emoji="\U0001f4e4",
+        label="Retirar Itens",
+        emoji="\u2796",
         style=discord.ButtonStyle.danger,
         custom_id="bau:lote_saida",
         row=1,
@@ -993,7 +993,7 @@ class BauPainelView(discord.ui.View):
         await interaction.response.send_modal(BatchModal("saida"))
 
     @discord.ui.button(
-        label="Desfazer",
+        label="Desfazer A\u00e7\u00e3o",
         emoji="\u21a9\ufe0f",
         style=discord.ButtonStyle.secondary,
         custom_id="bau:desfazer",
@@ -1019,8 +1019,8 @@ class BauPainelView(discord.ui.View):
         )
 
     @discord.ui.button(
-        label="Limpar Bau",
-        emoji="\U0001f5d1\ufe0f",
+        label="Zerar Estoque",
+        emoji="\u26a0\ufe0f",
         style=discord.ButtonStyle.danger,
         custom_id="bau:limpar",
         row=2,

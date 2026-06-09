@@ -25,6 +25,20 @@ class BauViewTests(unittest.IsolatedAsyncioTestCase):
                 "bau:limpar",
             },
         )
+        buttons = {
+            item.custom_id: (item.label, item.row)
+            for item in view.children
+            if item.custom_id != "bau:categoria_select"
+        }
+        self.assertEqual(
+            buttons,
+            {
+                "bau:lote_entrada": ("Adicionar Itens", 1),
+                "bau:lote_saida": ("Retirar Itens", 1),
+                "bau:desfazer": ("Desfazer A\u00e7\u00e3o", 2),
+                "bau:limpar": ("Zerar Estoque", 2),
+            },
+        )
         view.stop()
 
     async def test_complete_catalog_preview_is_paginated(self):
