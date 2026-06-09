@@ -23,6 +23,9 @@ CATEGORIAS = {
         "Capuz", "Colete", "Algema", "Nitro", "Chimas", "Vaselina",
         "Pager", "Tesoura",
     ],
+    "\U0001f9f1 Materiais": [
+        "Alum\u00ednio", "Cobre", "Borracha", "Pl\u00e1stico", "Ferro", "Tecido",
+    ],
     "\U0001f52b Municoes": ["5mm", "9mm", "762mm", "12cbc"],
     "\U0001f527 Attachs": [
         "Clip Extendido", "Supressor", "Compensador",
@@ -54,6 +57,8 @@ CATEGORIAS = {
     "\U0001f31f Outros": ["FN Fal", "Arco", "Flecha", "M16"],
     "\U0001f4b0 Dinheiro": ["Dinheiro", "Dinheiro Sujo"],
 }
+
+TOTAL_PRODUTOS = sum(len(produtos) for produtos in CATEGORIAS.values())
 
 PRODUTO_CATEGORIA = {
     produto: categoria

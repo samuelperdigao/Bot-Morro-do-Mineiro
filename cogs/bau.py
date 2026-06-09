@@ -19,6 +19,7 @@ from cogs.bau_core import (
     OperationResult,
     StaleOperationError,
     StockInsufficientError,
+    TOTAL_PRODUTOS,
     UndoOperation,
     UndoResult,
     agora_str,
@@ -1034,7 +1035,7 @@ class BauPainelView(discord.ui.View):
             title="\u26a0\ufe0f Zerar todo o Bau?",
             description=(
                 "Esta acao vai:\n"
-                "\u2022 definir **todos os 78 produtos como zero**;\n"
+                f"\u2022 definir **todos os {TOTAL_PRODUTOS} produtos como zero**;\n"
                 "\u2022 apagar **todo o historico anterior**;\n"
                 "\u2022 limpar recentes, favoritos e operacoes para desfazer.\n\n"
                 "**Esta acao nao pode ser desfeita.**"

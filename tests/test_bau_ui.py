@@ -7,7 +7,7 @@ from cogs.bau import (
     UNDO_PAGE_SIZE,
     UndoView,
 )
-from cogs.bau_core import UndoOperation
+from cogs.bau_core import TOTAL_PRODUTOS, UndoOperation
 
 
 class BauViewTests(unittest.IsolatedAsyncioTestCase):
@@ -42,7 +42,7 @@ class BauViewTests(unittest.IsolatedAsyncioTestCase):
         view.stop()
 
     async def test_complete_catalog_preview_is_paginated(self):
-        items = [(f"Produto {index}", 1) for index in range(78)]
+        items = [(f"Produto {index}", 1) for index in range(TOTAL_PRODUTOS)]
         view = MovementConfirmView("entrada", items, "lote", 1)
 
         self.assertEqual(PREVIEW_PAGE_SIZE, 15)
@@ -57,7 +57,10 @@ class BauViewTests(unittest.IsolatedAsyncioTestCase):
             "entrada",
             "lote",
             "09/06/2026 12:00:00",
-            tuple((f"Produto {index}", 1) for index in range(78)),
+            tuple(
+                (f"Produto {index}", 1)
+                for index in range(TOTAL_PRODUTOS)
+            ),
         )
         view = UndoView(operation, 1)
         select = next(

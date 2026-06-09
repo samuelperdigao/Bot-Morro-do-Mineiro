@@ -9,6 +9,7 @@ from cogs.bau_core import (
     BauRepository,
     StaleOperationError,
     StockInsufficientError,
+    TOTAL_PRODUTOS,
     parse_batch_text,
 )
 
@@ -50,7 +51,7 @@ class BauParserTests(unittest.TestCase):
         )
 
         self.assertTrue(result.valid)
-        self.assertEqual(len(result.items), 78)
+        self.assertEqual(len(result.items), TOTAL_PRODUTOS)
 
 
 class BauRepositoryTests(unittest.TestCase):
@@ -64,8 +65,17 @@ class BauRepositoryTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_initialize_seeds_all_products(self):
-        self.assertEqual(len(self.repo.get_stock()), 78)
+        self.assertEqual(len(self.repo.get_stock()), TOTAL_PRODUTOS)
         self.assertTrue(all(value == 0 for value in self.repo.get_stock().values()))
+
+    def test_materials_are_seeded_in_their_own_category(self):
+        expected = {
+            "Alum\u00ednio", "Cobre", "Borracha",
+            "Pl\u00e1stico", "Ferro", "Tecido",
+        }
+
+        self.assertEqual(set(CATEGORIAS["\U0001f9f1 Materiais"]), expected)
+        self.assertTrue(expected.issubset(self.repo.get_stock()))
 
     def test_batch_is_atomic_when_one_withdrawal_is_insufficient(self):
         self.repo.apply_operation(
