@@ -4,15 +4,19 @@ from types import SimpleNamespace
 import discord
 
 from cogs.bau import (
+    _parse_category_quantity,
     _build_operation_log_embeds,
     BauPainelView,
-    MovementConfirmView,
-    PREVIEW_PAGE_SIZE,
-    ProductActionView,
+    CategoryConfirmView,
+    CategoryQuantityModal,
+    CategorySession,
+    CategorySelect,
+    CATEGORY_PAGE_SIZE,
     UNDO_PAGE_SIZE,
     UndoView,
 )
 from cogs.bau_core import (
+    CATEGORIAS,
     MovementLine,
     OperationResult,
     TOTAL_PRODUTOS,
@@ -59,11 +63,11 @@ class BauViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(embed.fields[2].value, "64 unidades")
         self.assertEqual(embed.fields[3].value, "09/06/2026 12:19:35")
 
-    async def test_batch_log_remains_grouped(self):
+    async def test_category_log_creates_classic_embed_per_product(self):
         result = OperationResult(
             "operation-id",
             "entrada",
-            "lote",
+            "categoria",
             "123",
             "Gerente",
             "09/06/2026 12:19:35",
@@ -76,8 +80,9 @@ class BauViewTests(unittest.IsolatedAsyncioTestCase):
 
         embeds = _build_operation_log_embeds(result, user)
 
-        self.assertEqual(embeds[0].title, "Entrada no Bau")
-        self.assertIn("Operacao:", embeds[0].description)
+        self.assertEqual(len(embeds), 2)
+        self.assertEqual(embeds[0].title, "\U0001f7e2 Entrada \u2014 Colete")
+        self.assertEqual(embeds[1].title, "\U0001f7e2 Entrada \u2014 5mm")
 
     async def test_main_panel_has_all_persistent_actions(self):
         view = BauPainelView()
@@ -87,7 +92,6 @@ class BauViewTests(unittest.IsolatedAsyncioTestCase):
             custom_ids,
             {
                 "bau:categoria_select",
-                "bau:lote_entrada",
                 "bau:desfazer",
                 "bau:limpar",
             },
@@ -100,31 +104,80 @@ class BauViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             buttons,
             {
-                "bau:lote_entrada": ("Adicionar", 1),
                 "bau:desfazer": ("Desfazer", 1),
                 "bau:limpar": ("Zerar", 1),
             },
         )
         view.stop()
 
-    async def test_product_actions_use_only_entry_and_exit_buttons(self):
-        view = ProductActionView("Colete", 123)
+    async def test_category_select_contains_only_real_categories(self):
+        select = CategorySelect()
 
         self.assertEqual(
-            [(item.label, item.style) for item in view.children],
-            [
-                ("Entrada", discord.ButtonStyle.success),
-                ("Sa\u00edda", discord.ButtonStyle.danger),
-            ],
+            [option.value for option in select.options],
+            list(CATEGORIAS),
         )
-        view.stop()
 
-    async def test_complete_catalog_preview_is_paginated(self):
-        items = [(f"Produto {index}", 1) for index in range(TOTAL_PRODUTOS)]
-        view = MovementConfirmView("entrada", items, "lote", 1)
+    async def test_category_pages_cover_supported_category_sizes(self):
+        self.assertEqual(CATEGORY_PAGE_SIZE, 5)
+        for product_count, expected_pages in (
+            (1, 1),
+            (4, 1),
+            (5, 1),
+            (6, 2),
+            (11, 3),
+            (16, 4),
+        ):
+            session = CategorySession(
+                "Teste",
+                "entrada",
+                123,
+                tuple(f"Produto {index}" for index in range(product_count)),
+            )
+            self.assertEqual(session.page_count, expected_pages)
+            for page in range(expected_pages):
+                session.page = page
+                modal = CategoryQuantityModal(session)
+                self.assertLessEqual(len(modal.children), 5)
+                modal.stop()
 
-        self.assertEqual(PREVIEW_PAGE_SIZE, 15)
-        self.assertEqual(view.total_pages, 6)
+    async def test_opening_next_modal_does_not_advance_session_before_submit(self):
+        session = CategorySession(
+            "Teste",
+            "entrada",
+            123,
+            tuple(f"Produto {index}" for index in range(6)),
+        )
+
+        modal = CategoryQuantityModal(session, 1)
+
+        self.assertEqual(session.page, 0)
+        self.assertEqual(modal.page, 1)
+        self.assertEqual(len(modal.children), 1)
+        modal.stop()
+
+    async def test_zero_and_empty_values_remove_session_quantity(self):
+        self.assertEqual(_parse_category_quantity(""), 0)
+        self.assertEqual(_parse_category_quantity("0"), 0)
+        self.assertEqual(_parse_category_quantity("1.000"), 1000)
+        self.assertEqual(_parse_category_quantity("1,000"), 1000)
+        self.assertEqual(_parse_category_quantity("1 000"), 1000)
+        with self.assertRaises(ValueError):
+            _parse_category_quantity("-10")
+
+        session = CategorySession("Teste", "entrada", 123, ("5mm",))
+        session.quantities["5mm"] = 10
+        if _parse_category_quantity("0") == 0:
+            session.quantities.pop("5mm", None)
+        self.assertEqual(session.items(), [])
+
+    async def test_category_preview_is_paginated_for_sixteen_items(self):
+        products = tuple(f"Produto {index}" for index in range(16))
+        session = CategorySession("Teste", "entrada", 123, products)
+        session.quantities.update({product: 1 for product in products})
+        view = CategoryConfirmView(session)
+
+        self.assertEqual(view.page_count, 2)
         self.assertTrue(view.previous.disabled)
         self.assertFalse(view.next.disabled)
         view.stop()

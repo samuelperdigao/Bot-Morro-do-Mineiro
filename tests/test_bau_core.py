@@ -133,6 +133,76 @@ class BauRepositoryTests(unittest.TestCase):
         self.assertEqual(stock["Colete"], 10)
         self.assertEqual(stock["5mm"], 20)
 
+    def test_category_withdrawal_applies_valid_and_skips_insufficient(self):
+        self.repo.apply_operation(
+            "entrada",
+            [("5mm", 20), ("9mm", 5)],
+            "1",
+            "Teste",
+            "individual",
+        )
+
+        result = self.repo.apply_category_operation(
+            "saida",
+            [("5mm", 10), ("9mm", 8)],
+            "1",
+            "Teste",
+            "category-op",
+            self.repo.get_generation(),
+        )
+
+        self.assertEqual(
+            [(line.produto, line.quantidade) for line in result.operation.lines],
+            [("5mm", 10)],
+        )
+        self.assertEqual(result.skipped, (("9mm", 8, 5),))
+        self.assertEqual(self.repo.get_quantity("5mm"), 10)
+        self.assertEqual(self.repo.get_quantity("9mm"), 5)
+
+    def test_category_entry_is_grouped_for_undo(self):
+        result = self.repo.apply_category_operation(
+            "entrada",
+            [("5mm", 100), ("9mm", 50)],
+            "owner",
+            "Owner",
+            "category-entry",
+            self.repo.get_generation(),
+        )
+
+        self.assertEqual(len(result.operation.lines), 2)
+        operation = self.repo.get_last_undoable_operation("owner")
+        self.assertIsNotNone(operation)
+        self.assertEqual(operation.operation_id, "category-entry")
+        self.assertEqual(operation.items, (("5mm", 100), ("9mm", 50)))
+
+    def test_concurrent_category_withdrawals_never_make_stock_negative(self):
+        self.repo.apply_operation(
+            "entrada",
+            [("5mm", 10)],
+            "1",
+            "Teste",
+            "individual",
+        )
+        generation = self.repo.get_generation()
+
+        def withdraw(operation_id):
+            return self.repo.apply_category_operation(
+                "saida",
+                [("5mm", 7)],
+                operation_id,
+                operation_id,
+                operation_id,
+                generation,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(withdraw, ("category-a", "category-b")))
+
+        applied = sum(len(result.operation.lines) for result in results)
+        skipped = sum(len(result.skipped) for result in results)
+        self.assertEqual((applied, skipped), (1, 1))
+        self.assertEqual(self.repo.get_quantity("5mm"), 3)
+
     def test_concurrent_withdrawals_never_make_stock_negative(self):
         self.repo.apply_operation(
             "entrada",

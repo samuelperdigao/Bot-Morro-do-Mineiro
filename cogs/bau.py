@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import discord
@@ -18,12 +20,10 @@ from cogs.bau_core import (
     MovementLine,
     OperationResult,
     StaleOperationError,
-    StockInsufficientError,
     TOTAL_PRODUTOS,
     UndoOperation,
     UndoResult,
     agora_str,
-    parse_batch_text,
 )
 from core.logger import get_logger
 
@@ -38,6 +38,7 @@ CANAL_BAU_ID = 1474869322387292357
 CANAL_LOG_ID = 1499589255784173678
 
 PREVIEW_PAGE_SIZE = 15
+CATEGORY_PAGE_SIZE = 5
 UNDO_PAGE_SIZE = 25
 repo = BauRepository(DB_PATH)
 
@@ -67,22 +68,13 @@ def _movement_label(movement_type: str) -> str:
     return "Entrada" if movement_type == "entrada" else "Retirada"
 
 
-def _origin_label(origin: str) -> str:
-    return {
-        "rapido": "Movimentacao rapida",
-        "personalizado": "Quantidade personalizada",
-        "lote": "Movimentacao em lote",
-        "individual": "Movimentacao individual",
-    }.get(origin, origin.title())
-
-
 def _build_painel_embed() -> discord.Embed:
     stock = repo.get_stock()
     embed = discord.Embed(
         title="\U0001f3e6 Bau da Gerencia",
         description=(
-            "Selecione uma categoria ou use os botoes para movimentacoes em lote, "
-            "desfazer e zerar o estoque."
+            "Selecione uma categoria para adicionar ou retirar varios produtos "
+            "de uma vez."
         ),
         color=discord.Color.dark_gold(),
     )
@@ -99,74 +91,9 @@ def _build_painel_embed() -> discord.Embed:
     if not has_items:
         embed.description = (
             "*Nenhum item no bau no momento.*\n\n"
-            "Use o seletor ou os botoes de entrada para iniciar a atualizacao."
+            "Selecione uma categoria para iniciar a atualizacao."
         )
     embed.set_footer(text=f"Ultima atualizacao: {agora_str()} (Brasilia)")
-    return embed
-
-
-def _build_preview_embed(
-    movement_type: str,
-    items: list[tuple[str, int]],
-    page: int,
-    origin: str,
-) -> discord.Embed:
-    stock = repo.get_stock()
-    total_pages = max(1, math.ceil(len(items) / PREVIEW_PAGE_SIZE))
-    page = max(0, min(page, total_pages - 1))
-    start = page * PREVIEW_PAGE_SIZE
-    page_items = items[start:start + PREVIEW_PAGE_SIZE]
-    sign = 1 if movement_type == "entrada" else -1
-    color = discord.Color.green() if sign == 1 else discord.Color.red()
-    embed = discord.Embed(
-        title=f"Confirmar {_movement_label(movement_type)}",
-        description=(
-            f"Origem: **{_origin_label(origin)}**\n"
-            "Confira o estoque antes e depois. Nada foi alterado ainda."
-        ),
-        color=color,
-    )
-    for product, quantity in page_items:
-        before = stock.get(product, 0)
-        after = before + (sign * quantity)
-        warning = " \u26a0\ufe0f" if after < 0 else ""
-        embed.add_field(
-            name=product,
-            value=(
-                f"Quantidade: **{_format_number(quantity)}**\n"
-                f"`{_format_number(before)} -> {_format_number(after)}`{warning}"
-            ),
-            inline=True,
-        )
-    embed.set_footer(
-        text=f"Pagina {page + 1}/{total_pages} | {len(items)} produto(s)"
-    )
-    return embed
-
-
-def _build_parse_error_embed(issues) -> discord.Embed:
-    embed = discord.Embed(
-        title="\u274c Lote nao reconhecido",
-        description=(
-            "Corrija as linhas abaixo e abra o lote novamente. "
-            "Nenhum produto foi movimentado."
-        ),
-        color=discord.Color.red(),
-    )
-    lines = []
-    for issue in issues[:15]:
-        prefix = f"Linha {issue.line_number}" if issue.line_number else "Lote"
-        detail = f"**{prefix}:** {issue.message}"
-        if issue.raw_line:
-            detail += f"\n`{issue.raw_line[:120]}`"
-        if issue.suggestions:
-            detail += "\nSugestao: " + ", ".join(
-                f"`{suggestion}`" for suggestion in issue.suggestions
-            )
-        lines.append(detail)
-    embed.description = (embed.description + "\n\n" + "\n\n".join(lines))[:4096]
-    if len(issues) > 15:
-        embed.set_footer(text=f"Mais {len(issues) - 15} erro(s) nao exibido(s).")
     return embed
 
 
@@ -179,8 +106,8 @@ def _build_operation_log_embeds(
     result: OperationResult,
     user: discord.abc.User,
 ) -> list[discord.Embed]:
-    if len(result.lines) == 1 and result.origem != "lote":
-        line = result.lines[0]
+    embeds: list[discord.Embed] = []
+    for line in result.lines:
         is_entry = result.tipo == "entrada"
         title_prefix = "\U0001f7e2 Entrada" if is_entry else "\U0001f534 Sa\u00edda"
         quantity_prefix = "+" if is_entry else "-"
@@ -207,36 +134,6 @@ def _build_operation_log_embeds(
             name="\U0001f550 Hor\u00e1rio",
             value=result.criado_em,
             inline=False,
-        )
-        return [embed]
-
-    chunks = list(_chunk_lines(result.lines))
-    embeds: list[discord.Embed] = []
-    sign = "+" if result.tipo == "entrada" else "-"
-    color = discord.Color.green() if result.tipo == "entrada" else discord.Color.red()
-    for page, chunk in enumerate(chunks, start=1):
-        embed = discord.Embed(
-            title=f"{_movement_label(result.tipo)} no Bau",
-            color=color,
-        )
-        if page == 1:
-            embed.description = (
-                f"Usuario: **{user.display_name}** (`{user.id}`)\n"
-                f"Origem: **{_origin_label(result.origem)}**\n"
-                f"Operacao: `{result.operation_id}`"
-            )
-        for line in chunk:
-            embed.add_field(
-                name=line.produto,
-                value=(
-                    f"{sign}{_format_number(line.quantidade)}\n"
-                    f"`{_format_number(line.estoque_antes)} -> "
-                    f"{_format_number(line.estoque_depois)}`"
-                ),
-                inline=True,
-            )
-        embed.set_footer(
-            text=f"{result.criado_em} | Pagina {page}/{len(chunks)}"
         )
         embeds.append(embed)
     return embeds
@@ -338,38 +235,331 @@ class RequesterView(discord.ui.View):
         return False
 
 
-class MovementConfirmView(RequesterView):
+def _parse_category_quantity(raw: str) -> int:
+    value = raw.strip()
+    if not value:
+        return 0
+    if not re.fullmatch(r"[\d\s.,]+", value):
+        raise ValueError("Use somente numeros inteiros positivos.")
+    digits = re.sub(r"[\s.,]", "", value)
+    if not digits.isdigit():
+        raise ValueError("Use somente numeros inteiros positivos.")
+    return int(digits)
+
+
+@dataclass
+class CategorySession:
+    category: str
+    movement_type: str
+    requester_id: int
+    products: tuple[str, ...]
+    quantities: dict[str, int] = field(default_factory=dict)
+    page: int = 0
+    operation_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    generation: int = field(default_factory=repo.get_generation)
+
+    @property
+    def page_count(self) -> int:
+        return max(1, math.ceil(len(self.products) / CATEGORY_PAGE_SIZE))
+
+    def page_products(self, page: int | None = None) -> tuple[str, ...]:
+        selected_page = self.page if page is None else page
+        start = selected_page * CATEGORY_PAGE_SIZE
+        return self.products[start:start + CATEGORY_PAGE_SIZE]
+
+    def items(self) -> list[tuple[str, int]]:
+        return [
+            (product, self.quantities[product])
+            for product in self.products
+            if self.quantities.get(product, 0) > 0
+        ]
+
+
+def _build_category_page_embed(session: CategorySession) -> discord.Embed:
+    stock = repo.get_stock()
+    lines = []
+    for product in session.page_products():
+        quantity = session.quantities.get(product, 0)
+        informed = (
+            f"**{_format_number(quantity)}**"
+            if quantity > 0
+            else "*nao informado*"
+        )
+        lines.append(
+            f"\u2022 **{product}**: {informed} "
+            f"(estoque: {_format_number(stock.get(product, 0))})"
+        )
+    embed = discord.Embed(
+        title=f"{_movement_label(session.movement_type)} - {session.category}",
+        description="\n".join(lines),
+        color=(
+            discord.Color.green()
+            if session.movement_type == "entrada"
+            else discord.Color.red()
+        ),
+    )
+    embed.set_footer(
+        text=(
+            f"Pagina {session.page + 1}/{session.page_count} | "
+            f"{len(session.items())} produto(s) preenchido(s)"
+        )
+    )
+    return embed
+
+
+def _build_category_preview_embed(
+    session: CategorySession,
+    page: int,
+) -> discord.Embed:
+    items = session.items()
+    stock = repo.get_stock()
+    page_count = max(1, math.ceil(len(items) / PREVIEW_PAGE_SIZE))
+    page = max(0, min(page, page_count - 1))
+    start = page * PREVIEW_PAGE_SIZE
+    page_items = items[start:start + PREVIEW_PAGE_SIZE]
+    is_entry = session.movement_type == "entrada"
+    embed = discord.Embed(
+        title=f"Confirmar {_movement_label(session.movement_type)}",
+        description=(
+            f"Categoria: **{session.category}**\n"
+            "Confira os valores antes de confirmar."
+        ),
+        color=discord.Color.green() if is_entry else discord.Color.red(),
+    )
+    for product, quantity in page_items:
+        before = stock.get(product, 0)
+        insufficient = not is_entry and before < quantity
+        after = before + quantity if is_entry else before - quantity
+        value = (
+            f"Quantidade: **{_format_number(quantity)}**\n"
+            f"`{_format_number(before)} -> {_format_number(after)}`"
+        )
+        if insufficient:
+            value += "\n\u26a0\ufe0f *Sera ignorado por falta de estoque*"
+        embed.add_field(name=product, value=value, inline=True)
+    embed.set_footer(
+        text=f"Pagina {page + 1}/{page_count} | {len(items)} produto(s)"
+    )
+    return embed
+
+
+class CategoryQuantityModal(discord.ui.Modal):
     def __init__(
         self,
-        movement_type: str,
-        items: list[tuple[str, int]],
-        origin: str,
-        requester_id: int,
-        operation_id: str | None = None,
+        session: CategorySession,
+        page: int | None = None,
     ) -> None:
-        super().__init__(requester_id)
-        self.movement_type = movement_type
-        self.items = items
-        self.origin = origin
-        self.operation_id = operation_id or uuid.uuid4().hex
-        self.generation = repo.get_generation()
+        self.page = session.page if page is None else page
+        super().__init__(
+            title=(
+                f"{_movement_label(session.movement_type)} "
+                f"{self.page + 1}/{session.page_count}"
+            )[:45]
+        )
+        self.session = session
+        self.inputs: list[tuple[str, discord.ui.TextInput]] = []
+        stock = repo.get_stock()
+        for product in session.page_products(self.page):
+            current = session.quantities.get(product, 0)
+            text_input = discord.ui.TextInput(
+                label=product[:45],
+                placeholder=(
+                    f"Estoque atual: {_format_number(stock.get(product, 0))}"
+                ),
+                default=str(current) if current > 0 else None,
+                required=False,
+                max_length=12,
+            )
+            self.inputs.append((product, text_input))
+            self.add_item(text_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        parsed: dict[str, int] = {}
+        errors: list[str] = []
+        for product, text_input in self.inputs:
+            try:
+                parsed[product] = _parse_category_quantity(
+                    str(text_input.value)
+                )
+            except ValueError:
+                errors.append(product)
+
+        if errors:
+            await interaction.response.edit_message(
+                content=(
+                    "\u274c Quantidade invalida em: "
+                    + ", ".join(f"**{product}**" for product in errors)
+                    + ". Use apenas numeros inteiros positivos."
+                ),
+                embed=_build_category_page_embed(self.session),
+                view=CategoryPageView(self.session),
+            )
+            return
+
+        for product, quantity in parsed.items():
+            if quantity > 0:
+                self.session.quantities[product] = quantity
+            else:
+                self.session.quantities.pop(product, None)
+        self.session.page = self.page
+
+        await interaction.response.edit_message(
+            content="\u2705 Pagina salva.",
+            embed=_build_category_page_embed(self.session),
+            view=CategoryPageView(self.session),
+        )
+
+
+class CategoryMovementView(RequesterView):
+    def __init__(self, category: str, requester_id: int) -> None:
+        super().__init__(requester_id, timeout=300)
+        self.category = category
+
+    async def _start(
+        self,
+        interaction: discord.Interaction,
+        movement_type: str,
+    ) -> None:
+        session = CategorySession(
+            self.category,
+            movement_type,
+            interaction.user.id,
+            tuple(CATEGORIAS[self.category]),
+        )
+        await interaction.response.send_modal(CategoryQuantityModal(session))
+
+    @discord.ui.button(
+        label="Entrada",
+        emoji="\u2705",
+        style=discord.ButtonStyle.success,
+    )
+    async def entry(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await self._start(interaction, "entrada")
+
+    @discord.ui.button(
+        label="Retirada",
+        emoji="\u274c",
+        style=discord.ButtonStyle.danger,
+    )
+    async def exit(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await self._start(interaction, "saida")
+
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
+    async def cancel(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.edit_message(
+            content="Lancamento cancelado.",
+            embed=None,
+            view=None,
+        )
+        self.stop()
+
+
+class CategoryPageView(RequesterView):
+    def __init__(self, session: CategorySession) -> None:
+        super().__init__(session.requester_id, timeout=600)
+        self.session = session
+        self.previous.disabled = session.page == 0
+        self.next.disabled = session.page >= session.page_count - 1
+
+    @discord.ui.button(label="Anterior", style=discord.ButtonStyle.secondary)
+    async def previous(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.send_modal(
+            CategoryQuantityModal(self.session, self.session.page - 1)
+        )
+
+    @discord.ui.button(label="Editar pagina", style=discord.ButtonStyle.primary)
+    async def edit_page(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.send_modal(
+            CategoryQuantityModal(self.session)
+        )
+
+    @discord.ui.button(label="Proxima", style=discord.ButtonStyle.secondary)
+    async def next(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.send_modal(
+            CategoryQuantityModal(self.session, self.session.page + 1)
+        )
+
+    @discord.ui.button(label="Revisar", style=discord.ButtonStyle.success)
+    async def review(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        if not self.session.items():
+            await interaction.response.send_message(
+                "\u274c Informe ao menos uma quantidade antes de revisar.",
+                ephemeral=True,
+            )
+            return
+        view = CategoryConfirmView(self.session)
+        await interaction.response.edit_message(
+            content=None,
+            embed=view.embed(),
+            view=view,
+        )
+
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.danger)
+    async def cancel(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.edit_message(
+            content="Lancamento cancelado. Nenhum item foi alterado.",
+            embed=None,
+            view=None,
+        )
+        self.stop()
+
+
+class CategoryConfirmView(RequesterView):
+    def __init__(self, session: CategorySession) -> None:
+        super().__init__(session.requester_id, timeout=600)
+        self.session = session
         self.page = 0
-        self.total_pages = max(1, math.ceil(len(items) / PREVIEW_PAGE_SIZE))
-        self._sync_buttons()
+        self.page_count = max(
+            1,
+            math.ceil(len(session.items()) / PREVIEW_PAGE_SIZE),
+        )
+        self.previous.disabled = True
+        self.next.disabled = self.page_count == 1
 
     def embed(self) -> discord.Embed:
-        return _build_preview_embed(
-            self.movement_type,
-            self.items,
-            self.page,
-            self.origin,
-        )
+        return _build_category_preview_embed(self.session, self.page)
 
     def _sync_buttons(self) -> None:
         self.previous.disabled = self.page == 0
-        self.next.disabled = self.page >= self.total_pages - 1
+        self.next.disabled = self.page >= self.page_count - 1
 
-    @discord.ui.button(label="Anterior", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(
+        label="Anterior",
+        style=discord.ButtonStyle.secondary,
+        row=0,
+    )
     async def previous(
         self,
         interaction: discord.Interaction,
@@ -379,7 +569,11 @@ class MovementConfirmView(RequesterView):
         self._sync_buttons()
         await interaction.response.edit_message(embed=self.embed(), view=self)
 
-    @discord.ui.button(label="Proxima", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(
+        label="Proxima",
+        style=discord.ButtonStyle.secondary,
+        row=0,
+    )
     async def next(
         self,
         interaction: discord.Interaction,
@@ -400,42 +594,22 @@ class MovementConfirmView(RequesterView):
         button: discord.ui.Button,
     ) -> None:
         await interaction.response.edit_message(
-            content="Processando movimentacao...",
+            content="Processando lancamento...",
             embed=None,
             view=None,
         )
         try:
-            result = repo.apply_operation(
-                self.movement_type,
-                self.items,
+            result = repo.apply_category_operation(
+                self.session.movement_type,
+                self.session.items(),
                 str(interaction.user.id),
                 interaction.user.display_name,
-                self.origin,
-                self.operation_id,
-                self.generation,
+                self.session.operation_id,
+                self.session.generation,
             )
-        except StockInsufficientError as exc:
-            shortages = "\n".join(
-                f"\u2022 **{product}**: solicitado {_format_number(requested)}, "
-                f"disponivel {_format_number(available)}"
-                for product, (requested, available) in exc.shortages.items()
-            )
-            await interaction.edit_original_response(
-                content=None,
-                embed=discord.Embed(
-                    title="\u274c Estoque insuficiente",
-                    description=(
-                        "A operacao inteira foi cancelada. Nenhum item foi alterado.\n\n"
-                        + shortages
-                    ),
-                    color=discord.Color.red(),
-                ),
-                view=None,
-            )
-            return
         except DuplicateOperationError:
             await interaction.edit_original_response(
-                content="\u26a0\ufe0f Esta operacao ja foi processada.",
+                content="\u26a0\ufe0f Este lancamento ja foi processado.",
                 embed=None,
                 view=None,
             )
@@ -443,41 +617,73 @@ class MovementConfirmView(RequesterView):
         except StaleOperationError:
             await interaction.edit_original_response(
                 content=(
-                    "\u26a0\ufe0f O bau foi zerado depois que esta confirmacao "
-                    "foi aberta. Abra uma nova movimentacao."
+                    "\u26a0\ufe0f O bau foi zerado depois que este lancamento "
+                    "foi iniciado. Comece novamente."
                 ),
                 embed=None,
                 view=None,
             )
             return
         except Exception:
-            log.error("Erro ao movimentar o bau.", exc_info=True)
+            log.error("Erro ao processar categoria do bau.", exc_info=True)
             await interaction.edit_original_response(
-                content="\u274c Erro ao registrar a movimentacao.",
+                content="\u274c Erro ao registrar o lancamento.",
                 embed=None,
                 view=None,
             )
             return
 
-        await _refresh_panel(interaction.client)
-        await _send_log(
-            interaction.client,
-            _build_operation_log_embeds(result, interaction.user),
+        operation = result.operation
+        if operation.lines:
+            await _refresh_panel(interaction.client)
+            await _send_log(
+                interaction.client,
+                _build_operation_log_embeds(operation, interaction.user),
+            )
+
+        description = (
+            f"\u2705 **{len(operation.lines)}** produto(s) registrado(s)."
+            if operation.lines
+            else "\u26a0\ufe0f Nenhum produto foi registrado."
         )
+        if result.skipped:
+            skipped_lines = "\n".join(
+                f"\u2022 **{product}**: solicitado "
+                f"{_format_number(quantity)}, disponivel "
+                f"{_format_number(available)}"
+                for product, quantity, available in result.skipped
+            )
+            description += (
+                "\n\n**Ignorados por falta de estoque:**\n" + skipped_lines
+            )
         await interaction.edit_original_response(
             content=None,
             embed=discord.Embed(
-                title="\u2705 Movimentacao registrada",
-                description=(
-                    f"**{_movement_label(result.tipo)}** concluida para "
-                    f"**{len(result.lines)} produto(s)**.\n"
-                    f"Operacao: `{result.operation_id}`"
+                title="Resultado do lancamento",
+                description=description,
+                color=(
+                    discord.Color.green()
+                    if operation.lines
+                    else discord.Color.gold()
                 ),
-                color=discord.Color.green(),
             ),
             view=None,
         )
         self.stop()
+
+    @discord.ui.button(
+        label="Voltar aos formularios",
+        style=discord.ButtonStyle.primary,
+        row=1,
+    )
+    async def back(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.send_modal(
+            CategoryQuantityModal(self.session, 0)
+        )
 
     @discord.ui.button(
         label="Cancelar",
@@ -490,226 +696,31 @@ class MovementConfirmView(RequesterView):
         button: discord.ui.Button,
     ) -> None:
         await interaction.response.edit_message(
-            content="Movimentacao cancelada. Nenhum item foi alterado.",
+            content="Lancamento cancelado. Nenhum item foi alterado.",
             embed=None,
             view=None,
         )
         self.stop()
 
 
-class CustomQuantityModal(discord.ui.Modal):
-    quantity = discord.ui.TextInput(
-        label="Quantidade",
-        placeholder="Ex: 1000",
-        min_length=1,
-        max_length=12,
-        required=True,
-    )
-
-    def __init__(self, movement_type: str, product: str) -> None:
-        super().__init__(
-            title=f"{_movement_label(movement_type)} - {product}"[:45]
-        )
-        self.movement_type = movement_type
-        self.product = product
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        raw = str(self.quantity.value).strip()
-        if not raw.isdigit() or int(raw) <= 0:
-            await interaction.response.send_message(
-                "\u274c Digite um numero inteiro positivo maior que zero.",
-                ephemeral=True,
-            )
-            return
-        await interaction.response.defer(ephemeral=True)
-        try:
-            result = repo.apply_operation(
-                self.movement_type,
-                [(self.product, int(raw))],
-                str(interaction.user.id),
-                interaction.user.display_name,
-                "individual",
-            )
-        except StockInsufficientError as exc:
-            requested, available = exc.shortages[self.product]
-            await interaction.followup.send(
-                f"\u274c Estoque insuficiente! Disponivel: "
-                f"**{_format_number(available)}**; solicitado: "
-                f"**{_format_number(requested)}**.",
-                ephemeral=True,
-            )
-            return
-        except Exception:
-            log.error("Erro ao registrar movimentacao individual.", exc_info=True)
-            await interaction.followup.send(
-                "\u274c Erro ao registrar a movimentacao.",
-                ephemeral=True,
-            )
-            return
-
-        await _refresh_panel(interaction.client)
-        await _send_log(
-            interaction.client,
-            _build_operation_log_embeds(result, interaction.user),
-        )
-        line = result.lines[0]
-        await interaction.followup.send(
-            f"\u2705 **{_movement_label(result.tipo)}** de "
-            f"`{_format_number(line.quantidade)}x {line.produto}` registrada! "
-            f"Estoque atual: **{_format_number(line.estoque_depois)}**.",
-            ephemeral=True,
-        )
-
-
-class ProductActionView(RequesterView):
-    def __init__(self, product: str, requester_id: int) -> None:
-        super().__init__(requester_id, timeout=180)
-        self.product = product
-
-    @discord.ui.button(
-        label="Entrada",
-        emoji="\u2705",
-        style=discord.ButtonStyle.success,
-    )
-    async def entry(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        await interaction.response.send_modal(
-            CustomQuantityModal("entrada", self.product)
-        )
-
-    @discord.ui.button(
-        label="Sa\u00edda",
-        emoji="\u274c",
-        style=discord.ButtonStyle.danger,
-    )
-    async def exit(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        await interaction.response.send_modal(
-            CustomQuantityModal("saida", self.product)
-        )
-
-
-class ProductSelect(discord.ui.Select):
-    def __init__(self, products: list[str]) -> None:
-        stock = repo.get_stock()
-        options = [
-            discord.SelectOption(
-                label=product,
-                value=product,
-                description=f"Estoque atual: {_format_number(stock.get(product, 0))}",
-            )
-            for product in products[:25]
-        ]
-        super().__init__(
-            placeholder="Selecione o produto...",
-            options=options,
-        )
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        product = self.values[0]
-        await interaction.response.edit_message(
-            content=f"\U0001f527 **{product}** - o que deseja fazer?",
-            embed=None,
-            view=ProductActionView(product, interaction.user.id),
-        )
-
-
-class ProductsView(RequesterView):
-    def __init__(self, products: list[str], requester_id: int) -> None:
-        super().__init__(requester_id, timeout=180)
-        self.add_item(ProductSelect(products))
-
-
 class CategorySelect(discord.ui.Select):
-    RECENT = "__recent__"
-    FREQUENT = "__frequent__"
-
     def __init__(self) -> None:
         options = [
-            discord.SelectOption(
-                label="Usados recentemente",
-                value=self.RECENT,
-                emoji="\U0001f552",
-            ),
-            discord.SelectOption(
-                label="Mais movimentados",
-                value=self.FREQUENT,
-                emoji="\u2b50",
-            ),
-        ]
-        options.extend(
             discord.SelectOption(label=category, value=category)
             for category in CATEGORIAS
-        )
+        ]
         super().__init__(
             custom_id="bau:categoria_select",
-            placeholder="Selecione categoria, recentes ou favoritos...",
+            placeholder="Selecione uma categoria...",
             options=options,
             row=0,
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        selected = self.values[0]
-        if selected == self.RECENT:
-            products = repo.get_recent_products()
-            title = "\U0001f552 Usados recentemente"
-        elif selected == self.FREQUENT:
-            products = repo.get_frequent_products()
-            title = "\u2b50 Mais movimentados"
-        else:
-            products = CATEGORIAS[selected]
-            title = selected
-
-        if not products:
-            await interaction.response.send_message(
-                "\u26a0\ufe0f Ainda nao ha movimentacoes para esta lista.",
-                ephemeral=True,
-            )
-            return
+        category = self.values[0]
         await interaction.response.send_message(
-            f"\U0001f4e6 **{title}** - selecione o produto:",
-            view=ProductsView(list(products), interaction.user.id),
-            ephemeral=True,
-        )
-
-
-class BatchModal(discord.ui.Modal):
-    items_text = discord.ui.TextInput(
-        label="Produtos e quantidades",
-        placeholder="5mm: 500\nColete: 20\nDinheiro Sujo: 100000",
-        style=discord.TextStyle.paragraph,
-        min_length=1,
-        max_length=4000,
-        required=True,
-    )
-
-    def __init__(self, movement_type: str) -> None:
-        super().__init__(title=f"{_movement_label(movement_type)} em lote")
-        self.movement_type = movement_type
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        parsed = parse_batch_text(str(self.items_text.value))
-        if not parsed.valid:
-            await interaction.response.send_message(
-                embed=_build_parse_error_embed(parsed.issues),
-                ephemeral=True,
-            )
-            return
-        view = MovementConfirmView(
-            self.movement_type,
-            parsed.items,
-            "lote",
-            interaction.user.id,
-        )
-        await interaction.response.send_message(
-            embed=view.embed(),
-            view=view,
+            f"\U0001f4e6 **{category}** - escolha a operacao:",
+            view=CategoryMovementView(category, interaction.user.id),
             ephemeral=True,
         )
 
@@ -998,20 +1009,6 @@ class BauPainelView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
         self.add_item(CategorySelect())
-
-    @discord.ui.button(
-        label="Adicionar",
-        emoji="\u2795",
-        style=discord.ButtonStyle.success,
-        custom_id="bau:lote_entrada",
-        row=1,
-    )
-    async def batch_entry(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        await interaction.response.send_modal(BatchModal("entrada"))
 
     @discord.ui.button(
         label="Desfazer",

@@ -123,6 +123,12 @@ class OperationResult:
 
 
 @dataclass(frozen=True)
+class CategoryOperationResult:
+    operation: OperationResult
+    skipped: tuple[tuple[str, int, int], ...]
+
+
+@dataclass(frozen=True)
 class UndoOperation:
     operation_id: str
     tipo: str
@@ -504,6 +510,128 @@ class BauRepository:
             created_at,
             tuple(lines),
         )
+
+    def apply_category_operation(
+        self,
+        movement_type: str,
+        items: list[tuple[str, int]],
+        user_id: str,
+        user_name: str,
+        operation_id: str,
+        expected_generation: int,
+    ) -> CategoryOperationResult:
+        if movement_type not in {"entrada", "saida"}:
+            raise ValueError("Tipo de movimentacao invalido")
+
+        aggregated: dict[str, int] = {}
+        for product, quantity in items:
+            if product not in PRODUTO_CATEGORIA or quantity <= 0:
+                raise ValueError("Produto ou quantidade invalida")
+            aggregated[product] = aggregated.get(product, 0) + int(quantity)
+        if not aggregated:
+            raise ValueError("A operacao precisa de itens")
+
+        created_at = agora_str()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            generation_row = conn.execute(
+                "SELECT valor FROM bau_meta WHERE chave='generation'"
+            ).fetchone()
+            current_generation = (
+                int(generation_row["valor"]) if generation_row else 0
+            )
+            if current_generation != expected_generation:
+                raise StaleOperationError(
+                    "O bau foi zerado depois que a confirmacao foi aberta"
+                )
+
+            try:
+                conn.execute(
+                    "INSERT INTO bau_operacoes "
+                    "(operation_id, tipo, origem, user_id, user_nome, criado_em) "
+                    "VALUES (?, ?, 'categoria', ?, ?, ?)",
+                    (
+                        operation_id,
+                        movement_type,
+                        user_id,
+                        user_name,
+                        created_at,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise DuplicateOperationError("Operacao ja processada") from exc
+
+            current: dict[str, int] = {}
+            for product in aggregated:
+                row = conn.execute(
+                    "SELECT quantidade FROM bau_estoque WHERE produto=?",
+                    (product,),
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"Produto nao cadastrado: {product}")
+                current[product] = int(row["quantidade"])
+
+            skipped: list[tuple[str, int, int]] = []
+            applicable: dict[str, int] = {}
+            for product, quantity in aggregated.items():
+                if movement_type == "saida" and current[product] < quantity:
+                    skipped.append((product, quantity, current[product]))
+                else:
+                    applicable[product] = quantity
+
+            lines: list[MovementLine] = []
+            delta_sign = 1 if movement_type == "entrada" else -1
+            for product, quantity in applicable.items():
+                before = current[product]
+                after = before + (delta_sign * quantity)
+                conn.execute(
+                    "UPDATE bau_estoque SET quantidade=? WHERE produto=?",
+                    (after, product),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO bau_historico (
+                        produto, categoria, tipo, quantidade,
+                        user_id, user_nome, criado_em,
+                        operation_id, origem, revertido
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'categoria', 0)
+                    """,
+                    (
+                        product,
+                        PRODUTO_CATEGORIA[product],
+                        movement_type,
+                        quantity,
+                        user_id,
+                        user_name,
+                        created_at,
+                        operation_id,
+                    ),
+                )
+                lines.append(MovementLine(
+                    product,
+                    PRODUTO_CATEGORIA[product],
+                    quantity,
+                    before,
+                    after,
+                ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        operation = OperationResult(
+            operation_id,
+            movement_type,
+            "categoria",
+            user_id,
+            user_name,
+            created_at,
+            tuple(lines),
+        )
+        return CategoryOperationResult(operation, tuple(skipped))
 
     def get_last_undoable_operation(self, user_id: str) -> UndoOperation | None:
         with self._connection() as conn:
