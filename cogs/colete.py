@@ -228,11 +228,7 @@ class ColeteConfirmView(discord.ui.View):
         )
         log_embed.add_field(
             name="Membro",
-            value=(
-                f"{interaction.user.mention}\n"
-                f"{interaction.user.display_name}\n"
-                f"`{interaction.user.id}`"
-            ),
+            value=interaction.user.mention,
             inline=True,
         )
         log_embed.add_field(name="Produto", value="Colete", inline=True)
