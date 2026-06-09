@@ -35,9 +35,9 @@ class BauViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             buttons,
             {
-                "bau:lote_entrada": ("Adicionar Itens", 1),
-                "bau:desfazer": ("Desfazer A\u00e7\u00e3o", 2),
-                "bau:limpar": ("Zerar Estoque", 2),
+                "bau:lote_entrada": ("Adicionar", 1),
+                "bau:desfazer": ("Desfazer", 1),
+                "bau:limpar": ("Zerar", 1),
             },
         )
         view.stop()

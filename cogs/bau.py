@@ -969,7 +969,7 @@ class BauPainelView(discord.ui.View):
         self.add_item(CategorySelect())
 
     @discord.ui.button(
-        label="Adicionar Itens",
+        label="Adicionar",
         emoji="\u2795",
         style=discord.ButtonStyle.success,
         custom_id="bau:lote_entrada",
@@ -983,11 +983,11 @@ class BauPainelView(discord.ui.View):
         await interaction.response.send_modal(BatchModal("entrada"))
 
     @discord.ui.button(
-        label="Desfazer A\u00e7\u00e3o",
+        label="Desfazer",
         emoji="\u21a9\ufe0f",
         style=discord.ButtonStyle.secondary,
         custom_id="bau:desfazer",
-        row=2,
+        row=1,
     )
     async def undo(
         self,
@@ -1009,11 +1009,11 @@ class BauPainelView(discord.ui.View):
         )
 
     @discord.ui.button(
-        label="Zerar Estoque",
+        label="Zerar",
         emoji="\u26a0\ufe0f",
         style=discord.ButtonStyle.danger,
         custom_id="bau:limpar",
-        row=2,
+        row=1,
     )
     async def clear(
         self,
