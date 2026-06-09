@@ -1,16 +1,19 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import discord
 
 from cogs.bau import (
+    _is_bau_admin,
     _parse_category_quantity,
     _build_operation_log_embeds,
     BauPainelView,
-    CategoryConfirmView,
+    CategoryPageView,
     CategoryQuantityModal,
     CategorySession,
     CategorySelect,
+    ClearConfirmView,
     CATEGORY_PAGE_SIZE,
     UNDO_PAGE_SIZE,
     UndoView,
@@ -171,15 +174,47 @@ class BauViewTests(unittest.IsolatedAsyncioTestCase):
             session.quantities.pop("5mm", None)
         self.assertEqual(session.items(), [])
 
-    async def test_category_preview_is_paginated_for_sixteen_items(self):
-        products = tuple(f"Produto {index}" for index in range(16))
-        session = CategorySession("Teste", "entrada", 123, products)
-        session.quantities.update({product: 1 for product in products})
-        view = CategoryConfirmView(session)
+    async def test_category_page_sends_directly_without_review(self):
+        session = CategorySession("Teste", "entrada", 123, ("5mm",))
+        view = CategoryPageView(session)
+        labels = {
+            child.label
+            for child in view.children
+            if isinstance(child, discord.ui.Button)
+        }
 
-        self.assertEqual(view.page_count, 2)
-        self.assertTrue(view.previous.disabled)
-        self.assertFalse(view.next.disabled)
+        self.assertIn("Enviar", labels)
+        self.assertNotIn("Revisar", labels)
+        self.assertNotIn("Confirmar", labels)
+        view.stop()
+
+    async def test_clear_confirmation_requires_administrator(self):
+        self.assertTrue(_is_bau_admin(SimpleNamespace(
+            user=SimpleNamespace(
+                guild_permissions=SimpleNamespace(administrator=True)
+            )
+        )))
+        self.assertFalse(_is_bau_admin(SimpleNamespace(
+            user=SimpleNamespace(
+                guild_permissions=SimpleNamespace(administrator=False)
+            )
+        )))
+
+        response = SimpleNamespace(send_message=AsyncMock())
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(
+                id=123,
+                guild_permissions=SimpleNamespace(administrator=False),
+            ),
+            response=response,
+        )
+        view = ClearConfirmView(123)
+
+        self.assertFalse(await view.interaction_check(interaction))
+        response.send_message.assert_awaited_once_with(
+            "\u274c Apenas administradores podem zerar o bau.",
+            ephemeral=True,
+        )
         view.stop()
 
     async def test_complete_catalog_undo_is_paginated_in_discord_limit(self):

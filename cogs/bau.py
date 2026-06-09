@@ -37,7 +37,6 @@ PAINEL_JSON = BASE_DIR / "bau_painel.json"
 CANAL_BAU_ID = 1474869322387292357
 CANAL_LOG_ID = 1499589255784173678
 
-PREVIEW_PAGE_SIZE = 15
 CATEGORY_PAGE_SIZE = 5
 UNDO_PAGE_SIZE = 25
 repo = BauRepository(DB_PATH)
@@ -235,6 +234,11 @@ class RequesterView(discord.ui.View):
         return False
 
 
+def _is_bau_admin(interaction: discord.Interaction) -> bool:
+    permissions = getattr(interaction.user, "guild_permissions", None)
+    return bool(getattr(permissions, "administrator", False))
+
+
 def _parse_category_quantity(raw: str) -> int:
     value = raw.strip()
     if not value:
@@ -303,42 +307,6 @@ def _build_category_page_embed(session: CategorySession) -> discord.Embed:
             f"Pagina {session.page + 1}/{session.page_count} | "
             f"{len(session.items())} produto(s) preenchido(s)"
         )
-    )
-    return embed
-
-
-def _build_category_preview_embed(
-    session: CategorySession,
-    page: int,
-) -> discord.Embed:
-    items = session.items()
-    stock = repo.get_stock()
-    page_count = max(1, math.ceil(len(items) / PREVIEW_PAGE_SIZE))
-    page = max(0, min(page, page_count - 1))
-    start = page * PREVIEW_PAGE_SIZE
-    page_items = items[start:start + PREVIEW_PAGE_SIZE]
-    is_entry = session.movement_type == "entrada"
-    embed = discord.Embed(
-        title=f"Confirmar {_movement_label(session.movement_type)}",
-        description=(
-            f"Categoria: **{session.category}**\n"
-            "Confira os valores antes de confirmar."
-        ),
-        color=discord.Color.green() if is_entry else discord.Color.red(),
-    )
-    for product, quantity in page_items:
-        before = stock.get(product, 0)
-        insufficient = not is_entry and before < quantity
-        after = before + quantity if is_entry else before - quantity
-        value = (
-            f"Quantidade: **{_format_number(quantity)}**\n"
-            f"`{_format_number(before)} -> {_format_number(after)}`"
-        )
-        if insufficient:
-            value += "\n\u26a0\ufe0f *Sera ignorado por falta de estoque*"
-        embed.add_field(name=product, value=value, inline=True)
-    embed.set_footer(
-        text=f"Pagina {page + 1}/{page_count} | {len(items)} produto(s)"
     )
     return embed
 
@@ -503,96 +471,18 @@ class CategoryPageView(RequesterView):
             CategoryQuantityModal(self.session, self.session.page + 1)
         )
 
-    @discord.ui.button(label="Revisar", style=discord.ButtonStyle.success)
-    async def review(
+    @discord.ui.button(label="Enviar", style=discord.ButtonStyle.success)
+    async def send(
         self,
         interaction: discord.Interaction,
         button: discord.ui.Button,
     ) -> None:
         if not self.session.items():
             await interaction.response.send_message(
-                "\u274c Informe ao menos uma quantidade antes de revisar.",
+                "\u274c Informe ao menos uma quantidade antes de enviar.",
                 ephemeral=True,
             )
             return
-        view = CategoryConfirmView(self.session)
-        await interaction.response.edit_message(
-            content=None,
-            embed=view.embed(),
-            view=view,
-        )
-
-    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.danger)
-    async def cancel(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        await interaction.response.edit_message(
-            content="Lancamento cancelado. Nenhum item foi alterado.",
-            embed=None,
-            view=None,
-        )
-        self.stop()
-
-
-class CategoryConfirmView(RequesterView):
-    def __init__(self, session: CategorySession) -> None:
-        super().__init__(session.requester_id, timeout=600)
-        self.session = session
-        self.page = 0
-        self.page_count = max(
-            1,
-            math.ceil(len(session.items()) / PREVIEW_PAGE_SIZE),
-        )
-        self.previous.disabled = True
-        self.next.disabled = self.page_count == 1
-
-    def embed(self) -> discord.Embed:
-        return _build_category_preview_embed(self.session, self.page)
-
-    def _sync_buttons(self) -> None:
-        self.previous.disabled = self.page == 0
-        self.next.disabled = self.page >= self.page_count - 1
-
-    @discord.ui.button(
-        label="Anterior",
-        style=discord.ButtonStyle.secondary,
-        row=0,
-    )
-    async def previous(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        self.page -= 1
-        self._sync_buttons()
-        await interaction.response.edit_message(embed=self.embed(), view=self)
-
-    @discord.ui.button(
-        label="Proxima",
-        style=discord.ButtonStyle.secondary,
-        row=0,
-    )
-    async def next(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        self.page += 1
-        self._sync_buttons()
-        await interaction.response.edit_message(embed=self.embed(), view=self)
-
-    @discord.ui.button(
-        label="Confirmar",
-        style=discord.ButtonStyle.success,
-        row=1,
-    )
-    async def confirm(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
         await interaction.response.edit_message(
             content="Processando lancamento...",
             embed=None,
@@ -671,25 +561,7 @@ class CategoryConfirmView(RequesterView):
         )
         self.stop()
 
-    @discord.ui.button(
-        label="Voltar aos formularios",
-        style=discord.ButtonStyle.primary,
-        row=1,
-    )
-    async def back(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        await interaction.response.send_modal(
-            CategoryQuantityModal(self.session, 0)
-        )
-
-    @discord.ui.button(
-        label="Cancelar",
-        style=discord.ButtonStyle.danger,
-        row=1,
-    )
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.danger)
     async def cancel(
         self,
         interaction: discord.Interaction,
@@ -941,6 +813,17 @@ class ClearConfirmView(RequesterView):
     def __init__(self, requester_id: int) -> None:
         super().__init__(requester_id, timeout=60)
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not await super().interaction_check(interaction):
+            return False
+        if _is_bau_admin(interaction):
+            return True
+        await interaction.response.send_message(
+            "\u274c Apenas administradores podem zerar o bau.",
+            ephemeral=True,
+        )
+        return False
+
     @discord.ui.button(
         label="Confirmar zeragem",
         style=discord.ButtonStyle.danger,
@@ -1048,6 +931,12 @@ class BauPainelView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button,
     ) -> None:
+        if not _is_bau_admin(interaction):
+            await interaction.response.send_message(
+                "\u274c Apenas administradores podem zerar o bau.",
+                ephemeral=True,
+            )
+            return
         embed = discord.Embed(
             title="\u26a0\ufe0f Zerar todo o Bau?",
             description=(
