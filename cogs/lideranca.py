@@ -7,6 +7,7 @@ import logging
 import discord
 from discord.ext import commands
 
+from core.date_utils import DATE_BR_EXAMPLE, normalize_date_br
 from core.permissions import is_lideranca
 from services.db_service import (
     db_get_lideranca_role_ids,
@@ -54,12 +55,25 @@ class NovaPendenciaModal(discord.ui.Modal, title="Nova Pendencia"):
     )
     prazo = discord.ui.TextInput(
         label="Prazo",
-        placeholder="Ex: hoje 22h, sexta, sem prazo",
+        placeholder=f"Ex: {DATE_BR_EXAMPLE} ou sem prazo",
         required=False,
-        max_length=80,
+        max_length=10,
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        prazo_raw = self.prazo.value.strip()
+        if not prazo_raw or prazo_raw.casefold() == "sem prazo":
+            prazo = "sem prazo"
+        else:
+            try:
+                prazo = normalize_date_br(prazo_raw)
+            except ValueError as exc:
+                await interaction.response.send_message(
+                    f"Prazo inválido. {exc} Ou informe `sem prazo`.",
+                    ephemeral=True,
+                )
+                return
+
         guild_id = str(interaction.guild_id)
         pendencia_id = db_lideranca_criar_pendencia(
             guild_id=guild_id,
@@ -67,7 +81,7 @@ class NovaPendenciaModal(discord.ui.Modal, title="Nova Pendencia"):
             descricao=self.descricao.value.strip(),
             categoria=(self.categoria.value.strip() or "geral"),
             prioridade=normalizar_prioridade(self.prioridade.value),
-            prazo=(self.prazo.value.strip() or "sem prazo"),
+            prazo=prazo,
             criado_por_id=str(interaction.user.id),
         )
         row = db_lideranca_get_pendencia(guild_id, pendencia_id)

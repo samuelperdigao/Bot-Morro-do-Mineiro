@@ -10,6 +10,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from core.config import DB_PATH, TZ_STR
+from core.date_utils import format_datetime_br
 from services.db_schema import ensure_schema
 
 log = logging.getLogger("farm")
@@ -47,7 +48,7 @@ def janela_valida() -> bool:
 def fmt_dt(iso: str | None) -> str:
     if not iso:
         return "—"
-    return iso[:16].replace("T", " ")
+    return format_datetime_br(iso, fallback="—")
 
 
 # ── Conexão ───────────────────────────────────────────────────────────────────

@@ -6,6 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from core.date_utils import DATE_BR_EXAMPLE, normalize_date_br
 from core.logger import get_logger
 from core.permissions import is_lideranca
 from services.db_service import db_get_lideranca_role_ids, db_get_system_config
@@ -307,7 +308,7 @@ class RemoverMembroView(discord.ui.View):
 class IniciarAcaoModal(discord.ui.Modal, title="⚡ Configurar Ação"):
     data = discord.ui.TextInput(
         label="Data da ação",
-        placeholder="Ex: 12/05",
+        placeholder=f"Ex: {DATE_BR_EXAMPLE}",
         max_length=10,
         required=True,
     )
@@ -329,7 +330,11 @@ class IniciarAcaoModal(discord.ui.Modal, title="⚡ Configurar Ação"):
         self.canal_id = canal_id
 
     async def on_submit(self, interaction: discord.Interaction):
-        data_val    = self.data.value.strip()
+        try:
+            data_val = normalize_date_br(self.data.value)
+        except ValueError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
         horario_val = self.horario.value.strip()
         tipo_val    = self.tipo_acao.value.strip().lower()
         if tipo_val not in ("fuga", "tiro"):

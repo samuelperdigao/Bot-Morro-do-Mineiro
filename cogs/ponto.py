@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from core.date_utils import format_date_br, format_datetime_br
 from core.logger import get_logger
 from services.db_service import current_week_id, now_tz
 from services.ponto_service import (
@@ -40,21 +39,12 @@ COR_INFO = 0x3498DB
 FOOTER = "Morro do Mineiro - Sistema de Ponto"
 
 
-def _parse_dt(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    return datetime.fromisoformat(value)
-
-
 def _fmt_dt(value: str | None) -> str:
-    dt = _parse_dt(value)
-    if not dt:
-        return "-"
-    return dt.strftime("%d/%m/%Y %H:%M")
+    return format_datetime_br(value)
 
 
 def _fmt_date_br(value: str) -> str:
-    return datetime.fromisoformat(value).strftime("%d/%m/%Y")
+    return format_date_br(value)
 
 
 def _fmt_duration(seconds: int | float | None) -> str:
@@ -106,7 +96,7 @@ def _build_ranking_embed(guild: discord.Guild, guild_id: str, week_id: str) -> d
 
     embed = discord.Embed(
         title="Ranking Semanal de Ponto",
-        description=f"Semana: `{week_id}`",
+        description=f"Semana: `{format_date_br(week_id)}`",
         color=discord.Color.gold(),
         timestamp=discord.utils.utcnow(),
     )
@@ -157,7 +147,7 @@ def _build_status_embed(member: discord.Member | discord.User, guild_id: str) ->
         color=COR_PONTO if aberto else COR_INFO,
         timestamp=discord.utils.utcnow(),
     )
-    embed.add_field(name="Semana", value=f"`{week_id}`", inline=True)
+    embed.add_field(name="Semana", value=f"`{format_date_br(week_id)}`", inline=True)
     embed.add_field(name="Status", value="`Aberto`" if aberto else "`Fechado`", inline=True)
     embed.add_field(name="Total fechado", value=f"`{_fmt_duration(total)}`", inline=True)
     embed.add_field(name="Sessoes na semana", value=f"`{len(sessoes)}`", inline=True)

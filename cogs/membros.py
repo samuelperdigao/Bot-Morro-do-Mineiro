@@ -6,6 +6,7 @@ import discord
 from discord.ext import commands
 
 from core.config import CANAL_LOG_ENTRADA_ID, CANAL_LOG_PD_ID
+from core.date_utils import format_datetime_br
 from core.discord_helpers import fetch_channel_safe
 from core.logger import get_logger
 from services.db_service import db_channel_map_all, db_get_guild_config
@@ -84,7 +85,7 @@ class MembrosCog(commands.Cog):
 
         if member.joined_at:
             tempo_str = _format_delta(agora - member.joined_at)
-            entrou_str = f"<t:{int(member.joined_at.timestamp())}:D>"
+            entrou_str = f"`{format_datetime_br(member.joined_at)}`"
         else:
             tempo_str = "Desconhecido"
             entrou_str = "Desconhecido"
@@ -102,7 +103,7 @@ class MembrosCog(commands.Cog):
         embed.add_field(name="ID", value=f"`{member.id}`", inline=True)
         embed.add_field(name="\u200b", value="\u200b", inline=True)
         embed.add_field(name="Entrou em", value=entrou_str, inline=True)
-        embed.add_field(name="Saiu em", value=f"<t:{int(agora.timestamp())}:F>", inline=True)
+        embed.add_field(name="Saiu em", value=f"`{format_datetime_br(agora)}`", inline=True)
         embed.add_field(name="Tempo no servidor", value=tempo_str, inline=True)
         embed.add_field(name="Motivo da saida", value=motivo, inline=True)
         embed.add_field(name="Responsavel", value=responsavel.mention if responsavel else "-", inline=True)
@@ -170,10 +171,10 @@ class MembrosCog(commands.Cog):
         embed.add_field(name="ID", value=f"`{member.id}`", inline=True)
         embed.add_field(
             name="Conta criada em",
-            value=f"<t:{int(criado_em.timestamp())}:D>\n`{idade_conta} atras`{alerta_nova}",
+            value=f"`{format_datetime_br(criado_em)}`\n`{idade_conta} atras`{alerta_nova}",
             inline=True,
         )
-        embed.add_field(name="Entrou em", value=f"<t:{int(agora.timestamp())}:F>", inline=True)
+        embed.add_field(name="Entrou em", value=f"`{format_datetime_br(agora)}`", inline=True)
         embed.add_field(name="Membros no servidor", value=f"`{member.guild.member_count}`", inline=True)
         embed.set_footer(text=f"ID: {member.id}")
 

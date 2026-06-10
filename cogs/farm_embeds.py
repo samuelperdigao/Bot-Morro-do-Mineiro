@@ -2,6 +2,7 @@
 
 import discord
 
+from core.date_utils import format_date_br
 from services.db_service import (
     CLASSIFICACAO_LABEL,
     DINHEIRO_ITEMS,
@@ -81,7 +82,7 @@ def build_farm_embed(meta, prog, member: discord.Member, week_id: str) -> discor
 
     embed = discord.Embed(
         title=f"🌿 Farm — {member.display_name}",
-        description=f"📅 Semana: `{week_id}`",
+        description=f"📅 Semana: `{format_date_br(week_id)}`",
         color=color,
         timestamp=discord.utils.utcnow(),
     )
@@ -159,7 +160,7 @@ def build_farm_embed(meta, prog, member: discord.Member, week_id: str) -> discor
 def build_meta_embed(meta, week_id: str) -> discord.Embed:
     embed = discord.Embed(
         title="🎯 Metas da Semana",
-        description=f"📅 Semana: `{week_id}`",
+        description=f"📅 Semana: `{format_date_br(week_id)}`",
         color=discord.Color.gold(),
         timestamp=discord.utils.utcnow(),
     )
@@ -192,7 +193,7 @@ def build_ranking_embed(guild_id: str, week_id: str, participantes: list, guild:
     meta_tipo = db_meta_tipo_efetivo(meta)
     embed = discord.Embed(
         title="🏆 Ranking da Semana",
-        description=f"📅 Semana: `{week_id}`",
+        description=f"📅 Semana: `{format_date_br(week_id)}`",
         color=discord.Color.gold(),
         timestamp=discord.utils.utcnow(),
     )

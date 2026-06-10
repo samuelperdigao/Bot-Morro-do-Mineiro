@@ -10,6 +10,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from core.date_utils import DATE_BR_EXAMPLE, normalize_date_br
 from core.logger import get_logger
 from services.log_service import send_log
 from services.db_service import (
@@ -70,11 +71,17 @@ class EncomendaModal(discord.ui.Modal, title="📦 Registrar Encomenda"):
     )
     data = discord.ui.TextInput(
         label="Data da Encomenda",
-        placeholder="Ex: 13/03/2026",
-        max_length=20,
+        placeholder=f"Ex: {DATE_BR_EXAMPLE}",
+        max_length=10,
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        try:
+            data_val = normalize_date_br(self.data.value)
+        except ValueError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
+
         await interaction.response.defer(ephemeral=True)
 
         guild_id = str(interaction.guild_id)
@@ -103,7 +110,7 @@ class EncomendaModal(discord.ui.Modal, title="📦 Registrar Encomenda"):
         embed.add_field(name="👨‍👩‍👧‍👦 Família",   value=f"```{self.familia.value}```", inline=False)
         embed.add_field(name="📊 Quantidade",  value=f"`{self.quantidade.value}`",       inline=True)
         embed.add_field(name="💰 Valor",       value=f"`R$ {self.valor.value}`",         inline=True)
-        embed.add_field(name="📅 Data",        value=f"`{self.data.value}`",             inline=True)
+        embed.add_field(name="📅 Data",        value=f"`{data_val}`",                    inline=True)
         embed.set_footer(
             text=f"Registrado por {registrado_por.display_name}",
             icon_url=registrado_por.display_avatar.url,
@@ -128,7 +135,7 @@ class EncomendaModal(discord.ui.Modal, title="📦 Registrar Encomenda"):
             log_embed.add_field(name="👨‍👩‍👧‍👦 Família",   value=self.familia.value,   inline=True)
             log_embed.add_field(name="📊 Quantidade",  value=f"`{self.quantidade.value}`", inline=True)
             log_embed.add_field(name="💰 Valor",       value=f"`R$ {self.valor.value}`",   inline=True)
-            log_embed.add_field(name="📅 Data",        value=f"`{self.data.value}`",       inline=True)
+            log_embed.add_field(name="📅 Data",        value=f"`{data_val}`",              inline=True)
             log_embed.set_footer(text="Morro do Mineiro — Sistema de Encomenda")
             await send_log(interaction.client, interaction.guild, "encomenda", log_embed)
 

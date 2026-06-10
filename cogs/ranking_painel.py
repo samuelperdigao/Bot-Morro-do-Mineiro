@@ -8,6 +8,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from core.date_utils import format_date_br
 from core.logger import get_logger
 from core.permissions import is_permitido_farm
 from services.db_service import (
@@ -89,7 +90,7 @@ def build_ranking_publico_embeds(guild: discord.Guild, guild_id: str, week_id: s
         embed = discord.Embed(
             title="🏆 Ranking Semanal de Farm",
             description=(
-                f"**Semana:** `{week_id}`\n\n"
+                f"**Semana:** `{format_date_br(week_id)}`\n\n"
                 "⚠️ As metas ainda não foram definidas para esta semana."
             ),
             color=discord.Color.gold(),
@@ -132,7 +133,7 @@ def build_ranking_publico_embeds(guild: discord.Guild, guild_id: str, week_id: s
     embed = discord.Embed(
         title="🏆 Ranking Semanal de Farm",
         description=(
-            f"**Semana:** `{week_id}`\n"
+            f"**Semana:** `{format_date_br(week_id)}`\n"
             f"**Meta:** {tipo_meta}\n"
             "Painel público atualizado automaticamente após cada lançamento."
         ),

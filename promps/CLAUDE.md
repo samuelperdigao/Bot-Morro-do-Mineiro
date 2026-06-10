@@ -232,7 +232,7 @@ Painel embed fixo no canal configurado via dashboard (sistema "acao").
 - `AcaoPainelView` — Botão "⚡ Iniciar Ação" (`acao_painel:iniciar`, persistent)
   - Abre `PreAcaoModal` (coleta data, horário e tipo antes do select de ação)
 - `PreAcaoModal` — Modal com **três** campos:
-  - `Data da ação` — TextInput livre (ex: "12/05")
+  - `Data da ação` — TextInput validado em `DD/MM/AAAA` (ex: "08/06/2026")
   - `Horário da ação` — TextInput livre (ex: "21:00")
   - `Tipo da ação` — TextInput validado: aceita apenas "fuga" ou "tiro"
   - `on_submit`: valida tipo → posta `AcaoSelectView(horario, tipo, data)` no canal configurado
@@ -685,7 +685,7 @@ Chaves de sistema usadas: `set`, `farm`, `meta`, `ausencia`, `encomenda`, `acao`
 #### Campo de Data (separado do Horário)
 
 **`cogs/acao_painel.py` — `PreAcaoModal`:**
-- Adicionado `data` como primeiro `TextInput` (ex: "12/05").
+- Adicionado `data` como primeiro `TextInput`, validado em `DD/MM/AAAA` (ex: "08/06/2026").
 - Modal agora tem 3 campos: Data, Horário, Tipo.
 - `on_submit` extrai `data_val` e passa para `AcaoSelectView(horario, tipo, data)`.
 - Embed de seleção e log de ação incluem campo `📅 Data`.

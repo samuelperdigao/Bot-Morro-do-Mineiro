@@ -9,6 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from core.date_utils import format_date_br, format_week_range_br, week_id_from_date_br
 from core.logger import get_logger
 from core.permissions import is_lideranca, is_permitido_farm
 from core.command_config import is_enabled as _cmd_enabled
@@ -51,6 +52,12 @@ def _fmt_money(valor: float) -> str:
 
 def _fmt_qtd(valor: int | float) -> str:
     return f"{valor:g}" if isinstance(valor, float) else str(valor)
+
+
+def _week_id_consulta(semana: str | None) -> str:
+    if not semana or not semana.strip():
+        return current_week_id()
+    return week_id_from_date_br(semana)
 
 
 def _format_entregas_separadas(
@@ -207,7 +214,7 @@ class DefinirMetasModal(discord.ui.Modal, title="Kit Desmanche"):
             if nome in valores
         )
         await interaction.response.send_message(
-            f"✅ Metas da semana `{self.week_id}` definidas:\n{resumo}", ephemeral=True
+            f"✅ Metas da semana `{format_date_br(self.week_id)}` definidas:\n{resumo}", ephemeral=True
         )
         await self.cog._atualizar_ranking_fixo(self.guild_id)
         await self.cog._enviar_aviso_meta_atualizada(
@@ -286,7 +293,7 @@ class DefinirMetasDinheiroModal(discord.ui.Modal, title="Definir Meta — Dinhei
             for nome, valor in valores.items()
         )
         await interaction.response.send_message(
-            f"✅ Meta de dinheiro da semana `{self.week_id}` definida:\n{resumo}",
+            f"✅ Meta de dinheiro da semana `{format_date_br(self.week_id)}` definida:\n{resumo}",
             ephemeral=True,
         )
         await self.cog._atualizar_ranking_fixo(self.guild_id)
@@ -383,7 +390,7 @@ class LancarModal(discord.ui.Modal, title="Lançar Kit Desmanche"):
             )
         itens_str = "\n".join(f"`{n}`: {v}" for n, v in valores.items() if v > 0)
         log_embed.add_field(name="🌾 Itens lançados", value=itens_str or "_nenhum_", inline=True)
-        log_embed.add_field(name="📅 Semana", value=f"`{self.week_id}`", inline=True)
+        log_embed.add_field(name="📅 Semana", value=f"`{format_date_br(self.week_id)}`", inline=True)
         log_embed.set_image(url=f"attachment://{print_file.filename}")
         log_embed.set_footer(text="Morro do Mineiro — Sistema de Farm")
         log_enviado = await send_log(interaction.client, interaction.guild, "farm", log_embed, files=[print_file])
@@ -488,7 +495,7 @@ class LancarDinheiroModal(discord.ui.Modal, title="💵 Lançar Dinheiro"):
                 inline=True,
             )
         log_embed.add_field(name="💰 Valor lançado", value=f"Sujo: {sujo_fmt}\nLimpo: {limpo_fmt}\nTotal: {total_fmt}", inline=True)
-        log_embed.add_field(name="📅 Semana", value=f"`{self.week_id}`", inline=True)
+        log_embed.add_field(name="📅 Semana", value=f"`{format_date_br(self.week_id)}`", inline=True)
         log_embed.set_image(url=f"attachment://{print_file.filename}")
         log_embed.set_footer(text="Morro do Mineiro — Sistema de Farm")
         log_enviado = await send_log(interaction.client, interaction.guild, "farm", log_embed, files=[print_file])
@@ -799,7 +806,7 @@ class DetalheResultadoView(discord.ui.View):
         view  = ResultadoView(self.cog, self.guild_id, self.week_id, participantes, interaction.guild)
         embed = discord.Embed(
             title="📊 Resultados da Semana",
-            description=f"📅 Semana: `{self.week_id}` — {len(participantes)} participante(s)",
+            description=f"📅 Semana: `{format_date_br(self.week_id)}` — {len(participantes)} participante(s)",
             color=discord.Color.blue(), timestamp=discord.utils.utcnow(),
         )
         await interaction.edit_original_response(embed=embed, view=view)
@@ -953,7 +960,7 @@ class FarmCog(commands.Cog):
 
         embed = discord.Embed(
             title=f"🎯 Meta Atualizada — {tipo}",
-            description=f"Semana: `{week_id}`\n\n" + "\n".join(linhas),
+            description=f"Semana: `{format_date_br(week_id)}`\n\n" + "\n".join(linhas),
             color=0xFFD700,
             timestamp=discord.utils.utcnow(),
         )
@@ -1056,7 +1063,7 @@ class FarmCog(commands.Cog):
         embed.add_field(name="👤 Membro",   value=membro.mention,                                      inline=True)
         embed.add_field(name="🏅 Status",   value=status_str,                                          inline=True)
         embed.add_field(name="📦 Entregou", value=entregue_txt, inline=False)
-        embed.set_footer(text=f"Morro do Mineiro • Semana {week_id}")
+        embed.set_footer(text=f"Morro do Mineiro • Semana {format_date_br(week_id)}")
 
         cfg             = db_get_guild_config(str(guild.id))
         canal_notif_id  = int(cfg["canal_notificacao_farm"]) if cfg and cfg["canal_notificacao_farm"] else None
@@ -1145,7 +1152,7 @@ class FarmCog(commands.Cog):
                 value="💬 Baú aberto. Registre seu farm dentro do prazo.",
                 inline=False,
             )
-            embed.set_footer(text=f"Morro do Mineiro • Semana {week_id}")
+            embed.set_footer(text=f"Morro do Mineiro • Semana {format_date_br(week_id)}")
             try:
                 canal = guild.get_channel(int(cfg["canal_avisos_farm"])) or \
                         await guild.fetch_channel(int(cfg["canal_avisos_farm"]))
@@ -1348,7 +1355,7 @@ class FarmCog(commands.Cog):
                 ),
                 inline=False,
             )
-            embed.set_footer(text=f"Morro do Mineiro • Semana {week_id}")
+            embed.set_footer(text=f"Morro do Mineiro • Semana {format_date_br(week_id)}")
 
             try:
                 canal = guild.get_channel(int(cfg["canal_avisos_farm"])) or \
@@ -1428,7 +1435,7 @@ class FarmCog(commands.Cog):
         participantes = db_lista_progresso(guild_id, week_id)
         embed = discord.Embed(
             title="📊 Resultados da Semana",
-            description=f"📅 Semana: `{week_id}` — {len(participantes)} participante(s)",
+            description=f"📅 Semana: `{format_date_br(week_id)}` — {len(participantes)} participante(s)",
             color=discord.Color.blue(), timestamp=discord.utils.utcnow(),
         )
         await interaction.response.send_message(
@@ -1437,9 +1444,17 @@ class FarmCog(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="historico", description="Histórico de lançamentos de um membro na semana.")
-    @app_commands.describe(membro="Membro para consultar (deixe vazio para ver o seu próprio)")
-    async def cmd_historico(self, interaction: discord.Interaction, membro: discord.Member = None):
+    @app_commands.command(name="historico", description="Histórico de lançamentos de um membro por semana.")
+    @app_commands.describe(
+        membro="Membro para consultar (deixe vazio para ver o seu próprio)",
+        semana="Data da semana em DD/MM/AAAA (deixe vazio para a semana atual)",
+    )
+    async def cmd_historico(
+        self,
+        interaction: discord.Interaction,
+        membro: discord.Member = None,
+        semana: str = None,
+    ):
         guild_id = str(interaction.guild_id)
         if not db_is_farm_configured(guild_id):
             await interaction.response.send_message(
@@ -1447,7 +1462,17 @@ class FarmCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        week_id = current_week_id()
+        try:
+            week_id = _week_id_consulta(semana)
+        except ValueError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
+        if week_id > current_week_id():
+            await interaction.response.send_message(
+                "❌ Não é possível consultar uma semana futura.",
+                ephemeral=True,
+            )
+            return
         alvo    = membro or interaction.user
         if membro and str(interaction.user.id) != str(membro.id):
             lideranca_ids = db_get_lideranca_role_ids(guild_id)
@@ -1457,7 +1482,7 @@ class FarmCog(commands.Cog):
         eventos = db_eventos_usuario(guild_id, week_id, str(alvo.id))
         embed = discord.Embed(
             title=f"📋 Histórico — {alvo.display_name}",
-            description=f"📅 Semana: `{week_id}`",
+            description=f"📅 Semana: `{format_week_range_br(week_id)}`",
             color=discord.Color.blue(), timestamp=discord.utils.utcnow(),
         )
         embed.set_thumbnail(url=alvo.display_avatar.url)
@@ -1476,8 +1501,11 @@ class FarmCog(commands.Cog):
                 embed.set_footer(text=f"Exibindo 15 de {len(eventos)} lançamentos")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="ranking", description="Ranking manual da semana (liderança).")
-    async def cmd_ranking(self, interaction: discord.Interaction):
+    @app_commands.command(name="ranking", description="Ranking semanal atual ou histórico (liderança).")
+    @app_commands.describe(
+        semana="Data da semana em DD/MM/AAAA (deixe vazio para a semana atual)",
+    )
+    async def cmd_ranking(self, interaction: discord.Interaction, semana: str = None):
         guild_id = str(interaction.guild_id)
         if not db_is_farm_configured(guild_id):
             await interaction.response.send_message(
@@ -1489,9 +1517,24 @@ class FarmCog(commands.Cog):
         if not is_lideranca(interaction.user, lideranca_ids):
             await interaction.response.send_message("❌ Apenas liderança pode ver o ranking.", ephemeral=True)
             return
-        week_id       = current_week_id()
+        try:
+            week_id = _week_id_consulta(semana)
+        except ValueError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
+        if week_id > current_week_id():
+            await interaction.response.send_message(
+                "❌ Não é possível consultar uma semana futura.",
+                ephemeral=True,
+            )
+            return
         participantes = db_ranking_semana(guild_id, week_id)
         embed = build_ranking_embed(guild_id, week_id, participantes, interaction.guild)
+        embed.description = embed.description.replace(
+            format_date_br(week_id),
+            format_week_range_br(week_id),
+            1,
+        )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 

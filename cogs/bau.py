@@ -316,8 +316,10 @@ class CategoryQuantityModal(discord.ui.Modal):
         self,
         session: CategorySession,
         page: int | None = None,
+        forward: bool = True,
     ) -> None:
         self.page = session.page if page is None else page
+        self.forward = forward
         super().__init__(
             title=(
                 f"{_movement_label(session.movement_type)} "
@@ -371,11 +373,16 @@ class CategoryQuantityModal(discord.ui.Modal):
                 self.session.quantities.pop(product, None)
         self.session.page = self.page
 
-        await interaction.response.edit_message(
-            content="\u2705 Pagina salva.",
-            embed=_build_category_page_embed(self.session),
-            view=CategoryPageView(self.session),
-        )
+        if self.forward and self.page < self.session.page_count - 1:
+            await interaction.response.send_modal(
+                CategoryQuantityModal(self.session, self.page + 1, forward=True)
+            )
+        else:
+            await interaction.response.edit_message(
+                content="\u2705 Pagina salva.",
+                embed=_build_category_page_embed(self.session),
+                view=CategoryPageView(self.session),
+            )
 
 
 class CategoryMovementView(RequesterView):
@@ -448,7 +455,7 @@ class CategoryPageView(RequesterView):
         button: discord.ui.Button,
     ) -> None:
         await interaction.response.send_modal(
-            CategoryQuantityModal(self.session, self.session.page - 1)
+            CategoryQuantityModal(self.session, self.session.page - 1, forward=False)
         )
 
     @discord.ui.button(label="Editar pagina", style=discord.ButtonStyle.primary)
@@ -458,7 +465,7 @@ class CategoryPageView(RequesterView):
         button: discord.ui.Button,
     ) -> None:
         await interaction.response.send_modal(
-            CategoryQuantityModal(self.session)
+            CategoryQuantityModal(self.session, forward=False)
         )
 
     @discord.ui.button(label="Proxima", style=discord.ButtonStyle.secondary)
@@ -468,7 +475,7 @@ class CategoryPageView(RequesterView):
         button: discord.ui.Button,
     ) -> None:
         await interaction.response.send_modal(
-            CategoryQuantityModal(self.session, self.session.page + 1)
+            CategoryQuantityModal(self.session, self.session.page + 1, forward=False)
         )
 
     @discord.ui.button(label="Enviar", style=discord.ButtonStyle.success)

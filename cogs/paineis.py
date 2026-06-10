@@ -3,8 +3,15 @@ Listeners e handlers dos painéis de operações e set.
 Responde a cliques de botões e abre os modals/embeds correspondentes.
 """
 
+from datetime import date, timedelta
+
 import discord
 from discord.ext import commands
+from core.date_utils import (
+    format_date_br,
+    format_week_range_br,
+    week_id_from_date_br,
+)
 from core.permissions import is_lideranca, is_permitido_farm
 from services.db_service import (
     db_get_lideranca_role_ids,
@@ -23,6 +30,175 @@ from services.paineis_service import PainelOperacoesView, PainelSetView
 import logging
 
 log = logging.getLogger("paineis")
+
+RANKING_WEEKS_PER_PAGE = 20
+
+
+def _ranking_week_id_by_offset(offset: int) -> str:
+    current_start = date.fromisoformat(current_week_id())
+    return (current_start - timedelta(weeks=max(offset, 0))).isoformat()
+
+
+def _build_ranking_history_embed(
+    guild: discord.Guild,
+    guild_id: str,
+    week_id: str,
+) -> discord.Embed:
+    from cogs.farm import build_ranking_embed
+
+    participantes = db_ranking_semana(guild_id, week_id)
+    embed = build_ranking_embed(guild_id, week_id, participantes, guild)
+    embed.description = embed.description.replace(
+        format_date_br(week_id),
+        format_week_range_br(week_id),
+        1,
+    )
+    embed.set_footer(text="Use o seletor abaixo para consultar outra semana")
+    return embed
+
+
+class RankingWeekSelect(discord.ui.Select):
+    def __init__(self, ranking_view: "RankingHistoryView"):
+        self.ranking_view = ranking_view
+        first_offset = ranking_view.page * RANKING_WEEKS_PER_PAGE
+        current_id = current_week_id()
+        options = []
+
+        for index in range(RANKING_WEEKS_PER_PAGE):
+            week_id = _ranking_week_id_by_offset(first_offset + index)
+            label = format_week_range_br(week_id)
+            if week_id == current_id:
+                label = f"Semana atual | {label}"
+            options.append(
+                discord.SelectOption(
+                    label=label,
+                    value=week_id,
+                    description="Consultar ranking e lançamentos desta semana",
+                    default=week_id == ranking_view.week_id,
+                )
+            )
+
+        super().__init__(
+            placeholder="Escolha uma semana para consultar",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.ranking_view.show_week(interaction, self.values[0])
+
+
+class RankingDateModal(discord.ui.Modal, title="Consultar Semana do Ranking"):
+    data = discord.ui.TextInput(
+        label="Data da semana",
+        placeholder="Ex: 15/01/2026",
+        min_length=10,
+        max_length=10,
+    )
+
+    def __init__(self, ranking_view: "RankingHistoryView"):
+        super().__init__()
+        self.ranking_view = ranking_view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            week_id = week_id_from_date_br(self.data.value)
+        except ValueError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
+
+        current_id = current_week_id()
+        if week_id > current_id:
+            await interaction.response.send_message(
+                "❌ Não é possível consultar uma semana futura.",
+                ephemeral=True,
+            )
+            return
+
+        current_start = date.fromisoformat(current_id)
+        selected_start = date.fromisoformat(week_id)
+        offset = (current_start - selected_start).days // 7
+        self.ranking_view.page = offset // RANKING_WEEKS_PER_PAGE
+        self.ranking_view.week_id = week_id
+        self.ranking_view.rebuild()
+
+        embed = _build_ranking_history_embed(
+            self.ranking_view.guild,
+            self.ranking_view.guild_id,
+            week_id,
+        )
+        await interaction.response.edit_message(embed=embed, view=self.ranking_view)
+
+
+class RankingHistoryView(discord.ui.View):
+    def __init__(
+        self,
+        guild: discord.Guild,
+        guild_id: str,
+        *,
+        week_id: str | None = None,
+        page: int = 0,
+    ):
+        super().__init__(timeout=300)
+        self.guild = guild
+        self.guild_id = guild_id
+        self.week_id = week_id or current_week_id()
+        self.page = max(page, 0)
+        self.rebuild()
+
+    def rebuild(self):
+        self.clear_items()
+        self.add_item(RankingWeekSelect(self))
+
+        older = discord.ui.Button(
+            label="Semanas mais antigas",
+            style=discord.ButtonStyle.secondary,
+            row=1,
+        )
+        older.callback = self.show_older_weeks
+        self.add_item(older)
+
+        newer = discord.ui.Button(
+            label="Semanas mais recentes",
+            style=discord.ButtonStyle.secondary,
+            disabled=self.page == 0,
+            row=1,
+        )
+        newer.callback = self.show_newer_weeks
+        self.add_item(newer)
+
+        choose_date = discord.ui.Button(
+            label="Informar data",
+            style=discord.ButtonStyle.primary,
+            row=1,
+        )
+        choose_date.callback = self.open_date_modal
+        self.add_item(choose_date)
+
+    async def show_week(self, interaction: discord.Interaction, week_id: str):
+        self.week_id = week_id
+        self.rebuild()
+        embed = _build_ranking_history_embed(self.guild, self.guild_id, week_id)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def show_older_weeks(self, interaction: discord.Interaction):
+        self.page += 1
+        await self.show_week(
+            interaction,
+            _ranking_week_id_by_offset(self.page * RANKING_WEEKS_PER_PAGE),
+        )
+
+    async def show_newer_weeks(self, interaction: discord.Interaction):
+        self.page = max(self.page - 1, 0)
+        await self.show_week(
+            interaction,
+            _ranking_week_id_by_offset(self.page * RANKING_WEEKS_PER_PAGE),
+        )
+
+    async def open_date_modal(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(RankingDateModal(self))
 
 
 class AvisoFarmModal(discord.ui.Modal, title="📢 Aviso de Farm"):
@@ -193,7 +369,7 @@ class PaineisCog(commands.Cog):
                 from cogs.farm import ResultadoView
                 embed = discord.Embed(
                     title="📊 Aprovar Farm — Semana Atual",
-                    description=f"📅 Semana: `{week_id}` — {len(participantes)} participante(s)\nSelecione um membro para ver detalhes e aprovar.",
+                    description=f"📅 Semana: `{format_date_br(week_id)}` — {len(participantes)} participante(s)\nSelecione um membro para ver detalhes e aprovar.",
                     color=discord.Color.blue(),
                     timestamp=discord.utils.utcnow(),
                 )
@@ -308,11 +484,10 @@ class PaineisCog(commands.Cog):
                 log.info("recolhimento: %s (%s)", member.name, guild_id)
 
             elif funcao == "ranking":
-                from cogs.farm import build_ranking_embed
-                week_id       = current_week_id()
-                participantes = db_ranking_semana(guild_id, week_id)
-                embed         = build_ranking_embed(guild_id, week_id, participantes, interaction.guild)
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+                week_id = current_week_id()
+                embed = _build_ranking_history_embed(interaction.guild, guild_id, week_id)
+                view = RankingHistoryView(interaction.guild, guild_id, week_id=week_id)
+                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
                 log.info("ranking: %s (%s)", member.name, guild_id)
 
             else:

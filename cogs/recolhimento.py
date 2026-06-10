@@ -12,6 +12,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from core.date_utils import format_date_br
 from core.logger import get_logger
 from core.permissions import is_lideranca
 from services.db_service import (
@@ -51,8 +52,8 @@ _KEY_LABELS = {
 # ── Helpers de formatação ─────────────────────────────────────────────────────
 
 def _fmt_data_curta(iso: str) -> str:
-    """'2026-05-05T...' → '05/05'"""
-    return iso[8:10] + "/" + iso[5:7]
+    """'2026-05-05T...' → '05/05/2026'"""
+    return format_date_br(iso)
 
 
 def _fmt_valor(valor: float) -> str:
@@ -765,7 +766,8 @@ class RecolhimentoCog(commands.Cog):
 
         tipo_label = "Dinheiro Sujo" if tipo == "dinheiro" else "Farm"
         await interaction.response.send_message(
-            f"✅ Ciclo de **{tipo_label}** criado!\nSemana: `{week_inicio}` → `{week_fim}`",
+            f"✅ Ciclo de **{tipo_label}** criado!\n"
+            f"Semana: `{format_date_br(week_inicio)}` → `{format_date_br(week_fim)}`",
             ephemeral=True,
         )
         log.info(
