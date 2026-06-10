@@ -144,6 +144,54 @@ class BauViewTests(unittest.IsolatedAsyncioTestCase):
                 self.assertLessEqual(len(modal.children), 5)
                 modal.stop()
 
+    async def test_all_category_products_are_reachable_through_pages(self):
+        for category, products in CATEGORIAS.items():
+            session = CategorySession(
+                category,
+                "entrada",
+                123,
+                tuple(products),
+            )
+            visible_products = []
+            for page in range(session.page_count):
+                modal = CategoryQuantityModal(session, page)
+                visible_products.extend(product for product, _ in modal.inputs)
+                modal.stop()
+
+            self.assertEqual(visible_products, products, category)
+
+    async def test_category_navigation_uses_the_page_shown_by_the_view(self):
+        session = CategorySession(
+            "Teste",
+            "entrada",
+            123,
+            tuple(f"Produto {index}" for index in range(11)),
+        )
+        session.page = 2
+        view = CategoryPageView(session, page=0)
+        buttons = {
+            child.label: child
+            for child in view.children
+            if isinstance(child, discord.ui.Button)
+        }
+
+        self.assertTrue(buttons["Anterior"].disabled)
+        next_button = next(
+            child for child in view.children
+            if isinstance(child, discord.ui.Button)
+            and child.label.startswith("Proxima pagina")
+        )
+        self.assertEqual(next_button.label, "Proxima pagina (2/3)")
+
+        interaction = SimpleNamespace(
+            response=SimpleNamespace(send_modal=AsyncMock())
+        )
+        await next_button.callback(interaction)
+        opened_modal = interaction.response.send_modal.await_args.args[0]
+        self.assertEqual(opened_modal.page, 1)
+        opened_modal.stop()
+        view.stop()
+
     async def test_opening_next_modal_does_not_advance_session_before_submit(self):
         session = CategorySession(
             "Teste",
