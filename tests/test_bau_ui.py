@@ -161,6 +161,39 @@ class BauViewTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(visible_products, products, category)
 
+    async def test_all_multi_page_categories_can_navigate_to_every_page(self):
+        for category, products in CATEGORIAS.items():
+            session = CategorySession(
+                category,
+                "entrada",
+                123,
+                tuple(products),
+            )
+            current_page = 0
+            visited_pages = [current_page]
+
+            while current_page < session.page_count - 1:
+                view = CategoryPageView(session, current_page)
+                self.assertFalse(view.next.disabled, category)
+                interaction = SimpleNamespace(
+                    response=SimpleNamespace(edit_message=AsyncMock())
+                )
+
+                await view.next.callback(interaction)
+
+                call_kwargs = interaction.response.edit_message.await_args.kwargs
+                next_view = call_kwargs["view"]
+                current_page = next_view.page
+                visited_pages.append(current_page)
+                view.stop()
+                next_view.stop()
+
+            self.assertEqual(
+                visited_pages,
+                list(range(session.page_count)),
+                category,
+            )
+
     async def test_category_navigation_changes_page_without_opening_modal(self):
         session = CategorySession(
             "Teste",
