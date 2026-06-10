@@ -358,16 +358,15 @@ class CategoryQuantityModal(discord.ui.Modal):
 
         if errors:
             self.session.page = self.page
-            await interaction.response.send_message(
+            await interaction.response.edit_message(
                 content=(
                     "\u274c Quantidade invalida em: "
                     + ", ".join(f"**{product}**" for product in errors)
                     + ". Use apenas numeros inteiros positivos.\n"
-                    "Clique em **Editar pagina** para corrigir."
+                    "Clique em **Preencher pagina** para corrigir."
                 ),
                 embed=_build_category_page_embed(self.session, self.page),
                 view=CategoryPageView(self.session, self.page),
-                ephemeral=True,
             )
             return
 
@@ -387,11 +386,10 @@ class CategoryQuantityModal(discord.ui.Modal):
                 "Use **Proxima pagina** para continuar."
             )
         )
-        await interaction.response.send_message(
+        await interaction.response.edit_message(
             content=content,
             embed=_build_category_page_embed(self.session, self.page),
             view=CategoryPageView(self.session, self.page),
-            ephemeral=True,
         )
 
 
@@ -411,7 +409,15 @@ class CategoryMovementView(RequesterView):
             interaction.user.id,
             tuple(CATEGORIAS[self.category]),
         )
-        await interaction.response.send_modal(CategoryQuantityModal(session))
+        await interaction.response.edit_message(
+            content=(
+                f"Selecione uma pagina de **{self.category}** e clique em "
+                "**Preencher pagina**. Todos os produtos podem ser acessados "
+                "pelos botoes de navegacao."
+            ),
+            embed=_build_category_page_embed(session, 0),
+            view=CategoryPageView(session, 0),
+        )
 
     @discord.ui.button(
         label="Entrada",
@@ -473,11 +479,18 @@ class CategoryPageView(RequesterView):
         interaction: discord.Interaction,
         button: discord.ui.Button,
     ) -> None:
-        await interaction.response.send_modal(
-            CategoryQuantityModal(self.session, self.page - 1)
+        target_page = self.page - 1
+        self.session.page = target_page
+        await interaction.response.edit_message(
+            content="Selecione a pagina que deseja preencher.",
+            embed=_build_category_page_embed(self.session, target_page),
+            view=CategoryPageView(self.session, target_page),
         )
 
-    @discord.ui.button(label="Editar pagina", style=discord.ButtonStyle.primary)
+    @discord.ui.button(
+        label="Preencher pagina",
+        style=discord.ButtonStyle.primary,
+    )
     async def edit_page(
         self,
         interaction: discord.Interaction,
@@ -496,8 +509,12 @@ class CategoryPageView(RequesterView):
         interaction: discord.Interaction,
         button: discord.ui.Button,
     ) -> None:
-        await interaction.response.send_modal(
-            CategoryQuantityModal(self.session, self.page + 1)
+        target_page = self.page + 1
+        self.session.page = target_page
+        await interaction.response.edit_message(
+            content="Selecione a pagina que deseja preencher.",
+            embed=_build_category_page_embed(self.session, target_page),
+            view=CategoryPageView(self.session, target_page),
         )
 
     @discord.ui.button(label="Enviar", style=discord.ButtonStyle.success)
