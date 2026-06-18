@@ -162,6 +162,72 @@ CREATE TABLE IF NOT EXISTS lideranca_pendencias (
 
 CREATE INDEX IF NOT EXISTS idx_lideranca_pendencias_guild_status
 ON lideranca_pendencias (guild_id, status);
+
+CREATE TABLE IF NOT EXISTS farm_ticket_config (
+    guild_id               TEXT PRIMARY KEY,
+    category_ids_json      TEXT NOT NULL,
+    admin_role_ids_json    TEXT NOT NULL,
+    atualizado_em          TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS farm_tickets (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id               TEXT NOT NULL,
+    week_id                TEXT NOT NULL,
+    user_id                TEXT NOT NULL,
+    member_name            TEXT NOT NULL,
+    channel_id             TEXT,
+    panel_message_id       TEXT,
+    status                 TEXT NOT NULL DEFAULT 'criando',
+    assigned_to            TEXT,
+    criado_em              TEXT NOT NULL,
+    atualizado_em          TEXT NOT NULL,
+    finalizado_em          TEXT,
+    finalizado_por         TEXT,
+    finalizacao_motivo     TEXT,
+    excluido_em            TEXT,
+    UNIQUE (guild_id, week_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS farm_ticket_lancamentos (
+    event_id               INTEGER PRIMARY KEY,
+    ticket_id              INTEGER NOT NULL,
+    proof_channel_id       TEXT NOT NULL,
+    proof_message_id       TEXT NOT NULL,
+    proof_url              TEXT NOT NULL,
+    log_proof_url          TEXT,
+    observacao             TEXT,
+    status                 TEXT NOT NULL DEFAULT 'registrado',
+    revisado_por           TEXT,
+    revisado_em            TEXT,
+    revisao_motivo         TEXT,
+    criado_em              TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS farm_ticket_actions (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id              INTEGER NOT NULL,
+    action                 TEXT NOT NULL,
+    actor_id               TEXT NOT NULL,
+    event_id               INTEGER,
+    payload_json           TEXT,
+    criado_em              TEXT NOT NULL,
+    log_enviado_em         TEXT,
+    log_message_id         TEXT,
+    tentativas_log         INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_farm_tickets_channel
+ON farm_tickets (guild_id, channel_id);
+
+CREATE INDEX IF NOT EXISTS idx_farm_tickets_status_week
+ON farm_tickets (status, week_id);
+
+CREATE INDEX IF NOT EXISTS idx_farm_ticket_lancamentos_ticket
+ON farm_ticket_lancamentos (ticket_id, event_id);
+
+CREATE INDEX IF NOT EXISTS idx_farm_ticket_actions_pending
+ON farm_ticket_actions (log_enviado_em, id);
 """
 
 MIGRATIONS = (

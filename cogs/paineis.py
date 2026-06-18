@@ -12,17 +12,15 @@ from core.date_utils import (
     format_week_range_br,
     week_id_from_date_br,
 )
+from core.farm_policy import FARM_TICKET_ONLY_MESSAGE
 from core.permissions import is_lideranca, is_permitido_farm
 from services.db_service import (
     db_get_lideranca_role_ids,
     db_get_permitidos_role_ids,
     db_get_progresso,
     db_get_meta,
-    db_meta_itens_ativos,
     db_get_ultimo_evento,
     db_evento_itens,
-    db_lista_progresso,
-    db_get_guild_config,
     current_week_id,
     db_ranking_semana,
 )
@@ -32,6 +30,24 @@ import logging
 log = logging.getLogger("paineis")
 
 RANKING_WEEKS_PER_PAGE = 20
+
+
+class LegacyPainelFarmView(discord.ui.View):
+    """Mantém os botões de mensagens antigas respondendo com a nova orientação."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _disabled(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_message(FARM_TICKET_ONLY_MESSAGE, ephemeral=True)
+
+    @discord.ui.button(label="Farm antigo desativado", custom_id="painel:lancar_farm")
+    async def lancar_farm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._disabled(interaction)
+
+    @discord.ui.button(label="Farm antigo desativado", custom_id="painel:lancar_dinheiro")
+    async def lancar_dinheiro(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._disabled(interaction)
 
 
 def _ranking_week_id_by_offset(offset: int) -> str:
@@ -201,55 +217,13 @@ class RankingHistoryView(discord.ui.View):
         await interaction.response.send_modal(RankingDateModal(self))
 
 
-class AvisoFarmModal(discord.ui.Modal, title="📢 Aviso de Farm"):
-    titulo = discord.ui.TextInput(
-        label="Título do aviso",
-        placeholder="Ex: Lembrete de entrega semanal",
-        max_length=256,
-    )
-    mensagem = discord.ui.TextInput(
-        label="Mensagem",
-        style=discord.TextStyle.paragraph,
-        placeholder="Escreva o aviso aqui...",
-        max_length=2000,
-    )
-    mencionar_todos = discord.ui.TextInput(
-        label="Mencionar @everyone? (sim/não)",
-        placeholder="sim ou não",
-        max_length=3,
-        required=False,
-    )
-
-    def __init__(self, canal_avisos: discord.TextChannel):
-        super().__init__()
-        self.canal_avisos = canal_avisos
-
-    async def on_submit(self, interaction: discord.Interaction):
-        mencionar = self.mencionar_todos.value.strip().lower() in ("sim", "s", "yes", "y", "1")
-        embed = discord.Embed(
-            title=f"📢 {self.titulo.value.strip()}",
-            description=self.mensagem.value.strip(),
-            color=discord.Color.orange(),
-            timestamp=discord.utils.utcnow(),
-        )
-        embed.set_footer(text=f"Aviso enviado por {interaction.user.display_name}")
-        content = "@everyone" if mencionar else None
-        await self.canal_avisos.send(content=content, embed=embed)
-        await interaction.response.send_message("✅ Aviso enviado com sucesso!", ephemeral=True)
-        log.info("aviso_farm enviado por %s para canal %s (everyone=%s)", interaction.user.name, self.canal_avisos.id, mencionar)
-
-    async def on_error(self, interaction: discord.Interaction, error: Exception):
-        log.error("Erro no AvisoFarmModal: %s", error, exc_info=True)
-        if not interaction.response.is_done():
-            await interaction.response.send_message("❌ Erro ao enviar aviso.", ephemeral=True)
-
-
 class PaineisCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         # Registra views persistentes para sobreviver a reinicializações do bot
         bot.add_view(PainelOperacoesView())
         bot.add_view(PainelSetView())
+        bot.add_view(LegacyPainelFarmView())
 
     # ══════════════════════════════════════════════════════════════════════════
     # HANDLER: PAINEL DE OPERAÇÕES
@@ -266,65 +240,10 @@ class PaineisCog(commands.Cog):
         try:
             # ── Lançar Farm ───────────────────────────────────────────────────
             if funcao == "lancar_farm":
-                permissao = is_permitido_farm(member, permitidos_ids)
-                if not permissao:
-                    await interaction.response.send_message(
-                        "❌ Você não tem permissão para lançar farm.", ephemeral=True
-                    )
-                    return
-
-                week_id = current_week_id()
-                meta    = db_get_meta(guild_id, week_id)
-                itens   = db_meta_itens_ativos(meta)
-
-                if not itens or not any((qtd or 0) > 0 for qtd in itens.values()):
-                    await interaction.response.send_message(
-                        "❌ A meta Kit Desmanche ainda não foi definida. Use `/meta` para defini-la.",
-                        ephemeral=True,
-                    )
-                    return
-
-                farm_cog = interaction.client.get_cog("FarmCog")
-                if not farm_cog:
-                    await interaction.response.send_message(
-                        "❌ Erro interno: FarmCog não carregado.", ephemeral=True
-                    )
-                    return
-
-                from cogs.farm import LancarModal
-                await interaction.response.send_modal(
-                    LancarModal(farm_cog, week_id, guild_id, str(member.id), itens)
-                )
-                log.info("lancar_farm: %s (%s)", member.name, guild_id)
+                await interaction.response.send_message(FARM_TICKET_ONLY_MESSAGE, ephemeral=True)
 
             elif funcao == "lancar_dinheiro":
-                if not is_permitido_farm(member, permitidos_ids):
-                    await interaction.response.send_message(
-                        "❌ Você não tem permissão para lançar dinheiro.", ephemeral=True
-                    )
-                    return
-
-                week_id = current_week_id()
-                meta = db_get_meta(guild_id, week_id)
-                if not meta or (meta["meta_dinheiro"] or 0) <= 0:
-                    await interaction.response.send_message(
-                        "❌ A meta de dinheiro ainda não foi definida. Use `/meta` para defini-la.",
-                        ephemeral=True,
-                    )
-                    return
-
-                farm_cog = interaction.client.get_cog("FarmCog")
-                if not farm_cog:
-                    await interaction.response.send_message(
-                        "❌ Erro interno: FarmCog não carregado.", ephemeral=True
-                    )
-                    return
-
-                from cogs.farm import LancarDinheiroModal
-                await interaction.response.send_modal(
-                    LancarDinheiroModal(farm_cog, week_id, guild_id, str(member.id))
-                )
-                log.info("lancar_dinheiro: %s (%s)", member.name, guild_id)
+                await interaction.response.send_message(FARM_TICKET_ONLY_MESSAGE, ephemeral=True)
 
             # ── Ver Meu Farm ──────────────────────────────────────────────────
             elif funcao == "ver_meu_farm":
@@ -345,37 +264,6 @@ class PaineisCog(commands.Cog):
                 embed = build_farm_embed(meta, prog, member, week_id)
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 log.info("ver_meu_farm: %s (%s)", member.name, guild_id)
-
-            # ── Aprovar Farm ──────────────────────────────────────────────────
-            elif funcao == "aprovar_farm":
-                if not is_lideranca(member, lideranca_ids):
-                    await interaction.response.send_message(
-                        "❌ Você não tem permissão para aprovar farms.", ephemeral=True
-                    )
-                    return
-                week_id       = current_week_id()
-                participantes = db_lista_progresso(guild_id, week_id)
-                if not participantes:
-                    await interaction.response.send_message(
-                        "⚠️ Nenhum farm registrado esta semana.", ephemeral=True
-                    )
-                    return
-                farm_cog = interaction.client.get_cog("FarmCog")
-                if not farm_cog:
-                    await interaction.response.send_message(
-                        "❌ Erro interno: FarmCog não carregado.", ephemeral=True
-                    )
-                    return
-                from cogs.farm import ResultadoView
-                embed = discord.Embed(
-                    title="📊 Aprovar Farm — Semana Atual",
-                    description=f"📅 Semana: `{format_date_br(week_id)}` — {len(participantes)} participante(s)\nSelecione um membro para ver detalhes e aprovar.",
-                    color=discord.Color.blue(),
-                    timestamp=discord.utils.utcnow(),
-                )
-                view = ResultadoView(farm_cog, guild_id, week_id, participantes, interaction.guild)
-                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-                log.info("aprovar_farm: %s (%s)", member.name, guild_id)
 
             # ── Editar Farm ───────────────────────────────────────────────────
             elif funcao == "editar_farm":
@@ -443,24 +331,6 @@ class PaineisCog(commands.Cog):
                     return
                 await interaction.response.send_modal(AnuncioModal(canal_anuncio=canal))
                 log.info("fazer_anuncio: %s (%s)", member.name, guild_id)
-
-            # ── Avisos Farm ───────────────────────────────────────────────────
-            elif funcao == "avisos_farm":
-                if not is_lideranca(member, lideranca_ids):
-                    await interaction.response.send_message(
-                        "❌ Você não tem permissão para enviar avisos.", ephemeral=True
-                    )
-                    return
-                cfg = db_get_guild_config(guild_id)
-                canal_avisos_id = int(cfg["canal_avisos_farm"]) if cfg and cfg["canal_avisos_farm"] else None
-                canal_avisos = interaction.guild.get_channel(canal_avisos_id) if canal_avisos_id else None
-                if not canal_avisos:
-                    await interaction.response.send_message(
-                        "❌ Canal de avisos de farm não configurado. Use `/setup_farm`.", ephemeral=True
-                    )
-                    return
-                await interaction.response.send_modal(AvisoFarmModal(canal_avisos=canal_avisos))
-                log.info("avisos_farm: %s (%s)", member.name, guild_id)
 
             # ── Ranking ───────────────────────────────────────────────────────
             elif funcao == "recolhimento":

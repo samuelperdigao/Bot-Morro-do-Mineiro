@@ -26,6 +26,8 @@ from services.db_service import (
     db_get_system_config,
     db_set_guild_config,
     db_set_system_config,
+    db_ticket_config_get,
+    db_ticket_config_set,
 )
 
 log = get_logger("dashboard", "dashboard.log")
@@ -49,6 +51,7 @@ DASHBOARD_CHANNEL_ID = 1494692392052461588
 SISTEMAS = [
     {"key": "set",        "icon": "🎮", "nome": "Sistema de Set",        "desc": "Configure canais, categoria e cargos do sistema de set."},
     {"key": "farm",       "icon": "🌾", "nome": "Sistema de Farm",       "desc": "Configure canal, log e cargos do sistema de farm."},
+    {"key": "farm_tickets", "icon": "🎫", "nome": "Tickets de Farm", "desc": "Configure categorias e cargos administrativos dos tickets."},
     {"key": "meta",       "icon": "🎯", "nome": "Sistema de Meta",       "desc": "Configure o sistema de metas semanais."},
     {"key": "ausencia",   "icon": "🏖️", "nome": "Sistema de Ausência",   "desc": "Configure o canal de ausências."},
     {"key": "encomenda",  "icon": "📦", "nome": "Sistema de Encomenda",  "desc": "Configure o canal de encomendas."},
@@ -461,6 +464,55 @@ class AnuncioConfigModal(discord.ui.Modal):
             pass
 
 
+class FarmTicketsConfigModal(discord.ui.Modal, title="Configurar Tickets de Farm"):
+    def __init__(self, current: dict | None = None):
+        super().__init__()
+        current = current or {}
+        self.categories = discord.ui.TextInput(
+            label="IDs das categorias de tickets",
+            placeholder="Separe múltiplas categorias por vírgula",
+            default=",".join(current.get("category_ids", [])) or None,
+            required=True,
+            max_length=500,
+        )
+        self.admin_roles = discord.ui.TextInput(
+            label="IDs dos cargos administradores",
+            placeholder="Separe múltiplos cargos por vírgula",
+            default=",".join(current.get("admin_role_ids", [])) or None,
+            required=True,
+            max_length=500,
+        )
+        self.add_item(self.categories)
+        self.add_item(self.admin_roles)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        category_ids = [int(value) for value in _parse_ids(self.categories.value)]
+        role_ids = [int(value) for value in _parse_ids(self.admin_roles.value)]
+        if not category_ids or not role_ids:
+            await interaction.response.send_message(
+                "Informe ao menos uma categoria e um cargo administrativo válidos.", ephemeral=True
+            )
+            return
+        invalid_categories = [value for value in category_ids if not isinstance(interaction.guild.get_channel(value), discord.CategoryChannel)]
+        invalid_roles = [value for value in role_ids if interaction.guild.get_role(value) is None]
+        if invalid_categories or invalid_roles:
+            await interaction.response.send_message(
+                "Há IDs que não correspondem a categorias ou cargos deste servidor.", ephemeral=True
+            )
+            return
+        farm_log = db_get_system_config(str(interaction.guild_id), "farm")
+        if not farm_log or not farm_log["canal_log_id"]:
+            await interaction.response.send_message(
+                "Configure primeiro o canal de log do Sistema de Farm.", ephemeral=True
+            )
+            return
+        db_ticket_config_set(str(interaction.guild_id), category_ids, role_ids)
+        await interaction.response.send_message(
+            "✅ Tickets de farm configurados. O canal de log existente do Farm será reutilizado.",
+            ephemeral=True,
+        )
+
+
 class SystemConfigModal(discord.ui.Modal):
     """Modal genérico: canal_interacao + canal_log, com sync opcional para guild_config."""
 
@@ -580,6 +632,9 @@ async def _handle_config_button(interaction: discord.Interaction, sistema_key: s
             "permitidos": _cfg("cargos_permitidos_farm"),
             "editores":   _cfg("cargos_editar_farm"),
         })
+
+    elif sistema_key == "farm_tickets":
+        modal = FarmTicketsConfigModal(current=db_ticket_config_get(guild_id))
 
     elif sistema_key == "anuncio":
         modal = AnuncioConfigModal(current={

@@ -130,7 +130,7 @@ class SetupCog(commands.Cog):
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(
         cargos_lideranca="IDs ou menções dos cargos de liderança do farm (separados por vírgula)",
-        cargos_permitidos="IDs ou menções dos cargos que podem usar /farm (separados por vírgula)",
+        cargos_permitidos="IDs ou menções dos cargos que participam do farm por ticket (separados por vírgula)",
         canal_avisos="Canal de avisos gerais do farm (ranking, aprovações)",
         canal_notificacao="Canal onde a notificação de meta concluída é enviada (opcional, usa canal_avisos se omitido)",
     )

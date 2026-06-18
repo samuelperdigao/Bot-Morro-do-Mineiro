@@ -18,6 +18,7 @@ COG_EXTENSIONS = (
     "cogs.colete",
     "cogs.dashboard",
     "cogs.farm_painel",
+    "cogs.farm_tickets",
     "cogs.ranking_painel",
     "cogs.hierarquia",
     "cogs.acao_painel",

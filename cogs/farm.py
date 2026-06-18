@@ -10,6 +10,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from core.date_utils import format_date_br, format_week_range_br, week_id_from_date_br
+from core.farm_policy import FARM_TICKET_ONLY_MESSAGE
 from core.logger import get_logger
 from core.permissions import is_lideranca, is_permitido_farm
 from core.role_promotion import promote_role
@@ -264,6 +265,9 @@ class DefinirMetasModal(discord.ui.Modal):
             f"✅ Metas da semana `{format_date_br(self.week_id)}` definidas:\n{resumo}", ephemeral=True
         )
         await self.cog._atualizar_ranking_fixo(self.guild_id)
+        ticket_cog = interaction.client.get_cog("FarmTicketsCog")
+        if ticket_cog:
+            await ticket_cog.refresh_week(self.guild_id, self.week_id)
         await self.cog._enviar_aviso_meta_atualizada(
             interaction.guild,
             self.guild_id,
@@ -344,6 +348,9 @@ class DefinirMetasDinheiroModal(discord.ui.Modal, title="Definir Meta — Dinhei
             ephemeral=True,
         )
         await self.cog._atualizar_ranking_fixo(self.guild_id)
+        ticket_cog = interaction.client.get_cog("FarmTicketsCog")
+        if ticket_cog:
+            await ticket_cog.refresh_week(self.guild_id, self.week_id)
         await self.cog._enviar_aviso_meta_atualizada(
             interaction.guild,
             self.guild_id,
@@ -387,6 +394,9 @@ class LancarModal(discord.ui.Modal):
             self._inputs.append(ti)
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.send_message(FARM_TICKET_ONLY_MESSAGE, ephemeral=True)
+        return
+
         if not janela_valida():
             await interaction.response.send_message(
                 "❌ Fora da janela de lançamento (Segunda 00:00 a Domingo 23:59).", ephemeral=True
@@ -490,6 +500,9 @@ class LancarDinheiroModal(discord.ui.Modal, title="💵 Lançar Dinheiro"):
         self.user_id  = user_id
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.send_message(FARM_TICKET_ONLY_MESSAGE, ephemeral=True)
+        return
+
         if not janela_valida():
             await interaction.response.send_message(
                 "❌ Fora da janela de lançamento (Segunda 00:00 a Domingo 23:59).", ephemeral=True
@@ -729,47 +742,18 @@ class FarmView(discord.ui.View):
     def _owns(self, interaction: discord.Interaction) -> bool:
         return str(interaction.user.id) == self.user_id
 
-    @discord.ui.button(label="📦 Lançar", style=discord.ButtonStyle.success)
-    async def lancar(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="🎫 Abrir Ticket de Farm", style=discord.ButtonStyle.success)
+    async def abrir_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self._owns(interaction):
             await interaction.response.send_message("❌ Este painel não é seu.", ephemeral=True)
             return
-        meta = db_get_meta(self.guild_id, self.week_id)
-        itens = db_meta_itens_ativos(meta)
-        if not itens or not any((qtd or 0) > 0 for qtd in itens.values()):
-            nome_meta = "Colete" if db_meta_tipo_efetivo(meta) == "colete" else "Kit Desmanche"
+        ticket_cog = interaction.client.get_cog("FarmTicketsCog")
+        if not ticket_cog:
             await interaction.response.send_message(
-                f"❌ A meta {nome_meta} ainda não foi definida.", ephemeral=True
+                "❌ Sistema de tickets indisponível.", ephemeral=True
             )
             return
-        await _safe_send_modal(interaction, LancarModal(self.cog, self.week_id, self.guild_id, self.user_id, itens))
-
-    @discord.ui.button(label="💵 Lançar Dinheiro", style=discord.ButtonStyle.success)
-    async def lancar_dinheiro(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self._owns(interaction):
-            await interaction.response.send_message("❌ Este painel não é seu.", ephemeral=True)
-            return
-        meta = db_get_meta(self.guild_id, self.week_id)
-        if not meta or (meta["meta_dinheiro"] or 0) <= 0:
-            await interaction.response.send_message(
-                "❌ A meta de dinheiro ainda não foi definida.", ephemeral=True
-            )
-            return
-        await _safe_send_modal(interaction, LancarDinheiroModal(self.cog, self.week_id, self.guild_id, self.user_id))
-
-    @discord.ui.button(label="✏️ Editar último", style=discord.ButtonStyle.secondary)
-    async def editar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self._owns(interaction):
-            await interaction.response.send_message("❌ Este painel não é seu.", ephemeral=True)
-            return
-        ultimo = db_get_ultimo_evento(self.guild_id, self.week_id, self.user_id)
-        if not ultimo:
-            await interaction.response.send_message(
-                "❌ Nenhum lançamento encontrado para editar.", ephemeral=True
-            )
-            return
-        itens = db_evento_itens(ultimo)
-        await _safe_send_modal(interaction, EditarUltimoModal(self.cog, self.week_id, self.guild_id, self.user_id, itens))
+        await ticket_cog.open_ticket(interaction)
 
     @discord.ui.button(label="🔄 Atualizar", style=discord.ButtonStyle.secondary)
     async def atualizar(self, interaction: discord.Interaction, button: discord.ui.Button):

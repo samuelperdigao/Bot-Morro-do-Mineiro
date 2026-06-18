@@ -549,13 +549,23 @@ def db_get_evento(guild_id: str, week_id: str, user_id: str, event_id: int) -> s
         WHERE id=? AND guild_id=? AND week_id=? AND user_id=?
     """, (event_id, guild_id, week_id, user_id)).fetchone()
 
-def db_lancar(guild_id: str, week_id: str, user_id: str, valores: dict):
-    """valores: dict {nome: quantidade}, ex: {"Folha": 50, "Ópio": 20}"""
-    db_ensure_progresso(guild_id, week_id, user_id)
+def _db_lancar_conn(
+    conn: sqlite3.Connection,
+    guild_id: str,
+    week_id: str,
+    user_id: str,
+    valores: dict,
+) -> tuple[int, str]:
+    """Acumula progresso e cria o evento sem realizar commit."""
     agora = now_tz().isoformat()
-    conn = get_conn()
-
-    prog = db_get_progresso(guild_id, week_id, user_id)
+    conn.execute(
+        "INSERT OR IGNORE INTO progresso (guild_id, week_id, user_id) VALUES (?,?,?)",
+        (guild_id, week_id, user_id),
+    )
+    prog = conn.execute(
+        "SELECT * FROM progresso WHERE guild_id=? AND week_id=? AND user_id=?",
+        (guild_id, week_id, user_id),
+    ).fetchone()
 
     # Inicializa itens do progresso: JSON existente, ou migra das colunas fixas
     if prog and prog["itens_prog_json"]:
@@ -576,12 +586,24 @@ def db_lancar(guild_id: str, week_id: str, user_id: str, valores: dict):
         WHERE guild_id=? AND week_id=? AND user_id=?
     """, (json.dumps(itens_atuais, ensure_ascii=False), agora, guild_id, week_id, user_id))
 
-    conn.execute("""
+    cursor = conn.execute("""
         INSERT INTO eventos (guild_id, week_id, user_id, criado_em, itens_json)
         VALUES (?,?,?,?,?)
     """, (guild_id, week_id, user_id, agora, json.dumps(valores, ensure_ascii=False)))
 
-    conn.commit()
+    return int(cursor.lastrowid), agora
+
+
+def db_lancar(guild_id: str, week_id: str, user_id: str, valores: dict) -> int:
+    """Registra um lançamento normal e retorna o ID do evento criado."""
+    conn = get_conn()
+    try:
+        event_id, _ = _db_lancar_conn(conn, guild_id, week_id, user_id, valores)
+        conn.commit()
+        return event_id
+    except Exception:
+        conn.rollback()
+        raise
 
 def db_editar_ultimo_evento(guild_id: str, week_id: str, user_id: str, valores: dict) -> bool:
     """valores: dict {nome: novo_total}, ex: {"Folha": 80}"""
@@ -1198,3 +1220,352 @@ def db_lideranca_resumo(guild_id: str) -> dict:
         elif status == "concluida":
             resumo["concluidas"] += total
     return resumo
+
+
+# ── Tickets semanais de farm ─────────────────────────────────────────────────
+
+def db_ticket_config_get(guild_id: str) -> dict | None:
+    row = get_conn().execute(
+        "SELECT * FROM farm_ticket_config WHERE guild_id=?", (guild_id,)
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "guild_id": guild_id,
+        "category_ids": json.loads(row["category_ids_json"]),
+        "admin_role_ids": json.loads(row["admin_role_ids_json"]),
+        "atualizado_em": row["atualizado_em"],
+    }
+
+
+def db_ticket_config_set(guild_id: str, category_ids: list[int], admin_role_ids: list[int]) -> None:
+    get_conn().execute(
+        """INSERT INTO farm_ticket_config
+           (guild_id, category_ids_json, admin_role_ids_json, atualizado_em)
+           VALUES (?,?,?,?)
+           ON CONFLICT(guild_id) DO UPDATE SET
+             category_ids_json=excluded.category_ids_json,
+             admin_role_ids_json=excluded.admin_role_ids_json,
+             atualizado_em=excluded.atualizado_em""",
+        (
+            guild_id,
+            json.dumps([str(x) for x in category_ids]),
+            json.dumps([str(x) for x in admin_role_ids]),
+            now_tz().isoformat(),
+        ),
+    )
+    get_conn().commit()
+
+
+def db_ticket_get(ticket_id: int):
+    return get_conn().execute(
+        "SELECT * FROM farm_tickets WHERE id=?", (ticket_id,)
+    ).fetchone()
+
+
+def db_ticket_get_week(guild_id: str, week_id: str, user_id: str):
+    return get_conn().execute(
+        "SELECT * FROM farm_tickets WHERE guild_id=? AND week_id=? AND user_id=?",
+        (guild_id, week_id, user_id),
+    ).fetchone()
+
+
+def db_ticket_get_channel(guild_id: str, channel_id: str):
+    return get_conn().execute(
+        "SELECT * FROM farm_tickets WHERE guild_id=? AND channel_id=?",
+        (guild_id, channel_id),
+    ).fetchone()
+
+
+def db_ticket_list_week(guild_id: str, week_id: str) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        "SELECT * FROM farm_tickets WHERE guild_id=? AND week_id=? AND excluido_em IS NULL",
+        (guild_id, week_id),
+    ).fetchall()
+
+
+def db_ticket_active() -> list[sqlite3.Row]:
+    return get_conn().execute(
+        "SELECT * FROM farm_tickets WHERE status IN ('aberto','revisao') AND excluido_em IS NULL"
+    ).fetchall()
+
+
+def db_ticket_reserve(guild_id: str, week_id: str, user_id: str, member_name: str):
+    """Reserva a chave única do ticket. Retorna (ticket, criado_agora)."""
+    conn = get_conn()
+    agora = now_tz().isoformat()
+    cursor = conn.execute(
+        """INSERT OR IGNORE INTO farm_tickets
+           (guild_id, week_id, user_id, member_name, status, criado_em, atualizado_em)
+           VALUES (?,?,?,?,?,?,?)""",
+        (guild_id, week_id, user_id, member_name, "criando", agora, agora),
+    )
+    conn.commit()
+    return db_ticket_get_week(guild_id, week_id, user_id), cursor.rowcount == 1
+
+
+def db_ticket_activate(ticket_id: int, channel_id: str, message_id: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        """UPDATE farm_tickets SET channel_id=?, panel_message_id=?, status='aberto',
+           atualizado_em=? WHERE id=?""",
+        (channel_id, message_id, now_tz().isoformat(), ticket_id),
+    )
+    conn.commit()
+
+
+def db_ticket_release_failed(ticket_id: int) -> None:
+    """Remove somente uma reserva que nunca chegou a criar canal ou lançamentos."""
+    conn = get_conn()
+    conn.execute(
+        """DELETE FROM farm_tickets WHERE id=? AND status='criando' AND channel_id IS NULL
+           AND NOT EXISTS (SELECT 1 FROM farm_ticket_lancamentos WHERE ticket_id=?)""",
+        (ticket_id, ticket_id),
+    )
+    conn.commit()
+
+
+def db_ticket_add_action(
+    ticket_id: int,
+    action: str,
+    actor_id: str,
+    *,
+    event_id: int | None = None,
+    payload: dict | None = None,
+) -> int:
+    conn = get_conn()
+    cursor = conn.execute(
+        """INSERT INTO farm_ticket_actions
+           (ticket_id, action, actor_id, event_id, payload_json, criado_em)
+           VALUES (?,?,?,?,?,?)""",
+        (
+            ticket_id, action, actor_id, event_id,
+            json.dumps(payload or {}, ensure_ascii=False), now_tz().isoformat(),
+        ),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def db_ticket_launch(
+    ticket_id: int,
+    actor_id: str,
+    valores: dict,
+    proof_channel_id: str,
+    proof_message_id: str,
+    proof_url: str,
+    observacao: str | None,
+) -> tuple[int, int]:
+    """Cria evento, vínculo e auditoria na mesma transação."""
+    conn = get_conn()
+    ticket = db_ticket_get(ticket_id)
+    if not ticket or ticket["status"] not in {"aberto", "revisao"}:
+        raise ValueError("Ticket não está aberto para lançamentos.")
+    try:
+        event_id, agora = _db_lancar_conn(
+            conn, ticket["guild_id"], ticket["week_id"], ticket["user_id"], valores
+        )
+        conn.execute(
+            """INSERT INTO farm_ticket_lancamentos
+               (event_id, ticket_id, proof_channel_id, proof_message_id, proof_url,
+                observacao, status, criado_em)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                event_id, ticket_id, proof_channel_id, proof_message_id, proof_url,
+                observacao, "registrado", agora,
+            ),
+        )
+        action = conn.execute(
+            """INSERT INTO farm_ticket_actions
+               (ticket_id, action, actor_id, event_id, payload_json, criado_em)
+               VALUES (?,?,?,?,?,?)""",
+            (
+                ticket_id, "lancamento", actor_id, event_id,
+                json.dumps({"valores": valores, "observacao": observacao}, ensure_ascii=False),
+                agora,
+            ),
+        )
+        conn.execute(
+            "UPDATE farm_tickets SET atualizado_em=? WHERE id=?", (agora, ticket_id)
+        )
+        conn.commit()
+        return event_id, int(action.lastrowid)
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def db_ticket_launches(ticket_id: int) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT e.*, l.ticket_id, l.proof_channel_id, l.proof_message_id,
+                  l.proof_url, l.log_proof_url, l.observacao,
+                  l.status AS ticket_status, l.revisado_por, l.revisado_em,
+                  l.revisao_motivo
+           FROM farm_ticket_lancamentos l
+           JOIN eventos e ON e.id=l.event_id
+           WHERE l.ticket_id=? ORDER BY e.id ASC""",
+        (ticket_id,),
+    ).fetchall()
+
+
+def db_ticket_set_log_result(
+    action_id: int,
+    *,
+    message_id: str | None = None,
+    event_id: int | None = None,
+    proof_url: str | None = None,
+) -> None:
+    conn = get_conn()
+    conn.execute(
+        """UPDATE farm_ticket_actions SET log_enviado_em=?, log_message_id=?,
+           tentativas_log=tentativas_log+1 WHERE id=?""",
+        (now_tz().isoformat(), message_id, action_id),
+    )
+    if event_id and proof_url:
+        conn.execute(
+            "UPDATE farm_ticket_lancamentos SET log_proof_url=? WHERE event_id=?",
+            (proof_url, event_id),
+        )
+    conn.commit()
+
+
+def db_ticket_mark_log_attempt(action_id: int) -> None:
+    conn = get_conn()
+    conn.execute(
+        "UPDATE farm_ticket_actions SET tentativas_log=tentativas_log+1 WHERE id=?",
+        (action_id,),
+    )
+    conn.commit()
+
+
+def db_ticket_pending_actions(limit: int = 50) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT a.*, t.guild_id, t.channel_id, t.user_id, t.week_id
+           FROM farm_ticket_actions a JOIN farm_tickets t ON t.id=a.ticket_id
+           WHERE a.log_enviado_em IS NULL ORDER BY a.id ASC LIMIT ?""",
+        (limit,),
+    ).fetchall()
+
+
+def db_ticket_latest_action(ticket_id: int, action: str):
+    return get_conn().execute(
+        """SELECT * FROM farm_ticket_actions
+           WHERE ticket_id=? AND action=? ORDER BY id DESC LIMIT 1""",
+        (ticket_id, action),
+    ).fetchone()
+
+
+def db_ticket_claim(ticket_id: int, admin_id: str) -> bool:
+    conn = get_conn()
+    agora = now_tz().isoformat()
+    cursor = conn.execute(
+        """UPDATE farm_tickets SET assigned_to=?, atualizado_em=?
+           WHERE id=? AND assigned_to IS NULL AND status IN ('aberto','revisao')""",
+        (admin_id, agora, ticket_id),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def db_ticket_set_review(ticket_id: int, event_id: int, admin_id: str, motivo: str) -> None:
+    conn = get_conn()
+    agora = now_tz().isoformat()
+    conn.execute(
+        """UPDATE farm_ticket_lancamentos SET status='revisao', revisado_por=?,
+           revisado_em=?, revisao_motivo=? WHERE ticket_id=? AND event_id=?""",
+        (admin_id, agora, motivo, ticket_id, event_id),
+    )
+    conn.execute(
+        "UPDATE farm_tickets SET status='revisao', atualizado_em=? WHERE id=?",
+        (agora, ticket_id),
+    )
+    conn.commit()
+
+
+def db_ticket_resolve_review(ticket_id: int, event_id: int, admin_id: str) -> None:
+    conn = get_conn()
+    agora = now_tz().isoformat()
+    conn.execute(
+        """UPDATE farm_ticket_lancamentos SET status='revisado', revisado_por=?,
+           revisado_em=? WHERE ticket_id=? AND event_id=?""",
+        (admin_id, agora, ticket_id, event_id),
+    )
+    pending = conn.execute(
+        "SELECT 1 FROM farm_ticket_lancamentos WHERE ticket_id=? AND status='revisao'",
+        (ticket_id,),
+    ).fetchone()
+    if not pending:
+        conn.execute(
+            "UPDATE farm_tickets SET status='aberto', atualizado_em=? WHERE id=?",
+            (agora, ticket_id),
+        )
+    conn.commit()
+
+
+def db_ticket_mark_corrected(ticket_id: int, event_id: int, admin_id: str, motivo: str) -> None:
+    conn = get_conn()
+    agora = now_tz().isoformat()
+    conn.execute(
+        """UPDATE farm_ticket_lancamentos SET status='corrigido', revisado_por=?,
+           revisado_em=?, revisao_motivo=? WHERE ticket_id=? AND event_id=?""",
+        (admin_id, agora, motivo, ticket_id, event_id),
+    )
+    pending = conn.execute(
+        "SELECT 1 FROM farm_ticket_lancamentos WHERE ticket_id=? AND status='revisao'",
+        (ticket_id,),
+    ).fetchone()
+    if not pending:
+        conn.execute(
+            "UPDATE farm_tickets SET status='aberto', atualizado_em=? WHERE id=?",
+            (agora, ticket_id),
+        )
+    conn.commit()
+
+
+def db_ticket_recalculate_completion(ticket_id: int) -> None:
+    """Reabre somente o progresso ligado ao ticket antes de recalcular a meta."""
+    ticket = db_ticket_get(ticket_id)
+    if not ticket:
+        return
+    conn = get_conn()
+    conn.execute(
+        """UPDATE progresso SET status='em_andamento', concluida_em=NULL
+           WHERE guild_id=? AND week_id=? AND user_id=?""",
+        (ticket["guild_id"], ticket["week_id"], ticket["user_id"]),
+    )
+    conn.commit()
+    db_verificar_conclusao(ticket["guild_id"], ticket["week_id"], ticket["user_id"])
+
+
+def db_ticket_finalize(ticket_id: int, admin_id: str, motivo: str | None) -> bool:
+    conn = get_conn()
+    agora = now_tz().isoformat()
+    cursor = conn.execute(
+        """UPDATE farm_tickets SET status='finalizado', finalizado_em=?,
+           finalizado_por=?, finalizacao_motivo=?, atualizado_em=?
+           WHERE id=? AND status IN ('aberto','revisao')""",
+        (agora, admin_id, motivo, agora, ticket_id),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def db_ticket_deletion_candidates(current_week: str) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT t.* FROM farm_tickets t
+           WHERE t.status='finalizado' AND t.excluido_em IS NULL AND t.week_id < ?
+             AND NOT EXISTS (
+               SELECT 1 FROM farm_ticket_actions a
+               WHERE a.ticket_id=t.id AND a.log_enviado_em IS NULL
+             )""",
+        (current_week,),
+    ).fetchall()
+
+
+def db_ticket_mark_deleted(ticket_id: int) -> None:
+    conn = get_conn()
+    conn.execute(
+        "UPDATE farm_tickets SET excluido_em=?, channel_id=NULL WHERE id=?",
+        (now_tz().isoformat(), ticket_id),
+    )
+    conn.commit()

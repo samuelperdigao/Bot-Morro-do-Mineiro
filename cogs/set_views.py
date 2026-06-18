@@ -300,20 +300,18 @@ class ApprovalView(discord.ui.View):
                 farm_embed.add_field(name="🎮 ID no Jogo", value=f"`{self.id_jogo}`", inline=True)
             farm_embed.add_field(name="\u200b", value="\u200b", inline=False)
             farm_embed.add_field(
-                name="1️⃣ Escolha o tipo certo",
+                name="1️⃣ Confira a meta da semana",
                 value=(
-                    "**🚜 Lançar Farm:** use quando a meta for o Kit Desmanche "
-                    "com Borracha, Aluminio, Cobre ou Plastico.\n"
-                    "**💵 Lançar Dinheiro:** use quando a meta da semana for em dinheiro "
-                    "sujo, dinheiro limpo ou os dois."
+                    "Consulte a meta ativa no painel. O mesmo ticket individual é usado para "
+                    "Kit Desmanche, materiais de Colete ou dinheiro."
                 ),
                 inline=False,
             )
             farm_embed.add_field(
                 name="2️⃣ Faça o lançamento",
                 value=(
-                    "Vá ao canal do **Painel de Farm/Painel de Operações**, clique no botão correto "
-                    "e preencha apenas os campos que você realmente entregou.\n"
+                    "Vá ao **Painel de Farm**, clique em **🎫 Abrir Ticket Semanal** e faça todos "
+                    "os lançamentos exclusivamente no seu canal privado.\n"
                     "Use números inteiros nos itens. Para dinheiro, pode usar `50000` ou `R$ 50.000`."
                 ),
                 inline=False,
@@ -321,7 +319,7 @@ class ApprovalView(discord.ui.View):
             farm_embed.add_field(
                 name="3️⃣ Envie o print obrigatório",
                 value=(
-                    "Depois de confirmar o modal, o bot vai pedir o print no mesmo canal. "
+                    "Depois de confirmar o modal do ticket, o bot vai pedir o print no mesmo canal. "
                     "Envie uma imagem em até **3 minutos**.\n"
                     "O farm só é registrado depois que o print é recebido. Se o tempo acabar, "
                     "nada será salvo e você precisará lançar novamente."
@@ -329,12 +327,11 @@ class ApprovalView(discord.ui.View):
                 inline=False,
             )
             farm_embed.add_field(
-                name="📊 Conferir ou corrigir",
+                name="📊 Acompanhar ou corrigir",
                 value=(
-                    "Use **📊 Ver Meu Farm** ou o comando `/farm` para acompanhar sua meta, "
-                    "porcentagem e último lançamento.\n"
-                    "Se lançar errado, abra `/farm` e use **✏️ Editar último**. "
-                    "Se precisar alterar um lançamento antigo, chame a liderança."
+                    "Use o painel do ticket, **📊 Ver Meu Farm** ou `/farm` para acompanhar sua "
+                    "meta e porcentagem. Para corrigir um lançamento, solicite a revisão dentro "
+                    "do próprio ticket."
                 ),
                 inline=False,
             )
