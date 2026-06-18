@@ -18,7 +18,10 @@ CREATE TABLE IF NOT EXISTS guild_config (
     cargos_lideranca_farm  TEXT,
     cargos_permitidos_farm TEXT,
     canal_avisos_farm      TEXT,
-    canal_notificacao_farm TEXT
+    canal_notificacao_farm TEXT,
+    flanelinha_role_id     TEXT,
+    flanelinha_auto_promote INTEGER DEFAULT 0,
+    flanelinha_notify_user_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS channel_map (
@@ -156,38 +159,6 @@ CREATE TABLE IF NOT EXISTS lideranca_pendencias (
 
 CREATE INDEX IF NOT EXISTS idx_lideranca_pendencias_guild_status
 ON lideranca_pendencias (guild_id, status);
-
-CREATE TABLE IF NOT EXISTS ponto_config (
-    guild_id           TEXT PRIMARY KEY,
-    ponto_category_id  TEXT,
-    log_category_id    TEXT,
-    painel_channel_id  TEXT,
-    log_channel_id     TEXT,
-    ranking_channel_id TEXT,
-    ranking_message_id TEXT,
-    ranking_week_id    TEXT
-);
-
-CREATE TABLE IF NOT EXISTS ponto_sessoes (
-    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-    guild_id           TEXT NOT NULL,
-    week_id            TEXT NOT NULL,
-    user_id            TEXT NOT NULL,
-    entrada_em         TEXT NOT NULL,
-    saida_em           TEXT,
-    duracao_segundos   INTEGER DEFAULT 0,
-    observacao_entrada TEXT,
-    observacao_saida   TEXT,
-    fechado_por        TEXT,
-    status             TEXT DEFAULT 'aberto'
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_ponto_sessoes_abertas
-ON ponto_sessoes (guild_id, user_id)
-WHERE status = 'aberto';
-
-CREATE INDEX IF NOT EXISTS idx_ponto_sessoes_guild_week_status
-ON ponto_sessoes (guild_id, week_id, status);
 """
 
 MIGRATIONS = (
@@ -217,6 +188,9 @@ MIGRATIONS = (
     ("guild_config", "painel_ranking_week_id", "TEXT"),
     ("guild_config", "painel_lideranca_channel_id", "TEXT"),
     ("guild_config", "painel_lideranca_message_id", "TEXT"),
+    ("guild_config", "flanelinha_role_id", "TEXT"),
+    ("guild_config", "flanelinha_auto_promote", "INTEGER DEFAULT 0"),
+    ("guild_config", "flanelinha_notify_user_id", "TEXT"),
     ("recolhimento_entregas", "alvo_user_id", "TEXT"),
     ("recolhimento_entregas", "alvo_nome", "TEXT"),
     ("recolhimento_entregas", "alvo_pasta_id", "TEXT"),

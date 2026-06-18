@@ -54,6 +54,18 @@ def _clear_pending(user_id: int):
     _pending_sets.pop(user_id, None)
 
 
+def _get_flanelinha_role(guild: discord.Guild, cfg) -> discord.Role | None:
+    if cfg and cfg["flanelinha_role_id"]:
+        role = guild.get_role(int(cfg["flanelinha_role_id"]))
+        if role is not None:
+            return role
+
+    return (
+        discord.utils.get(guild.roles, name="| Flanelinha")
+        or discord.utils.get(guild.roles, name="Flanelinha")
+    )
+
+
 class SetModal(discord.ui.Modal, title="Solicitação de Set"):
     id_jogo     = discord.ui.TextInput(label="ID no Jogo", placeholder="Ex: 12345", min_length=1, max_length=20)
     membro_nome = discord.ui.TextInput(label="Nome do Membro", placeholder="Ex: João Silva", max_length=100)
@@ -209,17 +221,18 @@ class ApprovalView(discord.ui.View):
             return
 
         cfg               = db_get_guild_config(guild_id)
-        member_role_id    = int(cfg["member_role_id"]) if cfg and cfg["member_role_id"] else None
         log_ch_id         = int(cfg["log_channel_id"]) if cfg and cfg["log_channel_id"] else None
         private_cat_id    = int(cfg["private_category_id"]) if cfg and cfg["private_category_id"] else None
         approver_role_ids = db_get_approver_role_ids(guild_id)
 
-        member_role = guild.get_role(member_role_id) if member_role_id else None
-        if member_role and member_role not in member.roles:
+        flanelinha_role = _get_flanelinha_role(guild, cfg)
+        if flanelinha_role and flanelinha_role not in member.roles:
             try:
-                await member.add_roles(member_role, reason=f"Set aprovado por {approver}")
+                await member.add_roles(flanelinha_role, reason=f"Set aprovado por {approver}")
             except Exception as e:
                 log.error(f"Erro ao aplicar cargo: {e}")
+        elif flanelinha_role is None:
+            log.warning("Cargo Flanelinha nao encontrado na guild %s ao aprovar set", guild_id)
 
         pedir_set_role = guild.get_role(1474869320659107853)
         if pedir_set_role and pedir_set_role in member.roles:

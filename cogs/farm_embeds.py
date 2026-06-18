@@ -165,6 +165,13 @@ def build_meta_embed(meta, week_id: str) -> discord.Embed:
         timestamp=discord.utils.utcnow(),
     )
     if meta:
+        meta_tipo = db_meta_tipo_efetivo(meta)
+        tipo_label = {
+            "itens": "📦 Kit Desmanche",
+            "colete": "🦺 Colete",
+            "dinheiro": "💵 Dinheiro",
+        }.get(meta_tipo, meta_tipo.title())
+        embed.add_field(name="Tipo da Meta", value=tipo_label, inline=False)
         itens = db_meta_itens_ativos(meta)
         if itens:
             for nome, qtd in itens.items():

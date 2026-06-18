@@ -1,7 +1,7 @@
 # deploy.ps1 - Envia arquivos e reinicia o bot no servidor Oracle
 # Uso: .\deploy.ps1
 
-$SSH_KEY    = "$PSScriptRoot\oracle.key"
+$SSH_KEY    = "$(Split-Path $PSScriptRoot -Parent)\oracle.key"
 $REMOTE     = "ubuntu@163.176.143.142"
 $REMOTE_DIR = "/home/ubuntu/farmbot"
 $LOCAL_DIR  = Split-Path $PSScriptRoot -Parent

@@ -20,7 +20,9 @@ from services.log_service import send_log
 
 log = get_logger("colete", "colete.log")
 
-QUANTIDADES = range(1, 11)
+MAX_QUANTIDADE = 100
+QUANTIDADES = range(1, MAX_QUANTIDADE + 1)
+QUANTIDADES_POR_SELETOR = 25
 MATERIAIS_POR_COLETE = {
     "ferro": 20,
     "plastico": 10,
@@ -36,7 +38,7 @@ LOG_FABRICACAO_CHANNEL_ID = 1506880362633236630
 
 def calcular_fabricacao(quantidade: int) -> dict[str, int]:
     if quantidade not in QUANTIDADES:
-        raise ValueError("A quantidade deve estar entre 1 e 10.")
+        raise ValueError(f"A quantidade deve estar entre 1 e {MAX_QUANTIDADE}.")
     materiais = {
         nome: valor * quantidade
         for nome, valor in MATERIAIS_POR_COLETE.items()
@@ -65,7 +67,7 @@ def _criar_embed_painel() -> discord.Embed:
         title="FABRICACAO DE COLETES",
         description=(
             "Selecione abaixo a quantidade que deseja fabricar.\n"
-            "O limite e de **10 coletes por vez**.\n\n"
+            f"O limite e de **{MAX_QUANTIDADE} coletes por vez**.\n\n"
             "**Materiais por colete:**\n"
             "Ferro: `20` | Plastico: `10` | Tecido: `1`\n"
             "Aluminio: `20` | Borracha: `10`\n"
@@ -286,32 +288,36 @@ class ColetePanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-        options = []
-        for quantidade in QUANTIDADES:
-            materiais = calcular_fabricacao(quantidade)
-            nome = _nome_colete(quantidade)
-            options.append(
-                discord.SelectOption(
-                    label=(
-                        f"{quantidade} {nome.title()} - "
-                        f"{_fmt_money(materiais['custo'])}"
-                    ),
-                    description=(
-                        f"Ferro: {materiais['ferro']} | Plastico: {materiais['plastico']} "
-                        f"| Tecido: {materiais['tecido']} | Aluminio: {materiais['aluminio']} "
-                        f"| Borracha: {materiais['borracha']}"
-                    ),
-                    value=str(quantidade),
-                )
+        for inicio in range(1, MAX_QUANTIDADE + 1, QUANTIDADES_POR_SELETOR):
+            fim = min(inicio + QUANTIDADES_POR_SELETOR - 1, MAX_QUANTIDADE)
+            options = [
+                self._criar_opcao(quantidade)
+                for quantidade in range(inicio, fim + 1)
+            ]
+            select = discord.ui.Select(
+                placeholder=f"Selecione de {inicio} a {fim} coletes...",
+                options=options,
+                custom_id=f"colete:select:{inicio}-{fim}",
             )
+            select.callback = self._select_callback
+            self.add_item(select)
 
-        select = discord.ui.Select(
-            placeholder="Selecione de 1 a 10 coletes...",
-            options=options,
-            custom_id="colete:select",
+    @staticmethod
+    def _criar_opcao(quantidade: int) -> discord.SelectOption:
+        materiais = calcular_fabricacao(quantidade)
+        nome = _nome_colete(quantidade)
+        return discord.SelectOption(
+            label=(
+                f"{quantidade} {nome.title()} - "
+                f"{_fmt_money(materiais['custo'])}"
+            ),
+            description=(
+                f"Ferro: {materiais['ferro']} | Plastico: {materiais['plastico']} "
+                f"| Tecido: {materiais['tecido']} | Aluminio: {materiais['aluminio']} "
+                f"| Borracha: {materiais['borracha']}"
+            ),
+            value=str(quantidade),
         )
-        select.callback = self._select_callback
-        self.add_item(select)
 
     async def _select_callback(self, interaction: discord.Interaction):
         quantidade = int(interaction.data["values"][0])

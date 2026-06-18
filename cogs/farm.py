@@ -12,7 +12,9 @@ from discord.ext import commands, tasks
 from core.date_utils import format_date_br, format_week_range_br, week_id_from_date_br
 from core.logger import get_logger
 from core.permissions import is_lideranca, is_permitido_farm
+from core.role_promotion import promote_role
 from core.command_config import is_enabled as _cmd_enabled
+from cogs.colete import MATERIAIS_POR_COLETE
 from services.log_service import send_log
 from services.db_service import (
     DINHEIRO_ITEMS, DINHEIRO_LIMPO_ITEM, DINHEIRO_SUJO_ITEM,
@@ -38,6 +40,21 @@ META_AVISOS_CHANNEL_ID = 1474869321506488447
 FARM_PRINT_TIMEOUT_SECONDS = 180.0
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 FARM_EXTRA_ITEM = "Ferro"
+COLETE_MATERIAL_EMOJIS = {
+    "ferro": "🔩",
+    "plastico": "🧴",
+    "tecido": "🧵",
+    "aluminio": "⚙️",
+    "borracha": "🛞",
+}
+COLETE_PRODUTOS = [
+    (nome.title(), COLETE_MATERIAL_EMOJIS[nome])
+    for nome in MATERIAIS_POR_COLETE
+]
+COLETE_PLACEHOLDERS = {
+    nome.title(): f"{quantidade} por colete"
+    for nome, quantidade in MATERIAIS_POR_COLETE.items()
+}
 
 
 def _parse_money(raw: str) -> float:
@@ -154,27 +171,46 @@ def _farm_audit(action: str, executor_id: int, target_id: int | None = None, **k
 from cogs.farm_embeds import FARM_PRODUTOS, build_farm_embed, build_meta_embed, build_ranking_embed
 
 
-class DefinirMetasModal(discord.ui.Modal, title="Kit Desmanche"):
+class DefinirMetasModal(discord.ui.Modal):
     """
     Modal com campos fixos para cada produto definido em FARM_PRODUTOS.
     Pré-preenche com os valores atuais da meta.
     """
 
-    def __init__(self, cog: "FarmCog", week_id: str, guild_id: str, meta=None):
-        super().__init__()
+    def __init__(
+        self,
+        cog: "FarmCog",
+        week_id: str,
+        guild_id: str,
+        meta=None,
+        *,
+        produtos=None,
+        meta_tipo: str = "itens",
+        titulo: str = "Kit Desmanche",
+        placeholders: dict[str, str] | None = None,
+    ):
+        super().__init__(title=titulo)
         self.cog = cog
         self.week_id = week_id
         self.guild_id = guild_id
+        self.produtos = produtos or FARM_PRODUTOS
+        self.meta_tipo = meta_tipo
+        self.titulo = titulo
+        self.placeholders = placeholders or {}
 
-        itens_atuais = db_meta_itens_ativos(meta) if meta else {}
+        itens_atuais = (
+            db_meta_itens_ativos(meta)
+            if meta and db_meta_tipo_efetivo(meta) == self.meta_tipo
+            else {}
+        )
         self._inputs: list[tuple[str, discord.ui.TextInput]] = []
 
-        for nome, emoji in FARM_PRODUTOS:
+        for nome, emoji in self.produtos:
             val_atual = itens_atuais.get(nome, 0)
             ti = discord.ui.TextInput(
                 label=f"{emoji} {nome}",
                 style=discord.TextStyle.short,
-                placeholder="0",
+                placeholder=self.placeholders.get(nome, "0"),
                 default=str(val_atual) if val_atual else None,
                 required=False,
                 max_length=10,
@@ -205,12 +241,23 @@ class DefinirMetasModal(discord.ui.Modal, title="Kit Desmanche"):
             )
             return
 
-        db_set_meta(self.guild_id, self.week_id, valores, str(interaction.user.id))
-        _farm_audit("META_DEFINIDA", interaction.user.id, week_id=self.week_id)
+        db_set_meta(
+            self.guild_id,
+            self.week_id,
+            valores,
+            str(interaction.user.id),
+            meta_tipo=self.meta_tipo,
+        )
+        _farm_audit(
+            "META_DEFINIDA",
+            interaction.user.id,
+            week_id=self.week_id,
+            meta_tipo=self.meta_tipo,
+        )
 
         resumo = "\n".join(
             f"• {emoji} **{nome}**: `{valores.get(nome, 0)}`"
-            for nome, emoji in FARM_PRODUTOS
+            for nome, emoji in self.produtos
             if nome in valores
         )
         await interaction.response.send_message(
@@ -221,10 +268,10 @@ class DefinirMetasModal(discord.ui.Modal, title="Kit Desmanche"):
             interaction.guild,
             self.guild_id,
             self.week_id,
-            "Kit Desmanche",
+            self.titulo,
             [
                 f"{emoji} **{nome}**: `{valores.get(nome, 0)}`"
-                for nome, emoji in FARM_PRODUTOS
+                for nome, emoji in self.produtos
                 if nome in valores
             ],
             interaction.user,
@@ -314,17 +361,24 @@ class DefinirMetasDinheiroModal(discord.ui.Modal, title="Definir Meta — Dinhei
         await _safe_respond(interaction, "❌ Erro ao definir meta de dinheiro.")
 
 
-class LancarModal(discord.ui.Modal, title="Lançar Kit Desmanche"):
+class LancarModal(discord.ui.Modal):
     """Modal dinâmico gerado a partir dos itens definidos na meta da semana."""
 
     def __init__(self, cog: "FarmCog", week_id: str, guild_id: str, user_id: str, itens: dict):
-        super().__init__()
+        meta = db_get_meta(guild_id, week_id)
+        self.meta_tipo = db_meta_tipo_efetivo(meta)
+        titulo = "Lançar Meta Colete" if self.meta_tipo == "colete" else "Lançar Kit Desmanche"
+        super().__init__(title=titulo)
         self.cog = cog
         self.week_id = week_id
         self.guild_id = guild_id
         self.user_id = user_id
         self.item_names = list(itens.keys())
-        if FARM_EXTRA_ITEM not in self.item_names and len(self.item_names) < 5:
+        if (
+            self.meta_tipo == "itens"
+            and FARM_EXTRA_ITEM not in self.item_names
+            and len(self.item_names) < 5
+        ):
             self.item_names.append(FARM_EXTRA_ITEM)
         self._inputs: list[discord.ui.TextInput] = []
         for nome in self.item_names:
@@ -563,6 +617,7 @@ class EditarUltimoModal(discord.ui.Modal, title="Editar Último Lançamento"):
         except ValueError:
             await interaction.response.send_message("❌ Valores inválidos.", ephemeral=True)
             return
+        prog_antes = db_get_progresso(self.guild_id, self.week_id, self.user_id)
         if self.event_id is None:
             ok = db_editar_ultimo_evento(self.guild_id, self.week_id, self.user_id, valores)
         else:
@@ -573,11 +628,15 @@ class EditarUltimoModal(discord.ui.Modal, title="Editar Último Lançamento"):
             )
             return
         db_verificar_conclusao(self.guild_id, self.week_id, self.user_id)
+        prog_depois = db_get_progresso(self.guild_id, self.week_id, self.user_id)
         _farm_audit("EDICAO", interaction.user.id, int(self.user_id), event_id=self.event_id, valores=str(valores))
         alvo_msg = "" if str(interaction.user.id) == self.user_id else f" de <@{self.user_id}>"
         await interaction.response.send_message(f"✅ Lançamento{alvo_msg} editado!", ephemeral=True)
         await self.cog._atualizar_painel(self.guild_id, self.week_id, self.user_id)
         await self.cog._atualizar_ranking_fixo(self.guild_id)
+        status_antes = prog_antes["status"] if prog_antes else "em_andamento"
+        if status_antes != "concluida" and prog_depois and prog_depois["status"] == "concluida":
+            await self.cog._notificar_conclusao(interaction.guild, self.user_id, self.week_id)
 
     async def on_error(self, interaction, error):
         log.error(f"Erro no EditarUltimoModal: {error}", exc_info=True)
@@ -636,6 +695,23 @@ class EscolherTipoMetaView(discord.ui.View):
         meta = db_get_meta(self.guild_id, self.week_id)
         await _safe_send_modal(interaction, DefinirMetasModal(self.cog, self.week_id, self.guild_id, meta))
 
+    @discord.ui.button(label="🦺 Colete", style=discord.ButtonStyle.secondary)
+    async def btn_colete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        meta = db_get_meta(self.guild_id, self.week_id)
+        await _safe_send_modal(
+            interaction,
+            DefinirMetasModal(
+                self.cog,
+                self.week_id,
+                self.guild_id,
+                meta,
+                produtos=COLETE_PRODUTOS,
+                meta_tipo="colete",
+                titulo="Meta Colete",
+                placeholders=COLETE_PLACEHOLDERS,
+            ),
+        )
+
     @discord.ui.button(label="💵 Dinheiro", style=discord.ButtonStyle.success)
     async def btn_dinheiro(self, interaction: discord.Interaction, button: discord.ui.Button):
         meta = db_get_meta(self.guild_id, self.week_id)
@@ -661,8 +737,9 @@ class FarmView(discord.ui.View):
         meta = db_get_meta(self.guild_id, self.week_id)
         itens = db_meta_itens_ativos(meta)
         if not itens or not any((qtd or 0) > 0 for qtd in itens.values()):
+            nome_meta = "Colete" if db_meta_tipo_efetivo(meta) == "colete" else "Kit Desmanche"
             await interaction.response.send_message(
-                "❌ A meta Kit Desmanche ainda não foi definida.", ephemeral=True
+                f"❌ A meta {nome_meta} ainda não foi definida.", ephemeral=True
             )
             return
         await _safe_send_modal(interaction, LancarModal(self.cog, self.week_id, self.guild_id, self.user_id, itens))
@@ -1023,6 +1100,8 @@ class FarmCog(commands.Cog):
         if not membro:
             return
 
+        await self._promover_flanelinha_automaticamente(guild, membro, week_id)
+
         meta       = db_get_meta(str(guild.id), week_id)
         prog       = db_get_progresso(str(guild.id), week_id, user_id)
         meta_tipo  = db_meta_tipo_efetivo(meta)
@@ -1085,6 +1164,95 @@ class FarmCog(commands.Cog):
             except Exception as e:
                 log.warning(f"Falha ao notificar canal de avisos: {e}")
 
+    async def _promover_flanelinha_automaticamente(
+        self,
+        guild: discord.Guild,
+        membro: discord.Member,
+        week_id: str,
+    ) -> bool:
+        cfg = db_get_guild_config(str(guild.id))
+        if not cfg or not cfg["flanelinha_auto_promote"]:
+            return False
+
+        flanelinha_role_id = cfg["flanelinha_role_id"]
+        member_role_id = cfg["member_role_id"]
+        if not flanelinha_role_id or not member_role_id:
+            log.warning("Promocao Flanelinha sem cargos configurados na guild %s", guild.id)
+            return False
+
+        flanelinha_role = guild.get_role(int(flanelinha_role_id))
+        member_role = guild.get_role(int(member_role_id))
+        if flanelinha_role is None or member_role is None:
+            log.warning(
+                "Cargo da promocao Flanelinha nao encontrado: guild=%s flanelinha=%s membro=%s",
+                guild.id,
+                flanelinha_role_id,
+                member_role_id,
+            )
+            return False
+
+        try:
+            result = await promote_role(
+                membro,
+                flanelinha_role,
+                member_role,
+                reason=f"Meta semanal concluida em {format_date_br(week_id)}",
+            )
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            log.error(
+                "Falha ao promover Flanelinha %s na guild %s: %s",
+                membro.id,
+                guild.id,
+                exc,
+            )
+            return False
+
+        if not result.promoted:
+            if result.reason != "source_role_missing":
+                log.warning(
+                    "Promocao Flanelinha ignorada: guild=%s membro=%s motivo=%s",
+                    guild.id,
+                    membro.id,
+                    result.reason,
+                )
+            return False
+
+        notify_user_id = cfg["flanelinha_notify_user_id"] or str(guild.owner_id)
+        embed = discord.Embed(
+            title="🎉 Flanelinha promovido automaticamente",
+            description=(
+                f"{membro.mention} bateu a meta semanal e foi promovido "
+                f"de {flanelinha_role.mention} para {member_role.mention}."
+            ),
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="Semana", value=f"`{format_date_br(week_id)}`", inline=True)
+        embed.add_field(name="Membro", value=f"{membro.mention}\n`{membro.id}`", inline=True)
+        embed.set_footer(text="Morro do Mineiro — Promoção automática do Farm")
+
+        log_enviado = await send_log(
+            self.bot,
+            guild,
+            "farm",
+            embed,
+            content=f"<@{notify_user_id}>" if notify_user_id else None,
+        )
+        if not log_enviado:
+            log.warning(
+                "Promocao realizada, mas o log nao foi enviado: guild=%s membro=%s",
+                guild.id,
+                membro.id,
+            )
+
+        log.info(
+            "Flanelinha promovido automaticamente: guild=%s membro=%s semana=%s",
+            guild.id,
+            membro.id,
+            week_id,
+        )
+        return True
+
     @tasks.loop(minutes=1)
     async def _ranking_task(self):
         dt = now_tz()
@@ -1130,14 +1298,16 @@ class FarmCog(commands.Cog):
                 continue
             week_id    = current_week_id()
             meta       = db_get_meta(guild_id_str, week_id)
-            if meta and db_meta_tipo_efetivo(meta) == "dinheiro":
+            meta_tipo = db_meta_tipo_efetivo(meta)
+            if meta and meta_tipo == "dinheiro":
                 meta_str = _fmt_money(db_meta_dinheiro_ativo(meta))
             else:
                 meta_itens = db_meta_itens_ativos(meta) if meta else {}
                 total_meta = sum(meta_itens.values())
                 partes = []
                 if total_meta:
-                    partes.append(f"{total_meta} itens do Kit Desmanche")
+                    nome_meta = "materiais de Colete" if meta_tipo == "colete" else "itens do Kit Desmanche"
+                    partes.append(f"{total_meta} {nome_meta}")
                 meta_str = " + ".join(partes) if partes else "A definir"
 
             embed = discord.Embed(

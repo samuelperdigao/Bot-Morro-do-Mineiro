@@ -134,7 +134,7 @@ def db_meta_itens(meta) -> dict:
     }
 
 def db_meta_tipo(meta) -> str:
-    """Retorna 'itens', 'dinheiro' ou 'misto'. Rows legadas (meta_tipo=NULL) são tratadas como 'itens'."""
+    """Retorna o tipo salvo da meta. Rows legadas sem tipo são tratadas como itens."""
     if meta is None:
         return "itens"
     try:
@@ -151,7 +151,7 @@ def db_meta_tipo_efetivo(meta) -> str:
     itens quando ainda carregam metas de produto.
     """
     tipo = db_meta_tipo(meta)
-    if tipo in {"itens", "dinheiro"}:
+    if tipo in {"itens", "colete", "dinheiro"}:
         return tipo
     itens = db_meta_itens(meta)
     if itens and any((qtd or 0) > 0 for qtd in itens.values()):
@@ -160,7 +160,7 @@ def db_meta_tipo_efetivo(meta) -> str:
 
 def db_meta_itens_ativos(meta) -> dict:
     """Itens que contam para a meta ativa."""
-    if db_meta_tipo_efetivo(meta) != "itens":
+    if db_meta_tipo_efetivo(meta) not in {"itens", "colete"}:
         return {}
     return db_meta_itens(meta)
 
@@ -274,9 +274,18 @@ def db_get_lideranca_role_ids(guild_id: str) -> list[int]:
 
 def db_get_permitidos_role_ids(guild_id: str) -> list[int]:
     cfg = db_get_guild_config(guild_id)
-    if not cfg or not cfg["cargos_permitidos_farm"]:
+    if not cfg:
         return []
-    return [int(x.strip()) for x in cfg["cargos_permitidos_farm"].split(",") if x.strip()]
+    role_ids = [
+        int(x.strip())
+        for x in (cfg["cargos_permitidos_farm"] or "").split(",")
+        if x.strip()
+    ]
+    if cfg["flanelinha_auto_promote"] and cfg["flanelinha_role_id"]:
+        flanelinha_role_id = int(cfg["flanelinha_role_id"])
+        if flanelinha_role_id not in role_ids:
+            role_ids.append(flanelinha_role_id)
+    return role_ids
 
 def db_get_editores_farm_role_ids(guild_id: str) -> list[int]:
     cfg = db_get_guild_config(guild_id)
@@ -440,15 +449,22 @@ def db_get_meta(guild_id: str, week_id: str) -> sqlite3.Row | None:
         (guild_id, week_id)
     ).fetchone()
 
-def db_set_meta(guild_id: str, week_id: str, valores: dict, definido_por: str):
+def db_set_meta(
+    guild_id: str,
+    week_id: str,
+    valores: dict,
+    definido_por: str,
+    meta_tipo: str = "itens",
+):
     """
     valores: dict {nome: quantidade}, ex: {"Folha": 500, "Ópio": 300}
     Armazena os itens como JSON. Mantém colunas legadas preenchidas quando
     os nomes coincidem com os itens padrão (para compatibilidade com dados antigos).
     """
     conn = get_conn()
+    if meta_tipo not in {"itens", "colete"}:
+        raise ValueError(f"Tipo de meta de itens invalido: {meta_tipo}")
     meta_dinheiro = 0
-    meta_tipo = "itens"
     itens_json = json.dumps(valores, ensure_ascii=False)
     # Popula colunas legadas se os nomes coincidirem (case-insensitive)
     nome_to_key = {v.lower(): k for k, v in _LEGACY_KEY_TO_NOME.items()}
