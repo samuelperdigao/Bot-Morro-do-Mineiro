@@ -5,6 +5,7 @@ services/db_service.py - Todas as funções de acesso ao banco SQLite do farm.
 import json
 import sqlite3
 import logging
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -833,13 +834,15 @@ def db_registrar_fabricacao_colete(
     aluminio: int,
     borracha: int,
     custo: int,
-):
+) -> dict:
     conn = get_conn()
-    conn.execute(
+    bau_operation_id = f"fabricacao-colete-{uuid.uuid4().hex}"
+    cursor = conn.execute(
         """INSERT INTO fabricacoes_colete
            (guild_id, user_id, user_name, quantidade, ferro, plastico,
-            tecido, aluminio, borracha, custo, timestamp)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            tecido, aluminio, borracha, custo, timestamp, bau_operation_id,
+            bau_sincronizado)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
         (
             guild_id,
             user_id,
@@ -852,7 +855,39 @@ def db_registrar_fabricacao_colete(
             borracha,
             custo,
             now_tz().isoformat(),
+            bau_operation_id,
         ),
+    )
+    conn.commit()
+    return {
+        "id": cursor.lastrowid,
+        "guild_id": guild_id,
+        "user_id": user_id,
+        "user_name": user_name,
+        "quantidade": quantidade,
+        "bau_operation_id": bau_operation_id,
+    }
+
+
+def db_get_fabricacoes_colete_pendentes(limit: int = 100) -> list[dict]:
+    rows = get_conn().execute(
+        """SELECT id, guild_id, user_id, user_name, quantidade, bau_operation_id
+           FROM fabricacoes_colete
+           WHERE bau_operation_id IS NOT NULL AND bau_sincronizado=0
+           ORDER BY id
+           LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def db_marcar_fabricacao_colete_sincronizada(fabricacao_id: int) -> None:
+    conn = get_conn()
+    conn.execute(
+        """UPDATE fabricacoes_colete
+           SET bau_sincronizado=1, bau_sincronizado_em=?
+           WHERE id=?""",
+        (now_tz().isoformat(), fabricacao_id),
     )
     conn.commit()
 

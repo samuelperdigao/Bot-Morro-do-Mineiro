@@ -99,7 +99,10 @@ CREATE TABLE IF NOT EXISTS fabricacoes_colete (
     aluminio   INTEGER NOT NULL,
     borracha   INTEGER NOT NULL,
     custo      INTEGER NOT NULL,
-    timestamp  TEXT NOT NULL
+    timestamp  TEXT NOT NULL,
+    bau_operation_id TEXT,
+    bau_sincronizado INTEGER DEFAULT 0,
+    bau_sincronizado_em TEXT
 );
 
 CREATE TABLE IF NOT EXISTS system_config (
@@ -194,6 +197,9 @@ MIGRATIONS = (
     ("recolhimento_entregas", "alvo_user_id", "TEXT"),
     ("recolhimento_entregas", "alvo_nome", "TEXT"),
     ("recolhimento_entregas", "alvo_pasta_id", "TEXT"),
+    ("fabricacoes_colete", "bau_operation_id", "TEXT"),
+    ("fabricacoes_colete", "bau_sincronizado", "INTEGER DEFAULT 0"),
+    ("fabricacoes_colete", "bau_sincronizado_em", "TEXT"),
 )
 
 
