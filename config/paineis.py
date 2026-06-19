@@ -26,7 +26,6 @@ PERMISSOES_PAINEL_OPERACOES = {
     "editar_farm":  ["lider", "vice_lider", "gerente"],
     "definir_metas":["lider", "vice_lider", "gerente"],
     "fazer_anuncio":["lider", "vice_lider", "gerente"],
-    "recolhimento": ["lider", "vice_lider", "gerente"],
     "ver_ranking":  ["lider", "vice_lider", "gerente", "membro"],
     "acao":         ["lider", "vice_lider", "gerente", "membro"],
     "ausencia":     ["lider", "vice_lider", "gerente", "membro"],
@@ -50,7 +49,6 @@ BOTOES_MEMBRO = []
 BOTOES_LIDERANCA = [
     {"label": "Definir Metas",  "emoji": "🎯", "custom_id": "painel:definir_metas", "style": "secondary", "row": 0},
     {"label": "Fazer Anúncio",  "emoji": "📢", "custom_id": "painel:fazer_anuncio", "style": "secondary", "row": 0},
-    {"label": "Recolhimento",   "emoji": "📥", "custom_id": "painel:recolhimento",  "style": "primary",   "row": 1},
     {"label": "Ranking Geral",  "emoji": "🏆", "custom_id": "painel:ranking",       "style": "primary",   "row": 1},
 ]
 

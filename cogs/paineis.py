@@ -333,26 +333,6 @@ class PaineisCog(commands.Cog):
                 log.info("fazer_anuncio: %s (%s)", member.name, guild_id)
 
             # ── Ranking ───────────────────────────────────────────────────────
-            elif funcao == "recolhimento":
-                if not is_lideranca(member, lideranca_ids):
-                    await interaction.response.send_message(
-                        "Voce nao tem permissao para iniciar recolhimento.", ephemeral=True
-                    )
-                    return
-                recolhimento_cog = interaction.client.get_cog("RecolhimentoCog")
-                if not recolhimento_cog:
-                    await interaction.response.send_message(
-                        "Erro interno: RecolhimentoCog nao carregado.", ephemeral=True
-                    )
-                    return
-                from cogs.recolhimento import EscolherTipoView
-                await interaction.response.send_message(
-                    "Escolha o tipo de recolhimento para esta semana:",
-                    view=EscolherTipoView(recolhimento_cog),
-                    ephemeral=True,
-                )
-                log.info("recolhimento: %s (%s)", member.name, guild_id)
-
             elif funcao == "ranking":
                 week_id = current_week_id()
                 embed = _build_ranking_history_embed(interaction.guild, guild_id, week_id)

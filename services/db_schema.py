@@ -141,7 +141,8 @@ CREATE TABLE IF NOT EXISTS recolhimento_entregas (
     folha          INTEGER,
     opio           INTEGER,
     seringa        INTEGER,
-    agulha         INTEGER
+    agulha         INTEGER,
+    itens_json     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS lideranca_pendencias (
@@ -176,6 +177,10 @@ CREATE TABLE IF NOT EXISTS farm_tickets (
     week_id                TEXT NOT NULL,
     user_id                TEXT NOT NULL,
     member_name            TEXT NOT NULL,
+    folder_channel_id      TEXT,
+    folder_slot            INTEGER,
+    game_id                TEXT,
+    folder_nickname        TEXT,
     channel_id             TEXT,
     panel_message_id       TEXT,
     status                 TEXT NOT NULL DEFAULT 'criando',
@@ -185,8 +190,7 @@ CREATE TABLE IF NOT EXISTS farm_tickets (
     finalizado_em          TEXT,
     finalizado_por         TEXT,
     finalizacao_motivo     TEXT,
-    excluido_em            TEXT,
-    UNIQUE (guild_id, week_id, user_id)
+    excluido_em            TEXT
 );
 
 CREATE TABLE IF NOT EXISTS farm_ticket_lancamentos (
@@ -222,6 +226,10 @@ ON farm_tickets (guild_id, channel_id);
 
 CREATE INDEX IF NOT EXISTS idx_farm_tickets_status_week
 ON farm_tickets (status, week_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_farm_tickets_active_member
+ON farm_tickets (guild_id, week_id, user_id)
+WHERE status IN ('criando', 'aberto', 'revisao');
 
 CREATE INDEX IF NOT EXISTS idx_farm_ticket_lancamentos_ticket
 ON farm_ticket_lancamentos (ticket_id, event_id);
@@ -263,9 +271,14 @@ MIGRATIONS = (
     ("recolhimento_entregas", "alvo_user_id", "TEXT"),
     ("recolhimento_entregas", "alvo_nome", "TEXT"),
     ("recolhimento_entregas", "alvo_pasta_id", "TEXT"),
+    ("recolhimento_entregas", "itens_json", "TEXT"),
     ("fabricacoes_colete", "bau_operation_id", "TEXT"),
     ("fabricacoes_colete", "bau_sincronizado", "INTEGER DEFAULT 0"),
     ("fabricacoes_colete", "bau_sincronizado_em", "TEXT"),
+    ("farm_tickets", "folder_channel_id", "TEXT"),
+    ("farm_tickets", "folder_slot", "INTEGER"),
+    ("farm_tickets", "game_id", "TEXT"),
+    ("farm_tickets", "folder_nickname", "TEXT"),
 )
 
 
@@ -275,9 +288,64 @@ def _ensure_column(conn: sqlite3.Connection, table: str, col: str, definition: s
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {definition}")
 
 
+def _migrate_ticket_active_uniqueness(conn: sqlite3.Connection) -> None:
+    table_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='farm_tickets'"
+    ).fetchone()[0]
+    normalized = " ".join(table_sql.lower().split())
+    if "unique (guild_id, week_id, user_id)" not in normalized:
+        return
+
+    conn.execute("ALTER TABLE farm_tickets RENAME TO farm_tickets_legacy")
+    conn.execute(
+        """CREATE TABLE farm_tickets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id TEXT NOT NULL,
+            week_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            member_name TEXT NOT NULL,
+            folder_channel_id TEXT,
+            folder_slot INTEGER,
+            game_id TEXT,
+            folder_nickname TEXT,
+            channel_id TEXT,
+            panel_message_id TEXT,
+            status TEXT NOT NULL DEFAULT 'criando',
+            assigned_to TEXT,
+            criado_em TEXT NOT NULL,
+            atualizado_em TEXT NOT NULL,
+            finalizado_em TEXT,
+            finalizado_por TEXT,
+            finalizacao_motivo TEXT,
+            excluido_em TEXT
+        )"""
+    )
+    columns = (
+        "id, guild_id, week_id, user_id, member_name, folder_channel_id, folder_slot, "
+        "game_id, folder_nickname, channel_id, panel_message_id, status, assigned_to, "
+        "criado_em, atualizado_em, finalizado_em, finalizado_por, finalizacao_motivo, excluido_em"
+    )
+    conn.execute(
+        f"INSERT INTO farm_tickets ({columns}) SELECT {columns} FROM farm_tickets_legacy"
+    )
+    conn.execute("DROP TABLE farm_tickets_legacy")
+    conn.execute(
+        "CREATE INDEX idx_farm_tickets_channel ON farm_tickets (guild_id, channel_id)"
+    )
+    conn.execute(
+        "CREATE INDEX idx_farm_tickets_status_week ON farm_tickets (status, week_id)"
+    )
+    conn.execute(
+        """CREATE UNIQUE INDEX idx_farm_tickets_active_member
+           ON farm_tickets (guild_id, week_id, user_id)
+           WHERE status IN ('criando', 'aberto', 'revisao')"""
+    )
+
+
 def ensure_schema(conn: sqlite3.Connection, db_path: Path, log: logging.Logger) -> None:
     conn.executescript(SCHEMA_SQL)
     for table, column, definition in MIGRATIONS:
         _ensure_column(conn, table, column, definition)
+    _migrate_ticket_active_uniqueness(conn)
     conn.commit()
     log.info("Banco inicializado: %s", db_path)

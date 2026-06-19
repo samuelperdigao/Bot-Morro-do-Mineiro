@@ -28,6 +28,45 @@ COR_FARM   = 0xFFD700
 FOOTER_FARM = "Morro do Mineiro — Sistema de Farm"
 
 
+async def lock_farm_panel_channel(
+    channel: discord.TextChannel,
+    guild: discord.Guild,
+) -> int:
+    """Deixa o painel somente leitura sem impedir interacoes com os botoes."""
+    targets = list(channel.overwrites)
+    if guild.default_role not in targets:
+        targets.insert(0, guild.default_role)
+
+    changed = 0
+    bot_member = guild.me
+    for target in targets:
+        if bot_member is not None and target == bot_member:
+            continue
+        overwrite = channel.overwrites_for(target)
+        if overwrite.send_messages is False and overwrite.send_messages_in_threads is False:
+            continue
+        overwrite.send_messages = False
+        overwrite.send_messages_in_threads = False
+        await channel.set_permissions(
+            target,
+            overwrite=overwrite,
+            reason="Painel de farm somente leitura",
+        )
+        changed += 1
+
+    if bot_member is not None:
+        overwrite = channel.overwrites_for(bot_member)
+        if overwrite.send_messages is not True:
+            overwrite.send_messages = True
+            await channel.set_permissions(
+                bot_member,
+                overwrite=overwrite,
+                reason="Permitir publicacoes do bot no painel de farm",
+            )
+            changed += 1
+    return changed
+
+
 class FarmPainelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -147,6 +186,21 @@ class FarmPainelView(discord.ui.View):
             )
             return
         await cog.open_ticket(interaction)
+
+    @discord.ui.button(
+        label="🗑️ Excluir Ticket",
+        style=discord.ButtonStyle.danger,
+        custom_id="farm_painel:excluir_ticket_admin",
+        row=2,
+    )
+    async def excluir_ticket_admin(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cog = interaction.client.get_cog("FarmTicketsCog")
+        if not cog:
+            await interaction.response.send_message(
+                "❌ Sistema de tickets indisponível.", ephemeral=True
+            )
+            return
+        await cog.show_admin_ticket_manager(interaction)
 
 
 class LegacyFarmLaunchView(discord.ui.View):
@@ -285,6 +339,30 @@ class FarmPainelCog(commands.Cog):
         self.bot = bot
         bot.add_view(FarmPainelView())
         bot.add_view(LegacyFarmLaunchView())
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        for guild in self.bot.guilds:
+            row = db_get_system_config(str(guild.id), "farm")
+            if not row or not row["canal_interacao_id"]:
+                continue
+            try:
+                channel = guild.get_channel(int(row["canal_interacao_id"]))
+                if channel is None:
+                    channel = await guild.fetch_channel(int(row["canal_interacao_id"]))
+                if isinstance(channel, discord.TextChannel):
+                    changed = await lock_farm_panel_channel(channel, guild)
+                    if changed:
+                        log.info(
+                            "Permissoes do painel farm atualizadas (guild %s, canal %s, alteracoes %s)",
+                            guild.id,
+                            channel.id,
+                            changed,
+                        )
+            except (discord.Forbidden, discord.HTTPException, ValueError):
+                log.exception(
+                    "Falha ao aplicar permissoes no painel farm (guild %s)", guild.id
+                )
 
     @app_commands.command(
         name="farm_membro",
@@ -493,6 +571,13 @@ class FarmPainelCog(commands.Cog):
                 )
                 return
 
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.followup.send(
+                "❌ O canal configurado precisa ser um canal de texto.", ephemeral=True
+            )
+            return
+
+        await lock_farm_panel_channel(channel, interaction.guild)
         await channel.send(embed=_build_painel_embed(), view=FarmPainelView())
         await interaction.followup.send(
             f"✅ Painel de farm postado em {channel.mention}!", ephemeral=True

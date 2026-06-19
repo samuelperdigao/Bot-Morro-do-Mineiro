@@ -19,6 +19,7 @@ from services.db_service import (
     db_aprovar,
     db_editar_evento,
     db_evento_itens,
+    db_get_guild_config,
     db_get_meta,
     db_get_progresso,
     db_meta_dinheiro_ativo,
@@ -33,16 +34,21 @@ from services.db_service import (
     db_ticket_config_get,
     db_ticket_deletion_candidates,
     db_ticket_finalize,
+    db_ticket_expired,
     db_ticket_get,
     db_ticket_get_channel,
+    db_ticket_get_week,
     db_ticket_launch,
     db_ticket_launches,
     db_ticket_latest_action,
+    db_ticket_list_existing,
     db_ticket_list_week,
     db_ticket_mark_corrected,
     db_ticket_mark_deleted,
     db_ticket_mark_log_attempt,
+    db_ticket_mark_manual_deleted,
     db_ticket_pending_actions,
+    db_ticket_has_pending_logs,
     db_ticket_release_failed,
     db_ticket_recalculate_completion,
     db_ticket_reserve,
@@ -53,6 +59,7 @@ from services.db_service import (
     now_tz,
 )
 from services.log_service import send_log
+from services.set_service import MemberFolderError, resolve_member_folder
 
 log = logging.getLogger("farm")
 PROOF_TIMEOUT = 180.0
@@ -133,6 +140,12 @@ def build_ticket_embed(ticket, member: discord.Member, meta) -> discord.Embed:
     )
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.add_field(name="👤 Membro", value=member.mention, inline=True)
+    if ticket["folder_slot"] is not None:
+        embed.add_field(name="📁 Slot da Pasta", value=f"`{int(ticket['folder_slot']):02d}`", inline=True)
+        embed.add_field(name="🏷️ Apelido", value=ticket["folder_nickname"] or ticket["member_name"], inline=True)
+        embed.add_field(name="🎮 ID do Jogo", value=f"`{ticket['game_id']}`", inline=True)
+        if ticket["folder_channel_id"]:
+            embed.add_field(name="🗂️ Pasta Individual", value=f"<#{ticket['folder_channel_id']}>", inline=False)
     embed.add_field(name="🎯 Farm ativo", value=type_label, inline=True)
     embed.add_field(name="📅 Semana", value=format_date_br(ticket["week_id"]), inline=True)
     embed.add_field(name="💰 Entregas e metas", value="\n\n".join(lines) or "Meta não configurada.", inline=False)
@@ -156,7 +169,7 @@ def build_ticket_embed(ticket, member: discord.Member, meta) -> discord.Embed:
         history.append(f"• {text} — {format_datetime_br(launch['criado_em'])}")
     embed.add_field(name="📂 Últimos lançamentos", value="\n".join(history) or "Nenhum lançamento no ticket.", inline=False)
     embed.add_field(name="🕒 Última atualização", value=format_datetime_br(ticket["atualizado_em"]), inline=False)
-    embed.set_footer(text="Sistema de Farm • Fechamento exclusivamente manual")
+    embed.set_footer(text="Sistema de Farm • Prazo semanal: domingo às 23:59")
     return embed
 
 
@@ -444,6 +457,31 @@ class FarmTicketView(discord.ui.View):
             links.append(f"• [Lançamento #{row['id']}]({row['log_proof_url'] or row['proof_url']}) — {format_datetime_br(row['criado_em'])}")
         await interaction.response.send_message("\n".join(links) or "Nenhum comprovante registrado.", ephemeral=True)
 
+    @discord.ui.button(label="Recolhimento", emoji="📥", style=discord.ButtonStyle.primary, custom_id="farm_ticket:collection", row=0)
+    async def collection(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cog, ticket = await self._context(interaction)
+        if not cog or not ticket or not cog.is_admin(interaction.user, ticket["guild_id"]):
+            await interaction.response.send_message("Sem permissão administrativa.", ephemeral=True)
+            return
+        if ticket["status"] not in {"aberto", "revisao"}:
+            await interaction.response.send_message("Ticket indisponível.", ephemeral=True)
+            return
+        recolhimento_cog = interaction.client.get_cog("RecolhimentoCog")
+        if not recolhimento_cog:
+            await interaction.response.send_message(
+                "Sistema de recolhimento indisponível.", ephemeral=True
+            )
+            return
+        modal = recolhimento_cog._modal_recolhimento_ticket(
+            ticket, str(interaction.user.id)
+        )
+        if not modal:
+            await interaction.response.send_message(
+                "Não há uma meta ativa configurada para esta semana.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(modal)
+
     @discord.ui.button(label="Assumir Ticket", emoji="👮", style=discord.ButtonStyle.secondary, custom_id="farm_ticket:claim", row=1)
     async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
         cog, ticket = await self._context(interaction)
@@ -515,14 +553,103 @@ class FarmTicketView(discord.ui.View):
         await interaction.response.send_modal(FinalizeTicketModal(cog, int(ticket["id"])))
 
 
+class ManualDeleteConfirmView(discord.ui.View):
+    def __init__(self, cog: "FarmTicketsCog", ticket_id: int, admin_id: int):
+        super().__init__(timeout=90)
+        self.cog = cog
+        self.ticket_id = ticket_id
+        self.admin_id = admin_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.admin_id:
+            await interaction.response.send_message("Esta confirmação pertence a outro administrador.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Confirmar exclusão", emoji="🗑️", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.delete_ticket_manually(interaction, self.ticket_id)
+
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="Exclusão cancelada.", view=None)
+
+
+class AdminTicketSelect(discord.ui.Select):
+    def __init__(self, cog: "FarmTicketsCog", tickets: list, admin_id: int):
+        self.cog = cog
+        self.tickets = {str(ticket["id"]): ticket for ticket in tickets}
+        options = []
+        for ticket in tickets:
+            slot = f"{int(ticket['folder_slot']):02d}" if ticket["folder_slot"] is not None else "--"
+            label = f"{slot} - {ticket['folder_nickname'] or ticket['member_name']}"
+            description = f"Semana {format_date_br(ticket['week_id'])} • {ticket['status']}"
+            options.append(
+                discord.SelectOption(label=label[:100], description=description[:100], value=str(ticket["id"]))
+            )
+        super().__init__(placeholder="Selecione o ticket para excluir", options=options)
+        self.admin_id = admin_id
+
+    async def callback(self, interaction: discord.Interaction):
+        ticket = self.tickets[self.values[0]]
+        channel_text = f"<#{ticket['channel_id']}>" if ticket["channel_id"] else f"ticket #{ticket['id']}"
+        await interaction.response.edit_message(
+            content=(
+                f"⚠️ Confirme a exclusão manual de {channel_text}.\n"
+                "O canal será apagado, mas lançamentos, progresso e logs serão preservados."
+            ),
+            view=ManualDeleteConfirmView(self.cog, int(ticket["id"]), self.admin_id),
+        )
+
+
+class AdminTicketListView(discord.ui.View):
+    PAGE_SIZE = 25
+
+    def __init__(self, cog: "FarmTicketsCog", tickets: list, admin_id: int, page: int = 0):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.tickets = tickets
+        self.admin_id = admin_id
+        self.page = page
+        self.total_pages = max(1, (len(tickets) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+        start = page * self.PAGE_SIZE
+        page_tickets = tickets[start:start + self.PAGE_SIZE]
+        if page_tickets:
+            self.add_item(AdminTicketSelect(cog, page_tickets, admin_id))
+        self.previous.disabled = page <= 0
+        self.next.disabled = page >= self.total_pages - 1
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.admin_id:
+            await interaction.response.send_message("Este gerenciador pertence a outro administrador.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Anterior", style=discord.ButtonStyle.secondary, row=1)
+    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(
+            content=f"Tickets existentes • página {self.page}/{self.total_pages}",
+            view=AdminTicketListView(self.cog, self.tickets, self.admin_id, self.page - 1),
+        )
+
+    @discord.ui.button(label="Próxima", style=discord.ButtonStyle.secondary, row=1)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(
+            content=f"Tickets existentes • página {self.page + 2}/{self.total_pages}",
+            view=AdminTicketListView(self.cog, self.tickets, self.admin_id, self.page + 1),
+        )
+
+
 class FarmTicketsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         bot.add_view(FarmTicketView())
         self.cleanup_task.start()
+        self.deadline_task.start()
 
     def cog_unload(self):
         self.cleanup_task.cancel()
+        self.deadline_task.cancel()
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -538,6 +665,85 @@ class FarmTicketsCog(commands.Cog):
         config = db_ticket_config_get(guild_id)
         allowed = {int(role_id) for role_id in (config or {}).get("admin_role_ids", [])}
         return bool(allowed.intersection(role.id for role in member.roles))
+
+    async def lock_ticket_channel(self, ticket, guild: discord.Guild) -> None:
+        if not ticket["channel_id"]:
+            return
+        channel = guild.get_channel(int(ticket["channel_id"]))
+        if not isinstance(channel, discord.TextChannel):
+            return
+        owner = guild.get_member(int(ticket["user_id"]))
+        if owner:
+            overwrite = channel.overwrites_for(owner)
+            overwrite.send_messages = False
+            overwrite.attach_files = False
+            await channel.set_permissions(owner, overwrite=overwrite, reason="Prazo do ticket de farm encerrado")
+
+    async def show_admin_ticket_manager(self, interaction: discord.Interaction) -> None:
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                "Somente administradores podem excluir tickets manualmente.", ephemeral=True
+            )
+            return
+        tickets = db_ticket_list_existing(str(interaction.guild_id))
+        config = db_ticket_config_get(str(interaction.guild_id)) or {}
+        category_ids = {str(value) for value in config.get("category_ids", [])}
+        valid = []
+        for ticket in tickets:
+            channel = interaction.guild.get_channel(int(ticket["channel_id"])) if ticket["channel_id"] else None
+            if channel and str(channel.category_id) in category_ids:
+                valid.append(ticket)
+        if not valid:
+            await interaction.response.send_message(
+                "Não há tickets rastreados nas categorias configuradas.", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(
+            f"Tickets existentes • página 1/{max(1, (len(valid) + 24) // 25)}",
+            view=AdminTicketListView(self, valid, interaction.user.id),
+            ephemeral=True,
+        )
+
+    async def delete_ticket_manually(self, interaction: discord.Interaction, ticket_id: int) -> None:
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("Somente administradores podem excluir tickets.", ephemeral=True)
+            return
+        ticket = db_ticket_get(ticket_id)
+        if not ticket or not ticket["channel_id"] or ticket["excluido_em"]:
+            await interaction.response.edit_message(content="Este ticket já foi excluído.", view=None)
+            return
+        if db_ticket_has_pending_logs(ticket_id):
+            await interaction.response.edit_message(
+                content="O ticket possui logs ou comprovantes pendentes. Aguarde a sincronização antes de excluir.",
+                view=None,
+            )
+            return
+        config = db_ticket_config_get(ticket["guild_id"]) or {}
+        category_ids = {str(value) for value in config.get("category_ids", [])}
+        channel = interaction.guild.get_channel(int(ticket["channel_id"]))
+        if not isinstance(channel, discord.TextChannel) or str(channel.category_id) not in category_ids:
+            await interaction.response.edit_message(
+                content="O canal não pertence a uma categoria configurada de tickets.", view=None
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        reason = "Exclusão manual confirmada por administrador"
+        action_id = db_ticket_add_action(
+            ticket_id, "exclusao_manual", str(interaction.user.id), payload={"motivo": reason}
+        )
+        logged = await self.send_action_log(
+            ticket, action_id, "Ticket excluído manualmente", interaction.user, reason
+        )
+        if not logged:
+            await interaction.followup.send(
+                "Não foi possível registrar o log. O canal não foi excluído.", ephemeral=True
+            )
+            return
+        await channel.delete(reason=reason)
+        db_ticket_mark_manual_deleted(ticket_id, str(interaction.user.id), reason)
+        await interaction.followup.send(
+            "Ticket excluído. Lançamentos, progresso e logs foram preservados.", ephemeral=True
+        )
 
     async def refresh_ticket(self, ticket_id: int) -> None:
         ticket = db_ticket_get(ticket_id)
@@ -614,15 +820,64 @@ class FarmTicketsCog(commands.Cog):
 
     async def open_ticket(self, interaction: discord.Interaction):
         guild_id = str(interaction.guild_id)
+        week_id = current_week_id()
         config = db_ticket_config_get(guild_id)
         if not config:
             await interaction.response.send_message("Tickets de farm ainda não foram configurados no dashboard.", ephemeral=True)
             return
-        meta = db_get_meta(guild_id, current_week_id())
+        meta = db_get_meta(guild_id, week_id)
         if not _active_targets(meta)[1]:
             await interaction.response.send_message("A meta ativa da semana ainda não foi definida.", ephemeral=True)
             return
-        ticket, created = db_ticket_reserve(guild_id, current_week_id(), str(interaction.user.id), interaction.user.display_name)
+        existing = db_ticket_get_week(guild_id, week_id, str(interaction.user.id))
+        if existing:
+            if existing["channel_id"]:
+                channel = interaction.guild.get_channel(int(existing["channel_id"]))
+                if channel:
+                    await interaction.response.send_message(
+                        "Você já possui um ticket nesta semana.",
+                        view=TicketLinkView(channel.jump_url),
+                        ephemeral=True,
+                    )
+                    return
+            await interaction.response.send_message(
+                "Seu ticket está sendo criado. Tente acessar novamente em alguns segundos.",
+                ephemeral=True,
+            )
+            return
+
+        guild_config = db_get_guild_config(guild_id)
+        if not guild_config or not guild_config["private_category_id"]:
+            await interaction.response.send_message(
+                "A categoria de pastas individuais não está configurada.", ephemeral=True
+            )
+            return
+        try:
+            folder = await resolve_member_folder(
+                interaction.guild,
+                guild_id,
+                interaction.user,
+                int(guild_config["private_category_id"]),
+            )
+        except MemberFolderError as exc:
+            log.warning("Ticket bloqueado por pasta inválida: guild=%s user=%s erro=%s", guild_id, interaction.user.id, exc)
+            await interaction.response.send_message(
+                f"❌ Não foi possível identificar sua pasta individual: {exc}\n"
+                "Procure a administração para regularizar a pasta antes de abrir o ticket.",
+                ephemeral=True,
+            )
+            return
+
+        ticket, created = db_ticket_reserve(
+            guild_id,
+            week_id,
+            str(interaction.user.id),
+            interaction.user.display_name,
+            folder_channel_id=str(folder.channel_id),
+            folder_slot=folder.slot,
+            game_id=folder.game_id,
+            folder_nickname=folder.nickname,
+        )
         if not created:
             if ticket["channel_id"]:
                 channel = interaction.guild.get_channel(int(ticket["channel_id"]))
@@ -652,7 +907,8 @@ class FarmTicketsCog(commands.Cog):
             for role in admin_roles:
                 if role:
                     overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
-            base_name = f"farm-{_slug(interaction.user.display_name)}"
+            slot_label = f"{folder.slot:02d}"
+            base_name = f"farm-{slot_label}-{_slug(folder.nickname)}-{folder.game_id}"
             existing_names = {channel.name for cat in categories for channel in cat.text_channels}
             channel_name = base_name if base_name not in existing_names else f"{base_name[:75]}-{str(interaction.user.id)[-4:]}"
             channel = await interaction.guild.create_text_channel(channel_name, category=category, overwrites=overwrites, reason="Ticket semanal de farm")
@@ -670,7 +926,10 @@ class FarmTicketsCog(commands.Cog):
                 pass
             db_ticket_activate(int(ticket["id"]), str(channel.id), str(message.id))
             action_id = db_ticket_add_action(int(ticket["id"]), "abertura", str(interaction.user.id))
-            await self.send_action_log(db_ticket_get(int(ticket["id"])), action_id, "Ticket aberto", interaction.user, f"Semana {format_date_br(ticket['week_id'])}")
+            await self.send_action_log(
+                db_ticket_get(int(ticket["id"])), action_id, "Ticket aberto", interaction.user,
+                f"Semana {format_date_br(ticket['week_id'])} • Pasta {slot_label} • ID {folder.game_id}",
+            )
             await interaction.followup.send("Ticket criado com sucesso.", view=TicketLinkView(channel.jump_url), ephemeral=True)
         except Exception as exc:
             if channel is not None:
@@ -704,6 +963,31 @@ class FarmTicketsCog(commands.Cog):
                 await channel.delete(reason="Fim da retenção semanal do ticket de farm")
                 db_ticket_mark_deleted(int(ticket["id"]))
 
+    @tasks.loop(minutes=1)
+    async def deadline_task(self):
+        await self.bot.wait_until_ready()
+        current_week = current_week_id()
+        for ticket in db_ticket_expired(current_week):
+            guild = self.bot.get_guild(int(ticket["guild_id"]))
+            if not guild:
+                continue
+            reason = "Prazo semanal de entrega encerrado (domingo 23:59)"
+            if not db_ticket_finalize(int(ticket["id"]), str(guild.me.id), reason):
+                continue
+            finalized = db_ticket_get(int(ticket["id"]))
+            try:
+                await self.lock_ticket_channel(finalized, guild)
+                await self.refresh_ticket(int(ticket["id"]))
+            except Exception:
+                log.exception("Falha ao bloquear ticket expirado %s", ticket["id"])
+            action_id = db_ticket_add_action(
+                int(ticket["id"]), "prazo_encerrado", str(guild.me.id),
+                payload={"motivo": reason},
+            )
+            await self.send_action_log(
+                finalized, action_id, "Prazo do ticket encerrado", guild.me, reason
+            )
+
     async def retry_pending_logs(self) -> None:
         titles = {
             "abertura": "Ticket aberto",
@@ -714,6 +998,8 @@ class FarmTicketsCog(commands.Cog):
             "aprovacao": "Meta aprovada",
             "finalizacao": "Ticket finalizado",
             "exclusao": "Canal de ticket excluído",
+            "exclusao_manual": "Ticket excluído manualmente",
+            "prazo_encerrado": "Prazo do ticket encerrado",
         }
         for action in db_ticket_pending_actions():
             ticket = db_ticket_get(int(action["ticket_id"]))
@@ -742,6 +1028,10 @@ class FarmTicketsCog(commands.Cog):
 
     @cleanup_task.before_loop
     async def before_cleanup(self):
+        await self.bot.wait_until_ready()
+
+    @deadline_task.before_loop
+    async def before_deadline(self):
         await self.bot.wait_until_ready()
 
 

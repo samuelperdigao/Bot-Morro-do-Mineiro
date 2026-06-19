@@ -1079,6 +1079,51 @@ def db_recolhimento_add_entrega_farm(
     return cur.lastrowid
 
 
+def db_recolhimento_add_entrega_itens(
+    ciclo_id: int,
+    registrado_por: str,
+    itens: dict[str, int | float],
+    alvo_user_id: str | None = None,
+    alvo_nome: str | None = None,
+    alvo_pasta_id: str | None = None,
+) -> int:
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO recolhimento_entregas "
+        "(ciclo_id, data, registrado_por, alvo_user_id, alvo_nome, alvo_pasta_id, itens_json) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (
+            ciclo_id,
+            now_tz().isoformat(),
+            registrado_por,
+            alvo_user_id,
+            alvo_nome,
+            alvo_pasta_id,
+            json.dumps(itens, ensure_ascii=False),
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def db_recolhimento_entrega_itens(entrega) -> dict:
+    itens_json = entrega["itens_json"] if "itens_json" in entrega.keys() else None
+    if itens_json:
+        return json.loads(itens_json)
+    if entrega["valor"]:
+        return {"Dinheiro": entrega["valor"]}
+    return {
+        nome: entrega[key] or 0
+        for key, nome in {
+            "folha": "Borracha",
+            "opio": "Aluminio",
+            "seringa": "Cobre",
+            "agulha": "Plastico",
+        }.items()
+        if entrega[key]
+    }
+
+
 def db_recolhimento_get_entregas(ciclo_id: int) -> list:
     return get_conn().execute(
         "SELECT * FROM recolhimento_entregas WHERE ciclo_id=? ORDER BY id ASC", (ciclo_id,),
@@ -1265,7 +1310,10 @@ def db_ticket_get(ticket_id: int):
 
 def db_ticket_get_week(guild_id: str, week_id: str, user_id: str):
     return get_conn().execute(
-        "SELECT * FROM farm_tickets WHERE guild_id=? AND week_id=? AND user_id=?",
+        """SELECT * FROM farm_tickets
+           WHERE guild_id=? AND week_id=? AND user_id=?
+             AND status IN ('criando','aberto','revisao')
+           ORDER BY id DESC LIMIT 1""",
         (guild_id, week_id, user_id),
     ).fetchone()
 
@@ -1290,15 +1338,53 @@ def db_ticket_active() -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def db_ticket_reserve(guild_id: str, week_id: str, user_id: str, member_name: str):
-    """Reserva a chave única do ticket. Retorna (ticket, criado_agora)."""
+def db_ticket_list_existing(guild_id: str) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT * FROM farm_tickets
+           WHERE guild_id=? AND channel_id IS NOT NULL AND excluido_em IS NULL
+           ORDER BY week_id DESC, id DESC""",
+        (guild_id,),
+    ).fetchall()
+
+
+def db_ticket_expired(current_week: str) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT * FROM farm_tickets
+           WHERE week_id < ? AND status IN ('aberto','revisao') AND excluido_em IS NULL""",
+        (current_week,),
+    ).fetchall()
+
+
+def db_ticket_has_pending_logs(ticket_id: int) -> bool:
+    return get_conn().execute(
+        "SELECT 1 FROM farm_ticket_actions WHERE ticket_id=? AND log_enviado_em IS NULL LIMIT 1",
+        (ticket_id,),
+    ).fetchone() is not None
+
+
+def db_ticket_reserve(
+    guild_id: str,
+    week_id: str,
+    user_id: str,
+    member_name: str,
+    *,
+    folder_channel_id: str | None = None,
+    folder_slot: int | None = None,
+    game_id: str | None = None,
+    folder_nickname: str | None = None,
+):
+    """Reserva um ticket se o membro ainda não tiver outro ativo na semana."""
     conn = get_conn()
     agora = now_tz().isoformat()
     cursor = conn.execute(
         """INSERT OR IGNORE INTO farm_tickets
-           (guild_id, week_id, user_id, member_name, status, criado_em, atualizado_em)
-           VALUES (?,?,?,?,?,?,?)""",
-        (guild_id, week_id, user_id, member_name, "criando", agora, agora),
+           (guild_id, week_id, user_id, member_name, folder_channel_id,
+            folder_slot, game_id, folder_nickname, status, criado_em, atualizado_em)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            guild_id, week_id, user_id, member_name, folder_channel_id,
+            folder_slot, game_id, folder_nickname, "criando", agora, agora,
+        ),
     )
     conn.commit()
     return db_ticket_get_week(guild_id, week_id, user_id), cursor.rowcount == 1
@@ -1567,5 +1653,18 @@ def db_ticket_mark_deleted(ticket_id: int) -> None:
     conn.execute(
         "UPDATE farm_tickets SET excluido_em=?, channel_id=NULL WHERE id=?",
         (now_tz().isoformat(), ticket_id),
+    )
+    conn.commit()
+
+
+def db_ticket_mark_manual_deleted(ticket_id: int, admin_id: str, reason: str) -> None:
+    conn = get_conn()
+    agora = now_tz().isoformat()
+    conn.execute(
+        """UPDATE farm_tickets SET status='finalizado', finalizado_em=COALESCE(finalizado_em, ?),
+           finalizado_por=COALESCE(finalizado_por, ?),
+           finalizacao_motivo=COALESCE(finalizacao_motivo, ?),
+           excluido_em=?, channel_id=NULL, atualizado_em=? WHERE id=?""",
+        (agora, admin_id, reason, agora, agora, ticket_id),
     )
     conn.commit()

@@ -21,6 +21,42 @@ log = get_logger("radio", "bot.log")
 CANAL_RADIO_ID = 1474869321863008296
 
 
+def pode_alterar_radio(member: discord.Member) -> bool:
+    """Permite a alteracao apenas para administradores e cargos de gerente."""
+    if member.guild_permissions.administrator:
+        return True
+    return any("gerente" in role.name.casefold() for role in member.roles)
+
+
+async def configurar_permissoes_radio(canal: discord.TextChannel) -> None:
+    """Impede mensagens de membros sem bloquear o uso dos componentes do painel."""
+    everyone = canal.guild.default_role
+    bot_member = canal.guild.me
+    overwrites = canal.overwrites
+    overwrites.setdefault(everyone, canal.overwrites_for(everyone))
+
+    for target, overwrite in overwrites.items():
+        if bot_member is not None and target.id == bot_member.id:
+            continue
+        overwrite.send_messages = False
+        overwrite.send_messages_in_threads = False
+        overwrite.create_public_threads = False
+        overwrite.create_private_threads = False
+
+    if bot_member is not None:
+        bot_overwrite = overwrites.get(bot_member, canal.overwrites_for(bot_member))
+        bot_overwrite.view_channel = True
+        bot_overwrite.send_messages = True
+        bot_overwrite.embed_links = True
+        bot_overwrite.mention_everyone = True
+        overwrites[bot_member] = bot_overwrite
+
+    await canal.edit(
+        overwrites=overwrites,
+        reason="Canal da radio reservado ao painel interativo",
+    )
+
+
 # ── Modal ─────────────────────────────────────────────────────────────────────
 
 class RadioModal(discord.ui.Modal, title="📻 Definir Nova Rádio"):
@@ -32,6 +68,13 @@ class RadioModal(discord.ui.Modal, title="📻 Definir Nova Rádio"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not pode_alterar_radio(interaction.user):
+            await interaction.response.send_message(
+                "❌ Apenas gerentes e administradores podem alterar a rádio.",
+                ephemeral=True,
+            )
+            return
+
         await interaction.response.defer(ephemeral=True)
 
         numero = self.numero.value.strip()
@@ -111,9 +154,9 @@ class RadioPainelView(discord.ui.View):
         custom_id="radio_painel:definir",
     )
     async def definir(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.user.guild_permissions.manage_guild:
+        if not pode_alterar_radio(interaction.user):
             await interaction.response.send_message(
-                "❌ Você precisa da permissão **Gerenciar Servidor** para alterar a rádio.",
+                "❌ Apenas gerentes e administradores podem alterar a rádio.",
                 ephemeral=True,
             )
             return
@@ -125,7 +168,23 @@ class RadioPainelView(discord.ui.View):
 class RadioCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._permissoes_configuradas = False
         bot.add_view(RadioPainelView())
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        if self._permissoes_configuradas:
+            return
+        canal = self.bot.get_channel(CANAL_RADIO_ID)
+        if not isinstance(canal, discord.TextChannel):
+            log.warning("Canal de radio nao encontrado ao configurar permissoes.")
+            return
+        try:
+            await configurar_permissoes_radio(canal)
+        except discord.HTTPException as error:
+            log.error("Erro ao configurar permissoes do canal de radio: %s", error)
+            return
+        self._permissoes_configuradas = True
 
     @app_commands.command(
         name="setup_radio_painel",
@@ -142,6 +201,16 @@ class RadioCog(commands.Cog):
                     f"❌ Canal de rádio (`{CANAL_RADIO_ID}`) não encontrado.", ephemeral=True
                 )
                 return
+
+        try:
+            await configurar_permissoes_radio(canal)
+        except discord.HTTPException:
+            await interaction.response.send_message(
+                "❌ Não consegui bloquear o envio de mensagens no canal. "
+                "Verifique a permissão **Gerenciar Canais** do bot.",
+                ephemeral=True,
+            )
+            return
 
         embed = discord.Embed(
             title="📻 Rádio do Servidor",
