@@ -21,6 +21,7 @@ from services.db_service import (
     current_week_id,
     now_tz,
     db_channel_map_get,
+    db_evento_itens,
     db_get_lideranca_role_ids,
     db_get_meta,
     db_meta_tipo_efetivo,
@@ -41,7 +42,9 @@ from services.db_service import (
     db_recolhimento_add_entrega_dinheiro,
     db_recolhimento_add_entrega_farm,
     db_recolhimento_add_entrega_itens,
+    db_recolhimento_entrega_itens,
     db_recolhimento_get_entregas,
+    db_ticket_launches,
 )
 
 log = get_logger("recolhimento", "recolhimento.log")
@@ -371,14 +374,38 @@ def _itens_meta_recolhimento(meta) -> tuple[str, dict[str, float]]:
     }
 
 
+def _saldo_recolhimento_ticket(
+    ticket_id: int,
+    ciclo_id: int,
+    item_names: list[str],
+) -> dict[str, float]:
+    lancado = {nome: 0.0 for nome in item_names}
+    for lancamento in db_ticket_launches(ticket_id):
+        for nome, valor in db_evento_itens(lancamento).items():
+            if nome in lancado:
+                lancado[nome] += float(valor or 0)
+
+    recolhido = {nome: 0.0 for nome in item_names}
+    for entrega in db_recolhimento_get_entregas(ciclo_id):
+        for nome, valor in db_recolhimento_entrega_itens(entrega).items():
+            if nome in recolhido:
+                recolhido[nome] += float(valor or 0)
+
+    return {
+        nome: max(lancado[nome] - recolhido[nome], 0)
+        for nome in item_names
+    }
+
+
 class RecolhimentoMetaModal(discord.ui.Modal):
     def __init__(
         self,
         ciclo_id: int,
+        ticket_id: int,
         guild_id: str,
         week_id: str,
         meta_tipo: str,
-        itens: dict[str, float],
+        disponiveis: dict[str, float],
         alvo_user_id: str,
         alvo_nome: str,
         alvo_pasta_id: str | None = None,
@@ -391,18 +418,25 @@ class RecolhimentoMetaModal(discord.ui.Modal):
         }.get(meta_tipo, "Registrar Recolhimento")
         super().__init__(title=titulo)
         self.ciclo_id = ciclo_id
+        self.ticket_id = ticket_id
         self.guild_id = guild_id
         self.week_id = week_id
         self.meta_tipo = meta_tipo
-        self.item_names = list(itens)[:5]
+        self.item_names = list(disponiveis)[:5]
         self.alvo_user_id = alvo_user_id
         self.alvo_nome = alvo_nome
         self.alvo_pasta_id = alvo_pasta_id
         self.alvo_slot = alvo_slot
+        self.disponiveis = dict(disponiveis)
         self.inputs: list[discord.ui.TextInput] = []
         for nome in self.item_names:
+            disponivel = disponiveis[nome]
+            saldo = _fmt_valor(disponivel) if meta_tipo == "dinheiro" else str(int(disponivel))
             field = discord.ui.TextInput(
-                label=nome[:45], placeholder="0", required=False, max_length=20
+                label=f"{nome} | disponível: {saldo}"[:45],
+                placeholder="Digite a quantidade a recolher",
+                required=False,
+                max_length=20,
             )
             self.add_item(field)
             self.inputs.append(field)
@@ -416,6 +450,12 @@ class RecolhimentoMetaModal(discord.ui.Modal):
                 "A meta da semana mudou. Abra o recolhimento novamente.", ephemeral=True
             )
             return
+
+        disponiveis = _saldo_recolhimento_ticket(
+            self.ticket_id,
+            self.ciclo_id,
+            self.item_names,
+        )
 
         valores = {}
         try:
@@ -436,6 +476,21 @@ class RecolhimentoMetaModal(discord.ui.Modal):
                 "Informe pelo menos um valor acima de zero.", ephemeral=True
             )
             return
+        excedidos = {
+            nome: (valor, disponiveis.get(nome, 0))
+            for nome, valor in valores.items()
+            if float(valor) > disponiveis.get(nome, 0)
+        }
+        if excedidos:
+            detalhes = " | ".join(
+                f"{nome}: solicitado {valor:g}, disponível {saldo:g}"
+                for nome, (valor, saldo) in excedidos.items()
+            )
+            await interaction.response.send_message(
+                f"Não é possível recolher acima do saldo lançado. {detalhes}",
+                ephemeral=True,
+            )
+            return
 
         db_recolhimento_add_entrega_itens(
             self.ciclo_id,
@@ -449,24 +504,33 @@ class RecolhimentoMetaModal(discord.ui.Modal):
             f"{nome}: {_fmt_valor(valor) if self.meta_tipo == 'dinheiro' else int(valor)}"
             for nome, valor in valores.items()
         )
+        linhas_quantidades = "\n".join(
+            f"• **{nome}:** {_fmt_valor(valor) if self.meta_tipo == 'dinheiro' else int(valor)}"
+            for nome, valor in valores.items()
+        )
         await interaction.response.send_message(
             f"✅ Recolhimento registrado para **{self.alvo_nome}**! {resumo}",
             ephemeral=True,
         )
         slot = f"{int(self.alvo_slot):02d}" if self.alvo_slot is not None else "Não informado"
         embed = discord.Embed(
-            title="📥 Farm recolhido",
-            description=f"<@{self.alvo_user_id}>, seu farm foi recolhido com sucesso.",
+            title="📦 Recolhimento confirmado",
+            description=f"O farm de <@{self.alvo_user_id}> foi recolhido com sucesso.",
             color=discord.Color.green(),
             timestamp=discord.utils.utcnow(),
         )
-        embed.add_field(name="Quantidades", value=resumo, inline=False)
         embed.add_field(
-            name="Recolhido por",
+            name="📋 Quantidades recolhidas",
+            value=linhas_quantidades,
+            inline=False,
+        )
+        embed.add_field(
+            name="👮 Recolhido por",
             value=f"<@{interaction.user.id}>",
             inline=True,
         )
-        embed.add_field(name="Slot da pasta", value=f"`{slot}`", inline=True)
+        embed.add_field(name="📁 Slot da pasta", value=f"`{slot}`", inline=True)
+        embed.set_footer(text="O saldo disponível foi atualizado automaticamente.")
         await interaction.channel.send(embed=embed)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
@@ -848,12 +912,18 @@ class RecolhimentoCog(commands.Cog):
         alvo_nome = _row_get(ticket, "folder_nickname") or ticket["member_name"]
         alvo_pasta_id = _row_get(ticket, "folder_channel_id")
         alvo_slot = _row_get(ticket, "folder_slot")
+        disponiveis = _saldo_recolhimento_ticket(
+            int(ticket["id"]),
+            ciclo_id,
+            list(itens)[:5],
+        )
         return RecolhimentoMetaModal(
             ciclo_id,
+            int(ticket["id"]),
             ticket["guild_id"],
             ticket["week_id"],
             meta_tipo,
-            itens,
+            disponiveis,
             ticket["user_id"],
             alvo_nome,
             alvo_pasta_id,

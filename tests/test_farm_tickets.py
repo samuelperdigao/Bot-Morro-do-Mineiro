@@ -305,6 +305,10 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         )
         db.get_conn().commit()
         ticket = db.db_ticket_get(int(original["id"]))
+        db.db_ticket_launch(
+            int(ticket["id"]), "10", {"Ferro": 12},
+            "100", "300", "https://cdn.example/proof.png", None,
+        )
         cog = RecolhimentoCog.__new__(RecolhimentoCog)
 
         async def submit():
@@ -327,9 +331,80 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         embed = channel.send.await_args.kwargs["embed"]
         self.assertIn(f"<@{ticket['user_id']}>", embed.description)
         fields = {field.name: field.value for field in embed.fields}
-        self.assertEqual(fields["Quantidades"], "Ferro: 12")
-        self.assertEqual(fields["Recolhido por"], "<@99>")
-        self.assertEqual(fields["Slot da pasta"], "`07`")
+        self.assertEqual(fields["📋 Quantidades recolhidas"], "• **Ferro:** 12")
+        self.assertEqual(fields["👮 Recolhido por"], "<@99>")
+        self.assertEqual(fields["📁 Slot da pasta"], "`07`")
+        self.assertEqual(
+            embed.footer.text,
+            "O saldo disponível foi atualizado automaticamente.",
+        )
+
+    def test_collection_balance_tracks_launches_and_previous_collections(self):
+        ticket = self._create_ticket()
+        db.db_set_meta(
+            "1", "2026-06-15", {"Ferro": 600}, "99", meta_tipo="colete"
+        )
+        db.db_ticket_launch(
+            int(ticket["id"]), "10", {"Ferro": 300},
+            "100", "300", "https://cdn.example/first.png", None,
+        )
+        cog = RecolhimentoCog.__new__(RecolhimentoCog)
+
+        async def collect_first_launch():
+            modal = cog._modal_recolhimento_ticket(ticket, "99")
+            self.assertEqual(modal.inputs[0].label, "Ferro | disponível: 300")
+            modal.inputs[0]._value = "300"
+            interaction = SimpleNamespace(
+                user=SimpleNamespace(id=99),
+                response=SimpleNamespace(send_message=AsyncMock()),
+                channel=SimpleNamespace(send=AsyncMock()),
+            )
+            await modal.on_submit(interaction)
+
+            empty_modal = cog._modal_recolhimento_ticket(ticket, "99")
+            self.assertEqual(empty_modal.inputs[0].label, "Ferro | disponível: 0")
+
+            db.db_ticket_launch(
+                int(ticket["id"]), "10", {"Ferro": 300},
+                "100", "301", "https://cdn.example/second.png", None,
+            )
+            replenished_modal = cog._modal_recolhimento_ticket(ticket, "99")
+            self.assertEqual(
+                replenished_modal.inputs[0].label,
+                "Ferro | disponível: 300",
+            )
+
+        asyncio.run(collect_first_launch())
+
+    def test_collection_rejects_value_above_available_balance(self):
+        ticket = self._create_ticket()
+        db.db_set_meta(
+            "1", "2026-06-15", {"Ferro": 100}, "99", meta_tipo="colete"
+        )
+        db.db_ticket_launch(
+            int(ticket["id"]), "10", {"Ferro": 50},
+            "100", "300", "https://cdn.example/proof.png", None,
+        )
+        cog = RecolhimentoCog.__new__(RecolhimentoCog)
+
+        async def overcollect():
+            modal = cog._modal_recolhimento_ticket(ticket, "99")
+            modal.inputs[0]._value = "51"
+            response = SimpleNamespace(send_message=AsyncMock())
+            interaction = SimpleNamespace(
+                user=SimpleNamespace(id=99),
+                response=response,
+                channel=SimpleNamespace(send=AsyncMock()),
+            )
+            await modal.on_submit(interaction)
+            return modal, response, interaction
+
+        modal, response, interaction = asyncio.run(overcollect())
+
+        self.assertEqual(db.db_recolhimento_get_entregas(modal.ciclo_id), [])
+        response.send_message.assert_awaited_once()
+        self.assertIn("disponível 50", response.send_message.await_args.args[0])
+        interaction.channel.send.assert_not_awaited()
 
     def test_collection_items_support_dynamic_names(self):
         ticket = self._create_ticket()
