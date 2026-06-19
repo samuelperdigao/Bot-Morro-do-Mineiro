@@ -406,6 +406,40 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         self.assertIn("disponível 50", response.send_message.await_args.args[0])
         interaction.channel.send.assert_not_awaited()
 
+    def test_legacy_overcollection_does_not_consume_future_launches(self):
+        ticket = self._create_ticket()
+        db.db_set_meta(
+            "1", "2026-06-15",
+            {"Ferro": 300, "Tecido": 30},
+            "99",
+            meta_tipo="colete",
+        )
+        ciclo_id = db.db_recolhimento_criar_ciclo(
+            "1", "99", ticket["channel_id"], "colete",
+            ticket["week_id"], "2026-06-21",
+        )
+        db.db_recolhimento_add_entrega_itens(
+            ciclo_id,
+            "99",
+            {"Ferro": 600, "Tecido": 60},
+            ticket["user_id"],
+            ticket["member_name"],
+        )
+        db.db_ticket_launch(
+            int(ticket["id"]), "10", {"Ferro": 11, "Tecido": 11},
+            "100", "300", "https://cdn.example/new.png", None,
+        )
+        cog = RecolhimentoCog.__new__(RecolhimentoCog)
+
+        async def labels():
+            modal = cog._modal_recolhimento_ticket(ticket, "99")
+            return [field.label for field in modal.inputs]
+
+        self.assertEqual(
+            asyncio.run(labels()),
+            ["Ferro | disponível: 11", "Tecido | disponível: 11"],
+        )
+
     def test_collection_items_support_dynamic_names(self):
         ticket = self._create_ticket()
         ciclo_id = db.db_recolhimento_criar_ciclo(

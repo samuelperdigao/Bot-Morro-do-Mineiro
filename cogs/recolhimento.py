@@ -379,22 +379,35 @@ def _saldo_recolhimento_ticket(
     ciclo_id: int,
     item_names: list[str],
 ) -> dict[str, float]:
-    lancado = {nome: 0.0 for nome in item_names}
+    movimentos = []
     for lancamento in db_ticket_launches(ticket_id):
-        for nome, valor in db_evento_itens(lancamento).items():
-            if nome in lancado:
-                lancado[nome] += float(valor or 0)
-
-    recolhido = {nome: 0.0 for nome in item_names}
+        movimentos.append(
+            (
+                lancamento["criado_em"],
+                0,
+                db_evento_itens(lancamento),
+            )
+        )
     for entrega in db_recolhimento_get_entregas(ciclo_id):
-        for nome, valor in db_recolhimento_entrega_itens(entrega).items():
-            if nome in recolhido:
-                recolhido[nome] += float(valor or 0)
+        movimentos.append(
+            (
+                entrega["data"],
+                1,
+                db_recolhimento_entrega_itens(entrega),
+            )
+        )
 
-    return {
-        nome: max(lancado[nome] - recolhido[nome], 0)
-        for nome in item_names
-    }
+    saldos = {nome: 0.0 for nome in item_names}
+    for _, tipo_movimento, valores in sorted(movimentos, key=lambda item: (item[0], item[1])):
+        for nome, valor in valores.items():
+            if nome not in saldos:
+                continue
+            quantidade = float(valor or 0)
+            if tipo_movimento == 0:
+                saldos[nome] += quantidade
+            else:
+                saldos[nome] = max(saldos[nome] - quantidade, 0)
+    return saldos
 
 
 class RecolhimentoMetaModal(discord.ui.Modal):
