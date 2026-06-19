@@ -98,6 +98,9 @@ async def resolve_member_folder(
     private_cat_id: int,
 ) -> MemberFolderIdentity:
     """Resolve a pasta pelo mapa oficial ou por uma única permissão individual."""
+    is_admin = bool(
+        getattr(getattr(member, "guild_permissions", None), "administrator", False)
+    )
     mapped_id = db_channel_map_get(guild_id, str(member.id))
     if mapped_id:
         mapped = guild.get_channel(mapped_id) or await safe_fetch_channel(guild, mapped_id)
@@ -105,9 +108,12 @@ async def resolve_member_folder(
             isinstance(mapped, discord.TextChannel)
             and mapped.category_id == private_cat_id
             and "livre" not in mapped.name.casefold()
-            and _has_explicit_member_access(mapped, member)
         ):
-            return parse_member_folder(mapped.name, mapped.id)
+            identity = parse_member_folder(mapped.name, mapped.id)
+            if _has_explicit_member_access(mapped, member) or (
+                is_admin and identity.slot == 0
+            ):
+                return identity
 
     category = guild.get_channel(private_cat_id)
     if category is None:
@@ -122,6 +128,23 @@ async def resolve_member_folder(
         and _has_explicit_member_access(channel, member)
     ]
     if not candidates:
+        if is_admin:
+            admin_folders = []
+            for channel in category.text_channels:
+                if "livre" in channel.name.casefold():
+                    continue
+                try:
+                    identity = parse_member_folder(channel.name, channel.id)
+                except MemberFolderError:
+                    continue
+                if identity.slot == 0:
+                    admin_folders.append(identity)
+            if len(admin_folders) == 1:
+                return admin_folders[0]
+            if len(admin_folders) > 1:
+                raise MemberFolderError(
+                    "Mais de uma pasta administrativa de slot 0 foi encontrada."
+                )
         raise MemberFolderError("Nenhuma pasta individual válida foi encontrada para você.")
     if len(candidates) > 1:
         raise MemberFolderError("Mais de uma pasta está vinculada ao membro; procure a administração.")

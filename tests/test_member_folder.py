@@ -31,6 +31,13 @@ class MemberFolderParsingTests(unittest.TestCase):
         self.assertEqual(identity.nickname, "Pedro Henrique")
         self.assertEqual(identity.game_id, "11704")
 
+    def test_parses_admin_folder_with_slot_zero(self):
+        identity = parse_member_folder("┃📁-0-mineiro-6627", 99)
+
+        self.assertEqual(identity.slot, 0)
+        self.assertEqual(identity.nickname, "Mineiro")
+        self.assertEqual(identity.game_id, "6627")
+
     def test_rejects_free_or_incomplete_shape(self):
         with self.assertRaises(MemberFolderError):
             parse_member_folder("┃📁-22-livre", 99)
@@ -70,6 +77,44 @@ class MemberFolderResolutionTests(unittest.IsolatedAsyncioTestCase):
         ]
         category = FakeCategory(channels)
         guild = SimpleNamespace(get_channel=lambda channel_id: category if channel_id == 40 else None)
+        with (
+            patch("services.set_service.db_channel_map_get", return_value=None),
+            patch("services.set_service.discord.CategoryChannel", FakeCategory),
+        ):
+            with self.assertRaises(MemberFolderError):
+                await resolve_member_folder(guild, "1", member, 40)
+
+    async def test_admin_uses_unique_slot_zero_folder_without_explicit_overwrite(self):
+        member = SimpleNamespace(
+            id=10,
+            guild_permissions=SimpleNamespace(administrator=True),
+        )
+        channel = FakeTextChannel(50, "┃📁-0-mineiro-6627", 40)
+        category = FakeCategory([channel])
+        guild = SimpleNamespace(
+            get_channel=lambda channel_id: category if channel_id == 40 else None
+        )
+        with (
+            patch("services.set_service.db_channel_map_get", return_value=None),
+            patch("services.set_service.discord.CategoryChannel", FakeCategory),
+        ):
+            identity = await resolve_member_folder(guild, "1", member, 40)
+
+        self.assertEqual(
+            (identity.channel_id, identity.slot, identity.nickname, identity.game_id),
+            (50, 0, "Mineiro", "6627"),
+        )
+
+    async def test_regular_member_cannot_claim_admin_slot_zero_folder(self):
+        member = SimpleNamespace(
+            id=10,
+            guild_permissions=SimpleNamespace(administrator=False),
+        )
+        channel = FakeTextChannel(50, "┃📁-0-mineiro-6627", 40)
+        category = FakeCategory([channel])
+        guild = SimpleNamespace(
+            get_channel=lambda channel_id: category if channel_id == 40 else None
+        )
         with (
             patch("services.set_service.db_channel_map_get", return_value=None),
             patch("services.set_service.discord.CategoryChannel", FakeCategory),
