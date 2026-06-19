@@ -267,7 +267,7 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         )
         db.get_conn().execute(
             """UPDATE farm_tickets
-               SET folder_channel_id='500', folder_nickname='Mineiro'
+               SET folder_channel_id='500', folder_nickname='Mineiro', folder_slot=7
                WHERE id=?""",
             (original["id"],),
         )
@@ -290,6 +290,46 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         self.assertEqual(first.alvo_user_id, ticket["user_id"])
         self.assertEqual(first.alvo_nome, "Mineiro")
         self.assertEqual(first.alvo_pasta_id, "500")
+        self.assertEqual(first.alvo_slot, 7)
+
+    def test_collection_posts_receipt_in_ticket_with_member_admin_and_slot(self):
+        original = self._create_ticket()
+        db.db_set_meta(
+            "1", "2026-06-15", {"Ferro": 100}, "99", meta_tipo="colete"
+        )
+        db.get_conn().execute(
+            """UPDATE farm_tickets
+               SET folder_channel_id='500', folder_nickname='Mineiro', folder_slot=7
+               WHERE id=?""",
+            (original["id"],),
+        )
+        db.get_conn().commit()
+        ticket = db.db_ticket_get(int(original["id"]))
+        cog = RecolhimentoCog.__new__(RecolhimentoCog)
+
+        async def submit():
+            modal = cog._modal_recolhimento_ticket(ticket, "99")
+            modal.inputs[0]._value = "12"
+            response = SimpleNamespace(send_message=AsyncMock())
+            channel = SimpleNamespace(send=AsyncMock())
+            interaction = SimpleNamespace(
+                user=SimpleNamespace(id=99),
+                response=response,
+                channel=channel,
+            )
+            await modal.on_submit(interaction)
+            return response, channel
+
+        response, channel = asyncio.run(submit())
+
+        response.send_message.assert_awaited_once()
+        channel.send.assert_awaited_once()
+        embed = channel.send.await_args.kwargs["embed"]
+        self.assertIn(f"<@{ticket['user_id']}>", embed.description)
+        fields = {field.name: field.value for field in embed.fields}
+        self.assertEqual(fields["Quantidades"], "Ferro: 12")
+        self.assertEqual(fields["Recolhido por"], "<@99>")
+        self.assertEqual(fields["Slot da pasta"], "`07`")
 
     def test_collection_items_support_dynamic_names(self):
         ticket = self._create_ticket()

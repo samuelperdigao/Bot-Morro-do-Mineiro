@@ -382,6 +382,7 @@ class RecolhimentoMetaModal(discord.ui.Modal):
         alvo_user_id: str,
         alvo_nome: str,
         alvo_pasta_id: str | None = None,
+        alvo_slot: int | None = None,
     ):
         titulo = {
             "colete": "Recolher Materiais de Colete",
@@ -397,6 +398,7 @@ class RecolhimentoMetaModal(discord.ui.Modal):
         self.alvo_user_id = alvo_user_id
         self.alvo_nome = alvo_nome
         self.alvo_pasta_id = alvo_pasta_id
+        self.alvo_slot = alvo_slot
         self.inputs: list[discord.ui.TextInput] = []
         for nome in self.item_names:
             field = discord.ui.TextInput(
@@ -451,6 +453,21 @@ class RecolhimentoMetaModal(discord.ui.Modal):
             f"✅ Recolhimento registrado para **{self.alvo_nome}**! {resumo}",
             ephemeral=True,
         )
+        slot = f"{int(self.alvo_slot):02d}" if self.alvo_slot is not None else "Não informado"
+        embed = discord.Embed(
+            title="📥 Farm recolhido",
+            description=f"<@{self.alvo_user_id}>, seu farm foi recolhido com sucesso.",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="Quantidades", value=resumo, inline=False)
+        embed.add_field(
+            name="Recolhido por",
+            value=f"<@{interaction.user.id}>",
+            inline=True,
+        )
+        embed.add_field(name="Slot da pasta", value=f"`{slot}`", inline=True)
+        await interaction.channel.send(embed=embed)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         log.error("Erro em RecolhimentoMetaModal: %s", error, exc_info=True)
@@ -830,6 +847,7 @@ class RecolhimentoCog(commands.Cog):
 
         alvo_nome = _row_get(ticket, "folder_nickname") or ticket["member_name"]
         alvo_pasta_id = _row_get(ticket, "folder_channel_id")
+        alvo_slot = _row_get(ticket, "folder_slot")
         return RecolhimentoMetaModal(
             ciclo_id,
             ticket["guild_id"],
@@ -839,6 +857,7 @@ class RecolhimentoCog(commands.Cog):
             ticket["user_id"],
             alvo_nome,
             alvo_pasta_id,
+            alvo_slot,
         )
 
     async def _atualizar_embed_ciclo(
