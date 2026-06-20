@@ -27,7 +27,7 @@ from services.db_service import (
 
 log = get_logger("farm_relatorio", "farm.log")
 
-REPORT_CHANNEL_NAME = "┃📊・relatório-farm"
+REPORT_CHANNEL_NAME = "┃📊-relatório-farm"
 REPORT_FIELD_LIMIT = 1000
 
 
