@@ -14,4 +14,5 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .claude/
+.codex-remote-attachments/
 *.db.bak

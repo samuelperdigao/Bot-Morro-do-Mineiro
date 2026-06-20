@@ -42,6 +42,11 @@ def format_report_week_range(week_id: str) -> str:
     return f"{start.strftime('%d/%m')} a {end.strftime('%d/%m')}"
 
 
+def is_main_farm_category(category: discord.CategoryChannel) -> bool:
+    name = category.name.casefold()
+    return "farm" in name and "ticket" not in name
+
+
 def can_generate_report(member: discord.Member, guild_id: str) -> bool:
     if member.guild_permissions.administrator:
         return True
@@ -184,8 +189,7 @@ class FarmPendingReportView(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="Gerar Relatório de Pendentes",
-        emoji="📋",
+        label="📋 Gerar Relatório de Pendentes",
         style=discord.ButtonStyle.primary,
         custom_id="farm_pending_report:generate",
     )
@@ -236,29 +240,38 @@ class FarmPendingReportCog(commands.Cog):
         ticket_config: dict,
         requested_channel: discord.TextChannel | None,
     ) -> discord.TextChannel:
-        category_ids = {str(value) for value in ticket_config["category_ids"]}
         if requested_channel is not None:
-            if str(requested_channel.category_id) not in category_ids:
-                raise ValueError("O canal precisa estar em uma categoria configurada para tickets de Farm.")
+            category = requested_channel.category
+            if (
+                not isinstance(category, discord.CategoryChannel)
+                or not is_main_farm_category(category)
+            ):
+                raise ValueError("O canal precisa estar dentro da categoria principal de Farm.")
             return requested_channel
 
-        categories = [
+        ticket_categories = [
             guild.get_channel(int(category_id))
             for category_id in ticket_config["category_ids"]
         ]
-        categories = [
-            category for category in categories if isinstance(category, discord.CategoryChannel)
+        ticket_categories = [
+            category
+            for category in ticket_categories
+            if isinstance(category, discord.CategoryChannel)
         ]
-        if not categories:
-            raise ValueError("Nenhuma categoria configurada para tickets de Farm foi encontrada.")
+        category = next(
+            (item for item in guild.categories if is_main_farm_category(item)),
+            ticket_categories[0] if ticket_categories else None,
+        )
+        if category is None:
+            raise ValueError("Nenhuma categoria de Farm foi encontrada.")
 
         for channel in guild.text_channels:
-            if channel.name == REPORT_CHANNEL_NAME and str(channel.category_id) in category_ids:
+            if channel.name == REPORT_CHANNEL_NAME and channel.category_id == category.id:
                 return channel
 
         return await guild.create_text_channel(
             REPORT_CHANNEL_NAME,
-            category=categories[0],
+            category=category,
             overwrites=build_report_overwrites(guild, ticket_config["admin_role_ids"]),
             reason="Criação do painel de relatório semanal de Farm",
         )

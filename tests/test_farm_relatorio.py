@@ -10,6 +10,7 @@ from cogs.farm_relatorio import (
     build_pending_report_embeds,
     build_report_overwrites,
     can_generate_report,
+    is_main_farm_category,
     previous_week_id,
     snapshot_eligible_members,
 )
@@ -69,7 +70,7 @@ class FarmReportLayoutTests(unittest.IsolatedAsyncioTestCase):
         view = FarmPendingReportView()
         self.assertEqual(len(view.children), 1)
         self.assertEqual(view.children[0].custom_id, "farm_pending_report:generate")
-        self.assertEqual(view.children[0].label, "Gerar Relatório de Pendentes")
+        self.assertEqual(view.children[0].label, "📋 Gerar Relatório de Pendentes")
         view.stop()
 
     async def test_report_lists_only_pending_nicknames_without_ids(self):
@@ -174,6 +175,12 @@ class FarmReportPermissionTests(unittest.TestCase):
 
     def test_previous_week_is_immediately_closed_week(self):
         self.assertEqual(previous_week_id("2026-06-22"), "2026-06-15")
+
+    def test_main_farm_category_excludes_ticket_category(self):
+        self.assertTrue(is_main_farm_category(SimpleNamespace(name="╭─ FARM")))
+        self.assertFalse(
+            is_main_farm_category(SimpleNamespace(name="╭─ 🎫 TICKETS DE FARM"))
+        )
 
     def test_snapshot_uses_permitted_members_and_ignores_bots(self):
         db.db_set_guild_config("1", cargos_permitidos_farm="50")
