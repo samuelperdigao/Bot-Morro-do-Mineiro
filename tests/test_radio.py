@@ -4,7 +4,11 @@ from unittest.mock import AsyncMock
 
 import discord
 
-from cogs.radio import configurar_permissoes_radio, pode_alterar_radio
+from cogs.radio import (
+    configurar_permissoes_radio,
+    criar_embed_painel_radio,
+    pode_alterar_radio,
+)
 
 
 class FakeTarget:
@@ -13,6 +17,16 @@ class FakeTarget:
 
 
 class RadioPermissionTests(unittest.IsolatedAsyncioTestCase):
+    def test_layout_do_painel_separa_instrucoes_e_acesso(self):
+        embed = criar_embed_painel_radio()
+
+        self.assertEqual(embed.title, "📻 Central de Rádio")
+        self.assertEqual([field.name for field in embed.fields], [
+            "📡 Como alterar",
+            "🔒 Acesso restrito",
+        ])
+        self.assertIsNone(embed.timestamp)
+
     def test_administrador_pode_alterar(self):
         member = SimpleNamespace(
             guild_permissions=SimpleNamespace(administrator=True),

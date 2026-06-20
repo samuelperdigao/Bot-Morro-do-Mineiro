@@ -57,6 +57,33 @@ async def configurar_permissoes_radio(canal: discord.TextChannel) -> None:
     )
 
 
+def criar_embed_painel_radio() -> discord.Embed:
+    """Monta o painel fixo da radio com instrucoes curtas e bem separadas."""
+    embed = discord.Embed(
+        title="📻 Central de Rádio",
+        description=(
+            "Atualize a frequência oficial da organização usando o botão abaixo."
+        ),
+        color=0xFFD700,
+    )
+    embed.add_field(
+        name="📡 Como alterar",
+        value=(
+            "`1.` Clique em **Alterar rádio**\n"
+            "`2.` Informe o número da nova frequência\n"
+            "`3.` Confirme para avisar todos os membros"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🔒 Acesso restrito",
+        value="Somente **gerentes** e **administradores** podem fazer alterações.",
+        inline=False,
+    )
+    embed.set_footer(text="Morro do Mineiro • Sistema de Rádio")
+    return embed
+
+
 # ── Modal ─────────────────────────────────────────────────────────────────────
 
 class RadioModal(discord.ui.Modal, title="📻 Definir Nova Rádio"):
@@ -149,7 +176,8 @@ class RadioPainelView(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="📻 Definir Nova Rádio",
+        label="Alterar rádio",
+        emoji="📻",
         style=discord.ButtonStyle.primary,
         custom_id="radio_painel:definir",
     )
@@ -212,18 +240,7 @@ class RadioCog(commands.Cog):
             )
             return
 
-        embed = discord.Embed(
-            title="📻 Rádio do Servidor",
-            description=(
-                "Clique no botão abaixo para definir o número da rádio.\n\n"
-                "Ao confirmar, o canal será renomeado e todos os membros serão notificados."
-            ),
-            color=0xFFD700,
-            timestamp=discord.utils.utcnow(),
-        )
-        embed.set_footer(text="Morro do Mineiro — Sistema de Rádio")
-
-        await canal.send(embed=embed, view=RadioPainelView())
+        await canal.send(embed=criar_embed_painel_radio(), view=RadioPainelView())
         await interaction.response.send_message(
             f"✅ Painel de rádio postado em {canal.mention}!", ephemeral=True
         )
