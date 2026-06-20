@@ -171,6 +171,17 @@ CREATE TABLE IF NOT EXISTS farm_ticket_config (
     atualizado_em          TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS farm_pending_report (
+    guild_id               TEXT PRIMARY KEY,
+    channel_id             TEXT,
+    panel_message_id       TEXT,
+    report_message_id      TEXT,
+    snapshot_week_id       TEXT,
+    snapshot_members_json  TEXT,
+    snapshot_created_at    TEXT,
+    atualizado_em          TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS farm_tickets (
     id                     INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id               TEXT NOT NULL,

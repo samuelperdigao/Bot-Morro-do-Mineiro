@@ -1302,6 +1302,96 @@ def db_ticket_config_set(guild_id: str, category_ids: list[int], admin_role_ids:
     get_conn().commit()
 
 
+def db_farm_report_get(guild_id: str) -> dict | None:
+    row = get_conn().execute(
+        "SELECT * FROM farm_pending_report WHERE guild_id=?", (guild_id,)
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        members = json.loads(row["snapshot_members_json"] or "[]")
+    except (TypeError, json.JSONDecodeError):
+        members = []
+    return {
+        "guild_id": guild_id,
+        "channel_id": row["channel_id"],
+        "panel_message_id": row["panel_message_id"],
+        "report_message_id": row["report_message_id"],
+        "snapshot_week_id": row["snapshot_week_id"],
+        "snapshot_members": members,
+        "snapshot_created_at": row["snapshot_created_at"],
+        "atualizado_em": row["atualizado_em"],
+    }
+
+
+def db_farm_report_set_panel(
+    guild_id: str,
+    channel_id: str,
+    panel_message_id: str,
+    report_message_id: str | None = None,
+) -> None:
+    agora = now_tz().isoformat()
+    conn = get_conn()
+    conn.execute(
+        """INSERT INTO farm_pending_report
+           (guild_id, channel_id, panel_message_id, report_message_id, atualizado_em)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(guild_id) DO UPDATE SET
+             channel_id=excluded.channel_id,
+             panel_message_id=excluded.panel_message_id,
+             report_message_id=excluded.report_message_id,
+             atualizado_em=excluded.atualizado_em""",
+        (guild_id, channel_id, panel_message_id, report_message_id, agora),
+    )
+    conn.commit()
+
+
+def db_farm_report_set_report_message(guild_id: str, message_id: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        "UPDATE farm_pending_report SET report_message_id=?, atualizado_em=? WHERE guild_id=?",
+        (message_id, now_tz().isoformat(), guild_id),
+    )
+    conn.commit()
+
+
+def db_farm_report_set_snapshot(
+    guild_id: str, week_id: str, members: list[dict[str, str]]
+) -> None:
+    agora = now_tz().isoformat()
+    conn = get_conn()
+    conn.execute(
+        """INSERT INTO farm_pending_report
+           (guild_id, snapshot_week_id, snapshot_members_json,
+            snapshot_created_at, atualizado_em)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(guild_id) DO UPDATE SET
+             snapshot_week_id=excluded.snapshot_week_id,
+             snapshot_members_json=excluded.snapshot_members_json,
+             snapshot_created_at=excluded.snapshot_created_at,
+             atualizado_em=excluded.atualizado_em""",
+        (
+            guild_id,
+            week_id,
+            json.dumps(members, ensure_ascii=False),
+            agora,
+            agora,
+        ),
+    )
+    conn.commit()
+
+
+def db_ticket_approved_user_ids(guild_id: str, week_id: str) -> set[str]:
+    rows = get_conn().execute(
+        """SELECT DISTINCT t.user_id
+           FROM farm_tickets t
+           JOIN farm_ticket_actions a ON a.ticket_id=t.id
+           WHERE t.guild_id=? AND t.week_id=? AND a.action='aprovacao'""",
+        (guild_id, week_id),
+    ).fetchall()
+    return {str(row["user_id"]) for row in rows}
+
+
 def db_ticket_get(ticket_id: int):
     return get_conn().execute(
         "SELECT * FROM farm_tickets WHERE id=?", (ticket_id,)
