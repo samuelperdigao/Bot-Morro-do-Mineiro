@@ -414,6 +414,9 @@ class ParceriasCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    async def cog_load(self):
+        self.bot.add_view(ParceriasPanelView())
+
     def check_staff(self, interaction: discord.Interaction) -> bool:
         return bool(
             interaction.guild_id
@@ -428,6 +431,18 @@ class ParceriasCog(commands.Cog):
     async def get_ativas_channel(self, guild: discord.Guild, guild_id: str) -> discord.TextChannel | None:
         _, _, channel_id, _ = db_get_parcerias_config(guild_id)
         return await self._get_text_channel(guild, channel_id)
+
+    async def get_category(self, guild: discord.Guild, guild_id: str) -> discord.CategoryChannel | None:
+        category_id, _, _, _ = db_get_parcerias_config(guild_id)
+        if not category_id:
+            return None
+        category = guild.get_channel(int(category_id))
+        if category is None:
+            try:
+                category = await guild.fetch_channel(int(category_id))
+            except Exception:
+                return None
+        return category if isinstance(category, discord.CategoryChannel) else None
 
     async def _get_text_channel(self, guild: discord.Guild, channel_id: str | None) -> discord.TextChannel | None:
         if not channel_id:
@@ -454,6 +469,40 @@ class ParceriasCog(commands.Cog):
             view=FamiliasSelectView(self, rows, mode),
             ephemeral=True,
         )
+
+    async def apply_manager_permissions(self, guild: discord.Guild) -> None:
+        guild_id = str(guild.id)
+        targets = [
+            await self.get_category(guild, guild_id),
+            await self.get_registrar_channel(guild, guild_id),
+            await self.get_ativas_channel(guild, guild_id),
+        ]
+        roles = [role for role in guild.roles if "gerente" in role.name.casefold()]
+        overwrite = discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+            attach_files=True,
+            embed_links=True,
+            manage_messages=True,
+        )
+        for channel in targets:
+            if channel is None:
+                continue
+            for role in roles:
+                try:
+                    await channel.set_permissions(
+                        role,
+                        overwrite=overwrite,
+                        reason="Permissoes dos gerentes para sistema de parcerias",
+                    )
+                except Exception:
+                    log.warning(
+                        "Falha ao aplicar permissao de gerente em %s para %s",
+                        channel.id,
+                        role.id,
+                        exc_info=True,
+                    )
 
     async def collect_image(
         self,
@@ -566,6 +615,8 @@ class ParceriasCog(commands.Cog):
             if channel is None:
                 continue
             for target, overwrite in list(channel.overwrites.items()):
+                if isinstance(target, discord.Role):
+                    continue
                 if getattr(target, "id", None) == bot_id:
                     continue
                 if overwrite.send_messages is True:
@@ -585,6 +636,7 @@ class ParceriasCog(commands.Cog):
         self.bot._parcerias_cleanup_done = True
         for guild in self.bot.guilds:
             await self.cleanup_orphan_permissions(guild)
+            await self.apply_manager_permissions(guild)
 
     @app_commands.command(
         name="setup_parcerias",
@@ -613,6 +665,7 @@ class ParceriasCog(commands.Cog):
         else:
             message = await channel.send(embed=build_panel_embed(), view=ParceriasPanelView())
         db_set_parcerias_config(guild_id, registrar_channel_id=str(channel.id), panel_message_id=str(message.id))
+        await self.apply_manager_permissions(interaction.guild)
         await interaction.followup.send(f"Painel de parcerias configurado em {channel.mention}.", ephemeral=True)
 
 
