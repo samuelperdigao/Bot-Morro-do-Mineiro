@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import discord
 from discord.ext import commands
 
+from cogs.parcerias import ParceriasPanelView
 from cogs.set_views import SetPanelView
 from core.config import APPLICATION_ID, TOKEN
 from core.extensions import COG_EXTENSIONS
@@ -28,6 +29,7 @@ class MyBot(commands.Bot):
         log.info("setup_hook iniciado...")
         init_db()
         self.add_view(SetPanelView())
+        self.add_view(ParceriasPanelView())
 
         for ext in COG_EXTENSIONS:
             try:

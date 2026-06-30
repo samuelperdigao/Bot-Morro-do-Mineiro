@@ -831,6 +831,153 @@ def db_set_painel_ranking(guild_id: str, channel_id: str, message_id: str, week_
     )
 
 
+# ── Parcerias ─────────────────────────────────────────────────────────────────
+
+def db_get_parcerias_config(guild_id: str) -> tuple[str | None, str | None, str | None, str | None]:
+    row = get_conn().execute(
+        """SELECT parceria_category_id, parceria_registrar_channel_id,
+                  parceria_ativas_channel_id, parceria_panel_message_id
+           FROM guild_config WHERE guild_id=?""",
+        (guild_id,),
+    ).fetchone()
+    if not row:
+        return None, None, None, None
+    return (
+        row["parceria_category_id"],
+        row["parceria_registrar_channel_id"],
+        row["parceria_ativas_channel_id"],
+        row["parceria_panel_message_id"],
+    )
+
+
+def db_set_parcerias_config(
+    guild_id: str,
+    *,
+    category_id: str | None = None,
+    registrar_channel_id: str | None = None,
+    ativas_channel_id: str | None = None,
+    panel_message_id: str | None = None,
+) -> None:
+    fields = {}
+    if category_id is not None:
+        fields["parceria_category_id"] = category_id
+    if registrar_channel_id is not None:
+        fields["parceria_registrar_channel_id"] = registrar_channel_id
+    if ativas_channel_id is not None:
+        fields["parceria_ativas_channel_id"] = ativas_channel_id
+    if panel_message_id is not None:
+        fields["parceria_panel_message_id"] = panel_message_id
+    if fields:
+        db_set_guild_config(guild_id, **fields)
+
+
+def db_parceria_nome_existe(
+    guild_id: str,
+    nome_familia: str,
+    *,
+    exclude_id: int | None = None,
+) -> bool:
+    params: list[object] = [guild_id, nome_familia.strip()]
+    sql = "SELECT 1 FROM parcerias WHERE guild_id=? AND nome_familia=?"
+    if exclude_id is not None:
+        sql += " AND id<>?"
+        params.append(exclude_id)
+    return get_conn().execute(sql + " LIMIT 1", params).fetchone() is not None
+
+
+def db_parceria_criar(
+    guild_id: str,
+    nome_familia: str,
+    produto: str,
+    contato_01: str | None,
+    contato_02: str | None,
+    mensagem_lista_id: int,
+    nome_arquivo_imagem: str,
+    registrado_por: int,
+) -> int:
+    conn = get_conn()
+    cursor = conn.execute(
+        """INSERT INTO parcerias
+           (guild_id, nome_familia, produto, contato_01, contato_02,
+            mensagem_lista_id, nome_arquivo_imagem, registrado_por)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            guild_id,
+            nome_familia.strip(),
+            produto.strip(),
+            contato_01 or None,
+            contato_02 or None,
+            mensagem_lista_id,
+            nome_arquivo_imagem,
+            registrado_por,
+        ),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def db_parcerias_ativas(guild_id: str) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT * FROM parcerias
+           WHERE guild_id=? AND ativo=1
+           ORDER BY nome_familia COLLATE NOCASE
+           LIMIT 25""",
+        (guild_id,),
+    ).fetchall()
+
+
+def db_parceria_get(guild_id: str, parceria_id: int) -> sqlite3.Row | None:
+    return get_conn().execute(
+        "SELECT * FROM parcerias WHERE guild_id=? AND id=?",
+        (guild_id, parceria_id),
+    ).fetchone()
+
+
+def db_parceria_atualizar_texto(
+    parceria_id: int,
+    nome_familia: str,
+    produto: str,
+    contato_01: str | None,
+    contato_02: str | None,
+) -> None:
+    conn = get_conn()
+    conn.execute(
+        """UPDATE parcerias
+           SET nome_familia=?, produto=?, contato_01=?, contato_02=?,
+               atualizado_em=?
+           WHERE id=?""",
+        (
+            nome_familia.strip(),
+            produto.strip(),
+            contato_01 or None,
+            contato_02 or None,
+            now_tz().isoformat(),
+            parceria_id,
+        ),
+    )
+    conn.commit()
+
+
+def db_parceria_atualizar_imagem(parceria_id: int, nome_arquivo_imagem: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        """UPDATE parcerias
+           SET nome_arquivo_imagem=?, atualizado_em=?
+           WHERE id=?""",
+        (nome_arquivo_imagem, now_tz().isoformat(), parceria_id),
+    )
+    conn.commit()
+
+
+def db_parceria_desativar(parceria_id: int) -> None:
+    conn = get_conn()
+    conn.execute(
+        "UPDATE parcerias SET ativo=0, atualizado_em=? WHERE id=?",
+        (now_tz().isoformat(), parceria_id),
+    )
+    conn.commit()
+
+
 # ── Coletes ───────────────────────────────────────────────────────────────────
 
 def db_get_painel_colete(guild_id: str) -> tuple[str | None, str | None]:

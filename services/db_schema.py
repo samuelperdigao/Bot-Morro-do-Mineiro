@@ -21,7 +21,11 @@ CREATE TABLE IF NOT EXISTS guild_config (
     canal_notificacao_farm TEXT,
     flanelinha_role_id     TEXT,
     flanelinha_auto_promote INTEGER DEFAULT 0,
-    flanelinha_notify_user_id TEXT
+    flanelinha_notify_user_id TEXT,
+    parceria_category_id TEXT,
+    parceria_registrar_channel_id TEXT,
+    parceria_ativas_channel_id TEXT,
+    parceria_panel_message_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS channel_map (
@@ -247,6 +251,25 @@ ON farm_ticket_lancamentos (ticket_id, event_id);
 
 CREATE INDEX IF NOT EXISTS idx_farm_ticket_actions_pending
 ON farm_ticket_actions (log_enviado_em, id);
+
+CREATE TABLE IF NOT EXISTS parcerias (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
+    nome_familia TEXT NOT NULL COLLATE NOCASE,
+    produto TEXT NOT NULL,
+    contato_01 TEXT,
+    contato_02 TEXT,
+    mensagem_lista_id INTEGER NOT NULL,
+    nome_arquivo_imagem TEXT NOT NULL,
+    registrado_por INTEGER NOT NULL,
+    criado_em TEXT DEFAULT CURRENT_TIMESTAMP,
+    atualizado_em TEXT,
+    ativo INTEGER DEFAULT 1,
+    UNIQUE (guild_id, nome_familia)
+);
+
+CREATE INDEX IF NOT EXISTS idx_parcerias_guild_ativo
+ON parcerias (guild_id, ativo, nome_familia);
 """
 
 MIGRATIONS = (
@@ -279,6 +302,10 @@ MIGRATIONS = (
     ("guild_config", "flanelinha_role_id", "TEXT"),
     ("guild_config", "flanelinha_auto_promote", "INTEGER DEFAULT 0"),
     ("guild_config", "flanelinha_notify_user_id", "TEXT"),
+    ("guild_config", "parceria_category_id", "TEXT"),
+    ("guild_config", "parceria_registrar_channel_id", "TEXT"),
+    ("guild_config", "parceria_ativas_channel_id", "TEXT"),
+    ("guild_config", "parceria_panel_message_id", "TEXT"),
     ("recolhimento_entregas", "alvo_user_id", "TEXT"),
     ("recolhimento_entregas", "alvo_nome", "TEXT"),
     ("recolhimento_entregas", "alvo_pasta_id", "TEXT"),
