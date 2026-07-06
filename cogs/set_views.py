@@ -310,8 +310,9 @@ class ApprovalView(discord.ui.View):
             farm_embed.add_field(
                 name="2️⃣ Faça o lançamento",
                 value=(
-                    "Vá ao **Painel de Farm**, clique em **🎫 Abrir Ticket Semanal** e faça todos "
-                    "os lançamentos exclusivamente no seu canal privado.\n"
+                    "Vá ao **Painel de Farm**, clique em **🎫 Abrir Ticket Semanal** e acesse "
+                    "o canal privado criado pelo bot. Dentro dele, clique em **📤 Lançar Farm** "
+                    "e preencha somente os itens que você entregou.\n"
                     "Use números inteiros nos itens. Para dinheiro, pode usar `50000` ou `R$ 50.000`."
                 ),
                 inline=False,
@@ -329,9 +330,9 @@ class ApprovalView(discord.ui.View):
             farm_embed.add_field(
                 name="📊 Acompanhar ou corrigir",
                 value=(
-                    "Use o painel do ticket, **📊 Ver Meu Farm** ou `/farm` para acompanhar sua "
-                    "meta e porcentagem. Para corrigir um lançamento, solicite a revisão dentro "
-                    "do próprio ticket."
+                    "O painel do ticket é atualizado depois de cada lançamento. Use "
+                    "**📎 Ver Comprovantes** para consultar os registros. Se lançar um valor "
+                    "errado, avise a liderança no próprio ticket."
                 ),
                 inline=False,
             )

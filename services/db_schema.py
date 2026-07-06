@@ -117,6 +117,48 @@ CREATE TABLE IF NOT EXISTS system_config (
     PRIMARY KEY (guild_id, sistema)
 );
 
+CREATE TABLE IF NOT EXISTS acoes (
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id                        TEXT NOT NULL,
+    acao_key                        TEXT NOT NULL,
+    tipo                            TEXT NOT NULL,
+    data                            TEXT NOT NULL,
+    horario                         TEXT NOT NULL,
+    criado_por                      TEXT NOT NULL,
+    status                          TEXT NOT NULL DEFAULT 'aberta',
+    channel_id                      TEXT NOT NULL,
+    message_id                      TEXT NOT NULL,
+    resultado                       TEXT,
+    valor_total_centavos            INTEGER,
+    valor_faccao_centavos           INTEGER,
+    valor_participantes_centavos    INTEGER,
+    valor_por_participante_centavos INTEGER,
+    observacao                      TEXT,
+    criado_em                       TEXT NOT NULL,
+    atualizado_em                   TEXT NOT NULL,
+    finalizado_em                   TEXT,
+    finalizado_por                  TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_acoes_message
+ON acoes (guild_id, message_id);
+
+CREATE INDEX IF NOT EXISTS idx_acoes_status
+ON acoes (guild_id, status, criado_em);
+
+CREATE TABLE IF NOT EXISTS acao_participantes (
+    acao_id       INTEGER NOT NULL,
+    user_id       TEXT NOT NULL,
+    user_name     TEXT NOT NULL,
+    origem        TEXT NOT NULL,
+    adicionado_por TEXT,
+    criado_em     TEXT NOT NULL,
+    PRIMARY KEY (acao_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_acao_participantes_acao
+ON acao_participantes (acao_id, criado_em);
+
 CREATE TABLE IF NOT EXISTS recolhimento_ciclos (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id             TEXT NOT NULL,
@@ -198,6 +240,8 @@ CREATE TABLE IF NOT EXISTS farm_tickets (
     folder_nickname        TEXT,
     channel_id             TEXT,
     panel_message_id       TEXT,
+    log_message_id         TEXT,
+    log_thread_id          TEXT,
     status                 TEXT NOT NULL DEFAULT 'criando',
     assigned_to            TEXT,
     criado_em              TEXT NOT NULL,
@@ -236,6 +280,20 @@ CREATE TABLE IF NOT EXISTS farm_ticket_actions (
     tentativas_log         INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS farm_ticket_finalization_logs (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id              INTEGER NOT NULL,
+    user_id                TEXT NOT NULL,
+    meta_id                TEXT NOT NULL,
+    item                   TEXT NOT NULL,
+    quantidade_meta        REAL NOT NULL DEFAULT 0,
+    quantidade_entregue    REAL NOT NULL DEFAULT 0,
+    status_final           TEXT NOT NULL,
+    motivo                 TEXT NOT NULL,
+    criado_em              TEXT NOT NULL,
+    UNIQUE (ticket_id, meta_id, item)
+);
+
 CREATE INDEX IF NOT EXISTS idx_farm_tickets_channel
 ON farm_tickets (guild_id, channel_id);
 
@@ -251,6 +309,9 @@ ON farm_ticket_lancamentos (ticket_id, event_id);
 
 CREATE INDEX IF NOT EXISTS idx_farm_ticket_actions_pending
 ON farm_ticket_actions (log_enviado_em, id);
+
+CREATE INDEX IF NOT EXISTS idx_farm_ticket_finalization_logs_ticket
+ON farm_ticket_finalization_logs (ticket_id, criado_em);
 
 CREATE TABLE IF NOT EXISTS parcerias (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -317,6 +378,8 @@ MIGRATIONS = (
     ("farm_tickets", "folder_slot", "INTEGER"),
     ("farm_tickets", "game_id", "TEXT"),
     ("farm_tickets", "folder_nickname", "TEXT"),
+    ("farm_tickets", "log_message_id", "TEXT"),
+    ("farm_tickets", "log_thread_id", "TEXT"),
 )
 
 
@@ -348,6 +411,8 @@ def _migrate_ticket_active_uniqueness(conn: sqlite3.Connection) -> None:
             folder_nickname TEXT,
             channel_id TEXT,
             panel_message_id TEXT,
+            log_message_id TEXT,
+            log_thread_id TEXT,
             status TEXT NOT NULL DEFAULT 'criando',
             assigned_to TEXT,
             criado_em TEXT NOT NULL,
@@ -360,7 +425,8 @@ def _migrate_ticket_active_uniqueness(conn: sqlite3.Connection) -> None:
     )
     columns = (
         "id, guild_id, week_id, user_id, member_name, folder_channel_id, folder_slot, "
-        "game_id, folder_nickname, channel_id, panel_message_id, status, assigned_to, "
+        "game_id, folder_nickname, channel_id, panel_message_id, log_message_id, "
+        "log_thread_id, status, assigned_to, "
         "criado_em, atualizado_em, finalizado_em, finalizado_por, finalizacao_motivo, excluido_em"
     )
     conn.execute(

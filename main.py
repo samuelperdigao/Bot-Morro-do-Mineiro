@@ -10,7 +10,8 @@ from cogs.set_views import SetPanelView
 from core.config import APPLICATION_ID, TOKEN
 from core.extensions import COG_EXTENSIONS
 from core.logger import console_handler, get_logger
-from services.db_service import init_db
+from services.db_service import db_get_approver_role_ids, db_get_guild_config, init_db
+from services.set_service import sync_member_folder_manager_overwrites
 
 logging.basicConfig(level=logging.INFO, handlers=[console_handler])
 log = get_logger("bot", "bot.log")
@@ -47,6 +48,38 @@ class MyBot(commands.Bot):
         await self.change_presence(
             activity=discord.Activity(type=discord.ActivityType.watching, name="o servidor")
         )
+
+        if not getattr(self, "_member_folder_roles_synced", False):
+            self._member_folder_roles_synced = True
+            for guild in self.guilds:
+                guild_id = str(guild.id)
+                cfg = db_get_guild_config(guild_id)
+                if not cfg or not cfg["private_category_id"]:
+                    continue
+                try:
+                    result = await sync_member_folder_manager_overwrites(
+                        guild,
+                        int(cfg["private_category_id"]),
+                        db_get_approver_role_ids(guild_id),
+                    )
+                except Exception as exc:
+                    log.error(
+                        "Falha ao sincronizar gerentes nas pastas da guild %s: %s",
+                        guild.id,
+                        exc,
+                        exc_info=True,
+                    )
+                    continue
+                log.info(
+                    "Pastas sincronizadas na guild %s: canais=%s atualizados=%s "
+                    "removidos=%s garantidos=%s falhas=%s",
+                    guild.id,
+                    result.checked_channels,
+                    result.updated_channels,
+                    result.removed_overwrites,
+                    result.ensured_overwrites,
+                    len(result.failed_channels),
+                )
 
         if not getattr(self, "_guilds_limpos", False):
             self._guilds_limpos = True

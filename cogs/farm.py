@@ -38,6 +38,12 @@ from services.db_service import (
 log       = get_logger("farm", "farm.log")
 audit_log = logging.getLogger("audit")
 META_AVISOS_CHANNEL_ID = 1474869321506488447
+EVERYONE_ALLOWED_MENTIONS = discord.AllowedMentions(
+    everyone=True,
+    users=False,
+    roles=False,
+    replied_user=False,
+)
 FARM_PRINT_TIMEOUT_SECONDS = 180.0
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 FARM_EXTRA_ITEM = "Ferro"
@@ -1029,7 +1035,11 @@ class FarmCog(commands.Cog):
         embed.set_footer(text="Morro do Mineiro — Sistema de Farm")
 
         try:
-            await canal.send(embed=embed)
+            await canal.send(
+                content="@everyone",
+                embed=embed,
+                allowed_mentions=EVERYONE_ALLOWED_MENTIONS,
+            )
         except Exception as e:
             log.warning("Falha ao enviar aviso de meta atualizada: %s", e)
 

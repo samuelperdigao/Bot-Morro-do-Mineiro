@@ -36,6 +36,10 @@ def _ids_para_str(ids: list[int]) -> str:
     return ",".join(str(i) for i in ids)
 
 
+GERENTE_PRODUCAO_NAMES = ("| Gerente de Produção", "Gerente de Produção")
+GERENTE_PRODUTOS_NAMES = ("| Gerente de Produtos", "Gerente de Produtos")
+
+
 class SetupCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -458,6 +462,138 @@ class SetupCog(commands.Cog):
             interaction.user,
             result,
         )
+
+    @app_commands.command(
+        name="sincronizar_gerente_produtos",
+        description="Cria e copia as permissoes do Gerente de Producao para Gerente de Produtos.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def sincronizar_gerente_produtos(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        if guild is None:
+            await interaction.followup.send(
+                "Este comando so pode ser usado em um servidor.",
+                ephemeral=True,
+            )
+            return
+
+        cargo_producao = find_role_by_names(guild, GERENTE_PRODUCAO_NAMES)
+        if cargo_producao is None:
+            await interaction.followup.send(
+                "Nao encontrei o cargo Gerente de Producao no servidor.",
+                ephemeral=True,
+            )
+            return
+
+        bot_member = guild.me
+        if bot_member is None or not bot_member.guild_permissions.manage_roles:
+            await interaction.followup.send(
+                "O bot precisa da permissao Gerenciar Cargos.",
+                ephemeral=True,
+            )
+            return
+        if bot_member.top_role <= cargo_producao:
+            await interaction.followup.send(
+                "O cargo do bot precisa ficar acima de Gerente de Producao na hierarquia.",
+                ephemeral=True,
+            )
+            return
+
+        cargo_produtos = find_role_by_names(guild, GERENTE_PRODUTOS_NAMES)
+        criado = False
+        reason = f"Sincronizacao Gerente de Produtos solicitada por {interaction.user}"
+
+        try:
+            if cargo_produtos is None:
+                cargo_produtos = await guild.create_role(
+                    name="| Gerente de Produtos",
+                    permissions=discord.Permissions(cargo_producao.permissions.value),
+                    colour=cargo_producao.colour,
+                    hoist=cargo_producao.hoist,
+                    mentionable=cargo_producao.mentionable,
+                    reason=reason,
+                )
+                criado = True
+
+            if cargo_producao.id == cargo_produtos.id:
+                await interaction.followup.send(
+                    "Os cargos Gerente de Producao e Gerente de Produtos precisam ser diferentes.",
+                    ephemeral=True,
+                )
+                return
+            if bot_member.top_role <= cargo_produtos:
+                await interaction.followup.send(
+                    "O cargo do bot precisa ficar acima de Gerente de Produtos na hierarquia.",
+                    ephemeral=True,
+                )
+                return
+
+            result = await sync_role_permissions(
+                guild,
+                cargo_producao,
+                cargo_produtos,
+                reason=reason,
+            )
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "O Discord recusou a alteracao. Confira a hierarquia e as permissoes do bot.",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException as exc:
+            log.error("Erro HTTP ao sincronizar Gerente de Produtos: %s", exc, exc_info=True)
+            await interaction.followup.send(
+                "O Discord retornou um erro ao sincronizar os cargos.",
+                ephemeral=True,
+            )
+            return
+
+        detalhes = (
+            f"Cargo {'criado e ' if criado else ''}sincronizado: {cargo_produtos.mention}\n"
+            f"Permissoes gerais copiadas de {cargo_producao.mention}.\n"
+            f"Overrides copiados: `{result.copied_overwrites}`\n"
+            f"Overrides extras removidos: `{result.removed_overwrites}`\n"
+            f"Posicao: imediatamente abaixo de {cargo_producao.mention}."
+        )
+        if result.failed_channels:
+            detalhes += (
+                f"\n\nAtencao: `{len(result.failed_channels)}` canal(is) falharam. "
+                "Confira o log do bot."
+            )
+            log.warning(
+                "Falhas ao sincronizar Gerente de Produtos na guild %s: %s",
+                guild.id,
+                result.failed_channels,
+            )
+
+        await interaction.followup.send(detalhes, ephemeral=True)
+        log.info(
+            "Gerente de Produtos sincronizado na guild %s por %s: %s",
+            guild.id,
+            interaction.user,
+            result,
+        )
+
+    @sincronizar_gerente_produtos.error
+    async def sincronizar_gerente_produtos_error(
+        self,
+        interaction: discord.Interaction,
+        error: app_commands.AppCommandError,
+    ):
+        if isinstance(error, app_commands.MissingPermissions):
+            message = "Voce precisa da permissao Gerenciar Servidor."
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+            return
+
+        log.error("Erro em /sincronizar_gerente_produtos: %s", error, exc_info=True)
+        if interaction.response.is_done():
+            await interaction.followup.send("Erro inesperado.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Erro inesperado.", ephemeral=True)
 
     @sincronizar_flanelinha.error
     async def sincronizar_flanelinha_error(

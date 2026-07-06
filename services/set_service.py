@@ -8,7 +8,7 @@ em vez de ler do config estático.
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import discord
 
@@ -29,6 +29,12 @@ SEPARADOR_PASTA = "┃"
 ICONE_PASTA = "📁"
 PREFIXO_PASTA = f"{SEPARADOR_PASTA}{ICONE_PASTA}-"
 MAX_CHANNEL_NAME_LENGTH = 100
+MEMBER_FOLDER_MANAGER_ROLE_NAMES = frozenset(
+    {
+        "gerente geral",
+        "gerente de farm",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -41,6 +47,15 @@ class MemberFolderIdentity:
 
 class MemberFolderError(ValueError):
     """A pasta do membro não pôde ser identificada com segurança."""
+
+
+@dataclass
+class MemberFolderPermissionSyncResult:
+    checked_channels: int = 0
+    updated_channels: int = 0
+    removed_overwrites: int = 0
+    ensured_overwrites: int = 0
+    failed_channels: list[str] = field(default_factory=list)
 
 
 # ── Helpers de nome ───────────────────────────────────────────────────────────
@@ -65,6 +80,51 @@ def numero_da_pasta(nome: str) -> int | None:
 
 def montar_nome_pasta(numero: int | str, sufixo: str) -> str:
     return f"{PREFIXO_PASTA}{numero}-{sufixo}"[:MAX_CHANNEL_NAME_LENGTH]
+
+
+def normalize_role_name(name: str) -> str:
+    normalized = str(name or "").strip()
+    while normalized and not normalized[0].isalnum():
+        normalized = normalized[1:].lstrip()
+    return normalized.casefold()
+
+
+def is_allowed_member_folder_manager_role(role) -> bool:
+    return normalize_role_name(getattr(role, "name", "")) in MEMBER_FOLDER_MANAGER_ROLE_NAMES
+
+
+def is_manager_role(role) -> bool:
+    return "gerente" in normalize_role_name(getattr(role, "name", ""))
+
+
+def _dedupe_roles(roles: list[discord.Role]) -> list[discord.Role]:
+    seen: set[int] = set()
+    deduped = []
+    for role in roles:
+        role_id = getattr(role, "id", None)
+        if role_id is None or role_id in seen:
+            continue
+        seen.add(role_id)
+        deduped.append(role)
+    return deduped
+
+
+def member_folder_access_roles(guild: discord.Guild, role_ids: list[int]) -> list[discord.Role]:
+    roles = []
+    for role_id in role_ids or []:
+        role = guild.get_role(int(role_id))
+        if role is None:
+            continue
+        if is_manager_role(role) and not is_allowed_member_folder_manager_role(role):
+            continue
+        roles.append(role)
+
+    roles.extend(
+        role
+        for role in getattr(guild, "roles", [])
+        if is_allowed_member_folder_manager_role(role)
+    )
+    return _dedupe_roles(roles)
 
 
 def parse_member_folder(channel_name: str, channel_id: int) -> MemberFolderIdentity:
@@ -151,6 +211,71 @@ async def resolve_member_folder(
     return parse_member_folder(candidates[0].name, candidates[0].id)
 
 
+async def sync_member_folder_manager_overwrites(
+    guild: discord.Guild,
+    private_cat_id: int,
+    approver_role_ids: list[int],
+) -> MemberFolderPermissionSyncResult:
+    result = MemberFolderPermissionSyncResult()
+    category = guild.get_channel(private_cat_id)
+    if category is None:
+        category = await safe_fetch_channel(guild, private_cat_id)
+    if category is None or not hasattr(category, "text_channels"):
+        return result
+
+    allowed_roles = [
+        role
+        for role in member_folder_access_roles(guild, approver_role_ids)
+        if is_allowed_member_folder_manager_role(role)
+    ]
+    allowed_ids = {role.id for role in allowed_roles}
+
+    for channel in category.text_channels:
+        result.checked_channels += 1
+        changed = False
+        try:
+            for target in list(channel.overwrites):
+                target_id = getattr(target, "id", None)
+                if (
+                    target_id is not None
+                    and target_id not in allowed_ids
+                    and is_manager_role(target)
+                ):
+                    await channel.set_permissions(
+                        target,
+                        overwrite=None,
+                        reason="Restricao de gerentes nas pastas de membros",
+                    )
+                    result.removed_overwrites += 1
+                    changed = True
+
+            for role in allowed_roles:
+                overwrite = channel.overwrites_for(role)
+                if (
+                    overwrite.view_channel is True
+                    and overwrite.send_messages is True
+                    and overwrite.read_message_history is True
+                ):
+                    continue
+                overwrite.view_channel = True
+                overwrite.send_messages = True
+                overwrite.read_message_history = True
+                await channel.set_permissions(
+                    role,
+                    overwrite=overwrite,
+                    reason="Restricao de gerentes nas pastas de membros",
+                )
+                result.ensured_overwrites += 1
+                changed = True
+
+            if changed:
+                result.updated_channels += 1
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            result.failed_channels.append(f"{channel.name}: {exc}")
+
+    return result
+
+
 # ── Helpers de canal ──────────────────────────────────────────────────────────
 
 async def safe_fetch_channel(guild: discord.Guild, channel_id: int):
@@ -234,14 +359,12 @@ async def criar_pasta(
             embed_links=True,
         ),
     }
-    for role_id in approver_role_ids:
-        role = guild.get_role(role_id)
-        if role:
-            overwrites[role] = discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True,
-            )
+    for role in member_folder_access_roles(guild, approver_role_ids):
+        overwrites[role] = discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+        )
 
     safe_name = safe_channel_name(membro_nome or member.display_name)
     sufixo    = f"-{id_jogo}" if id_jogo else ""

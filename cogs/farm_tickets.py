@@ -13,6 +13,7 @@ import discord
 from discord.ext import commands, tasks
 
 from core.date_utils import format_date_br, format_datetime_br
+from core.role_sync import find_role_by_names
 from services.db_service import (
     DINHEIRO_ITEMS,
     current_week_id,
@@ -20,11 +21,10 @@ from services.db_service import (
     db_editar_evento,
     db_evento_itens,
     db_get_guild_config,
+    db_get_system_config,
     db_get_meta,
     db_get_progresso,
-    db_meta_dinheiro_ativo,
-    db_meta_dinheiro_itens_ativos,
-    db_meta_itens_ativos,
+    db_meta_alvos_ativos,
     db_meta_tipo_efetivo,
     db_prog_itens,
     db_ticket_activate,
@@ -33,7 +33,8 @@ from services.db_service import (
     db_ticket_claim,
     db_ticket_config_get,
     db_ticket_deletion_candidates,
-    db_ticket_finalize,
+    db_ticket_finalize_with_auto_approval,
+    db_ticket_finalization_logs,
     db_ticket_expired,
     db_ticket_get,
     db_ticket_get_channel,
@@ -54,6 +55,7 @@ from services.db_service import (
     db_ticket_reserve,
     db_ticket_resolve_review,
     db_ticket_set_log_result,
+    db_ticket_set_log_anchor,
     db_ticket_set_review,
     db_verificar_conclusao,
     now_tz,
@@ -64,6 +66,13 @@ from services.set_service import MemberFolderError, resolve_member_folder
 log = logging.getLogger("farm")
 PROOF_TIMEOUT = 180.0
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+GERENTE_PRODUCAO_NAMES = (
+    "| Gerente de Produ\u00e7\u00e3o",
+    "Gerente de Produ\u00e7\u00e3o",
+    "| Gerente de Producao",
+    "Gerente de Producao",
+)
+GERENTE_PRODUTOS_NAMES = ("| Gerente de Produtos", "Gerente de Produtos")
 
 
 def _is_image(attachment: discord.Attachment) -> bool:
@@ -76,6 +85,63 @@ def _slug(value: str) -> str:
     return normalized[:80] or "membro"
 
 
+def _row_get(row, key: str, default=None):
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
+def _message_id(message) -> str | None:
+    value = getattr(message, "id", None)
+    return str(value) if value is not None else None
+
+
+def _discord_id(value) -> str | None:
+    value = str(value or "").strip()
+    return value if re.fullmatch(r"\d{15,25}", value) else None
+
+
+def _as_int_role_ids(role_ids) -> list[int]:
+    ids: list[int] = []
+    for role_id in role_ids or []:
+        try:
+            parsed = int(role_id)
+        except (TypeError, ValueError):
+            continue
+        if parsed not in ids:
+            ids.append(parsed)
+    return ids
+
+
+def _expanded_admin_role_ids(guild: discord.Guild | None, role_ids) -> list[int]:
+    ids = _as_int_role_ids(role_ids)
+    if guild is None:
+        return ids
+
+    gerente_producao = find_role_by_names(guild, GERENTE_PRODUCAO_NAMES)
+    gerente_produtos = find_role_by_names(guild, GERENTE_PRODUTOS_NAMES)
+    if gerente_producao is None or gerente_produtos is None:
+        return ids
+
+    has_producao = gerente_producao.id in ids
+    has_produtos = gerente_produtos.id in ids
+    if has_producao and not has_produtos:
+        ids.append(gerente_produtos.id)
+    elif has_produtos and not has_producao:
+        ids.append(gerente_producao.id)
+    return ids
+
+
+def _admin_roles_for_guild(guild: discord.Guild, role_ids) -> list[discord.Role]:
+    roles = []
+    for role_id in _expanded_admin_role_ids(guild, role_ids):
+        role = guild.get_role(role_id)
+        if role is not None:
+            roles.append(role)
+    return roles
+
+
 def _fmt_value(value: float, money: bool) -> str:
     if money:
         return f"R$ {value:,.0f}".replace(",", ".")
@@ -83,14 +149,7 @@ def _fmt_value(value: float, money: bool) -> str:
 
 
 def _active_targets(meta) -> tuple[str, dict[str, float]]:
-    meta_type = db_meta_tipo_efetivo(meta)
-    if meta_type == "dinheiro":
-        separated = db_meta_dinheiro_itens_ativos(meta)
-        if separated:
-            return meta_type, {name: float(value) for name, value in separated.items()}
-        total = float(db_meta_dinheiro_ativo(meta))
-        return meta_type, {"Dinheiro": total} if total > 0 else {}
-    return meta_type, {name: float(value) for name, value in db_meta_itens_ativos(meta).items() if value > 0}
+    return db_meta_alvos_ativos(meta)
 
 
 def _progress(ticket, meta) -> tuple[dict[str, float], dict[str, float], float, bool, list]:
@@ -291,6 +350,29 @@ class FinalizeTicketModal(discord.ui.Modal, title="Finalizar ticket de farm"):
         meta = db_get_meta(ticket["guild_id"], ticket["week_id"])
         completed = _progress(ticket, meta)[3]
         reason = self.reason.value.strip()
+        await interaction.response.defer(ephemeral=True)
+        finalized, message = await self.cog.finalizar_ticket(
+            self.ticket_id,
+            reason or "Finalizacao manual por administrador",
+            interaction.user,
+            action="finalizacao",
+        )
+        if not finalized:
+            await interaction.followup.send(message, ephemeral=True)
+            return
+        channel = interaction.channel
+        owner = interaction.guild.get_member(int(ticket["user_id"]))
+        if owner and isinstance(channel, discord.TextChannel):
+            overwrite = channel.overwrites_for(owner)
+            overwrite.send_messages = False
+            overwrite.attach_files = False
+            await channel.set_permissions(owner, overwrite=overwrite, reason="Ticket de farm finalizado")
+        await self.cog.refresh_ticket(self.ticket_id)
+        await interaction.followup.send(
+            "Ticket finalizado e entregas aprovadas automaticamente. O canal sera excluido ao fim da semana.",
+            ephemeral=True,
+        )
+        return
         if not completed and not reason:
             await interaction.response.send_message("Informe um motivo para finalizar abaixo da meta.", ephemeral=True)
             return
@@ -663,8 +745,38 @@ class FarmTicketsCog(commands.Cog):
         if member.guild_permissions.administrator:
             return True
         config = db_ticket_config_get(guild_id)
-        allowed = {int(role_id) for role_id in (config or {}).get("admin_role_ids", [])}
+        allowed = set(
+            _expanded_admin_role_ids(
+                getattr(member, "guild", None),
+                (config or {}).get("admin_role_ids", []),
+            )
+        )
         return bool(allowed.intersection(role.id for role in member.roles))
+
+    async def ensure_ticket_admin_overwrites(
+        self,
+        guild: discord.Guild,
+        channel: discord.TextChannel,
+    ) -> None:
+        config = db_ticket_config_get(str(guild.id)) or {}
+        for role in _admin_roles_for_guild(guild, config.get("admin_role_ids", [])):
+            overwrite = channel.overwrites_for(role)
+            if (
+                overwrite.view_channel is True
+                and overwrite.send_messages is True
+                and overwrite.read_message_history is True
+                and overwrite.manage_messages is True
+            ):
+                continue
+            overwrite.view_channel = True
+            overwrite.send_messages = True
+            overwrite.read_message_history = True
+            overwrite.manage_messages = True
+            await channel.set_permissions(
+                role,
+                overwrite=overwrite,
+                reason="Sincronizacao de cargos administrativos dos tickets de farm",
+            )
 
     async def lock_ticket_channel(self, ticket, guild: discord.Guild) -> None:
         if not ticket["channel_id"]:
@@ -678,6 +790,300 @@ class FarmTicketsCog(commands.Cog):
             overwrite.send_messages = False
             overwrite.attach_files = False
             await channel.set_permissions(owner, overwrite=overwrite, reason="Prazo do ticket de farm encerrado")
+
+    def ticket_member_display(self, ticket) -> str:
+        user_id = _discord_id(_row_get(ticket, "user_id"))
+        if user_id:
+            return f"<@{user_id}>"
+        fallback = (
+            _row_get(ticket, "folder_nickname")
+            or _row_get(ticket, "member_name")
+            or _row_get(ticket, "user_id")
+        )
+        return str(fallback or "Membro sem identificacao")
+
+    def build_ticket_log_summary_embed(
+        self,
+        ticket,
+        *,
+        last_title: str = "Log iniciado",
+        last_detail: str = "-",
+    ) -> discord.Embed:
+        meta = db_get_meta(ticket["guild_id"], ticket["week_id"])
+        try:
+            _, _, percentage, completed, launches = _progress(ticket, meta)
+        except Exception:
+            percentage, completed, launches = 0, False, []
+
+        status = ticket["status"]
+        if status == "finalizado":
+            color = discord.Color.blue()
+        elif status == "revisao":
+            color = discord.Color.red()
+        elif completed:
+            color = discord.Color.green()
+        else:
+            color = discord.Color.gold()
+
+        embed = discord.Embed(
+            title="Ticket de farm",
+            description="Resumo consolidado. Os detalhes e comprovantes ficam na thread desta mensagem.",
+            color=color,
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="Membro", value=self.ticket_member_display(ticket), inline=True)
+        embed.add_field(
+            name="Ticket",
+            value=f"<#{ticket['channel_id']}>" if ticket["channel_id"] else f"#{ticket['id']}",
+            inline=True,
+        )
+        embed.add_field(name="Semana", value=format_date_br(ticket["week_id"]), inline=True)
+        embed.add_field(name="Status", value=str(status).replace("_", " ").title(), inline=True)
+        embed.add_field(name="Progresso", value=f"{percentage:.0f}%", inline=True)
+        embed.add_field(name="Lancamentos", value=str(len(launches)), inline=True)
+        embed.add_field(
+            name="Responsavel",
+            value=f"<@{ticket['assigned_to']}>" if ticket["assigned_to"] else "Nao assumido",
+            inline=True,
+        )
+        if ticket["finalizado_em"]:
+            embed.add_field(
+                name="Finalizacao",
+                value=f"{format_datetime_br(ticket['finalizado_em'])}\n{ticket['finalizacao_motivo'] or '-'}",
+                inline=False,
+            )
+        embed.add_field(
+            name="Ultima acao",
+            value=f"**{last_title}**\n{(last_detail or '-')[:900]}",
+            inline=False,
+        )
+        embed.set_footer(text=f"Ticket #{ticket['id']} | logs consolidados")
+        return embed
+
+    def ticket_log_thread_name(self, ticket) -> str:
+        slot = f"{int(ticket['folder_slot']):02d}" if ticket["folder_slot"] is not None else str(ticket["id"])
+        name = ticket["folder_nickname"] or ticket["member_name"] or f"ticket-{ticket['id']}"
+        return f"ticket-farm-{slot}-{_slug(name)}"[:100]
+
+    async def farm_log_channel(self, guild: discord.Guild):
+        row = db_get_system_config(str(guild.id), "farm")
+        if not row or not row["canal_log_id"]:
+            log.info("Tickets de farm sem canal de log configurado (guild %s)", guild.id)
+            return None
+        channel_id = int(row["canal_log_id"])
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await guild.fetch_channel(channel_id)
+            except Exception:
+                log.warning("Canal de log do farm nao encontrado: %s", channel_id, exc_info=True)
+                return None
+        return channel if hasattr(channel, "send") else None
+
+    async def ensure_ticket_log_thread(
+        self,
+        ticket,
+        *,
+        last_title: str = "Log iniciado",
+        last_detail: str = "-",
+    ):
+        guild = self.bot.get_guild(int(ticket["guild_id"]))
+        if not guild:
+            return None, None
+        channel = await self.farm_log_channel(guild)
+        if channel is None:
+            return None, None
+
+        summary = None
+        message_id = _row_get(ticket, "log_message_id")
+        if message_id:
+            try:
+                summary = await channel.fetch_message(int(message_id))
+            except (discord.NotFound, discord.Forbidden):
+                summary = None
+            except Exception:
+                log.warning("Falha ao buscar resumo de log do ticket %s", ticket["id"], exc_info=True)
+                summary = None
+
+        if summary is None:
+            try:
+                summary = await channel.send(
+                    embed=self.build_ticket_log_summary_embed(
+                        ticket,
+                        last_title=last_title,
+                        last_detail=last_detail,
+                    ),
+                    allowed_mentions=discord.AllowedMentions(
+                        users=True,
+                        roles=False,
+                        everyone=False,
+                    ),
+                )
+            except Exception:
+                log.warning("Falha ao criar resumo de log do ticket %s", ticket["id"], exc_info=True)
+                return None, None
+            db_ticket_set_log_anchor(int(ticket["id"]), message_id=str(summary.id))
+            ticket = db_ticket_get(int(ticket["id"])) or ticket
+
+        thread = getattr(summary, "thread", None)
+        thread_id = _row_get(ticket, "log_thread_id")
+        if thread is None and thread_id:
+            get_thread = getattr(guild, "get_thread", None)
+            thread = get_thread(int(thread_id)) if get_thread else None
+            if thread is None:
+                try:
+                    fetched = await guild.fetch_channel(int(thread_id))
+                    if isinstance(fetched, discord.Thread):
+                        thread = fetched
+                except (discord.NotFound, discord.Forbidden):
+                    thread = None
+                except Exception:
+                    log.warning("Falha ao buscar thread de log do ticket %s", ticket["id"], exc_info=True)
+                    thread = None
+
+        if thread is None:
+            try:
+                thread = await summary.create_thread(name=self.ticket_log_thread_name(ticket))
+            except Exception:
+                log.warning("Falha ao criar thread de log do ticket %s", ticket["id"], exc_info=True)
+                return summary, None
+            db_ticket_set_log_anchor(int(ticket["id"]), thread_id=str(thread.id))
+
+        return summary, thread
+
+    async def update_ticket_log_summary(
+        self,
+        ticket,
+        summary,
+        *,
+        last_title: str,
+        last_detail: str,
+    ) -> None:
+        if summary is None:
+            return
+        latest = db_ticket_get(int(ticket["id"])) or ticket
+        try:
+            await summary.edit(
+                embed=self.build_ticket_log_summary_embed(
+                    latest,
+                    last_title=last_title,
+                    last_detail=last_detail,
+                )
+            )
+        except Exception:
+            log.warning("Falha ao atualizar resumo de log do ticket %s", ticket["id"], exc_info=True)
+
+    def build_ticket_action_embed(self, ticket, title: str, actor, detail: str) -> discord.Embed:
+        embed = discord.Embed(title=title, color=discord.Color.blue(), timestamp=discord.utils.utcnow())
+        embed.add_field(name="Membro", value=self.ticket_member_display(ticket), inline=True)
+        actor_mention = getattr(actor, "mention", f"<@{actor.id}>")
+        embed.add_field(name="Responsavel", value=actor_mention, inline=True)
+        embed.add_field(
+            name="Ticket",
+            value=f"<#{ticket['channel_id']}>" if ticket["channel_id"] else f"#{ticket['id']}",
+            inline=True,
+        )
+        embed.add_field(name="Detalhes", value=(detail or "-")[:1024], inline=False)
+        return embed
+
+    async def send_finalization_log(self, result: dict, actor, detail: str) -> bool:
+        ticket = result["ticket"]
+        logs = result.get("logs") or []
+        action_ids = {
+            action_id
+            for action_id in (result.get("action_id"), result.get("approval_action_id"))
+            if action_id
+        }
+        summary, thread = await self.ensure_ticket_log_thread(
+            ticket,
+            last_title="Ticket finalizado",
+            last_detail=detail,
+        )
+        if thread is None:
+            for action_id in action_ids:
+                db_ticket_mark_log_attempt(action_id)
+            return False
+
+        embed = discord.Embed(
+            title="🎫 Ticket finalizado com aprovação automática",
+            color=discord.Color.blue(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="Membro", value=self.ticket_member_display(ticket), inline=True)
+        actor_mention = getattr(actor, "mention", f"<@{actor.id}>")
+        embed.add_field(name="Responsável", value=actor_mention, inline=True)
+        embed.add_field(
+            name="Ticket",
+            value=f"<#{ticket['channel_id']}>" if ticket["channel_id"] else f"#{ticket['id']}",
+            inline=True,
+        )
+        lines = []
+        for row in logs:
+            money = row["item"] in {"Dinheiro", *DINHEIRO_ITEMS}
+            entregue = _fmt_value(float(row["quantidade_entregue"]), money)
+            meta = _fmt_value(float(row["quantidade_meta"]), money)
+            lines.append(
+                f"**{row['item']}:** {entregue} / {meta} — `{row['status_final']}`"
+            )
+        embed.add_field(
+            name="Entregas aprovadas",
+            value="\n".join(lines)[:1024] if lines else "Nenhuma meta ativa vinculada ao ticket.",
+            inline=False,
+        )
+        embed.add_field(name="Motivo", value=detail[:1024] or "-", inline=False)
+        try:
+            result_message = await thread.send(
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(
+                    users=True,
+                    roles=False,
+                    everyone=False,
+                ),
+            )
+        except Exception:
+            log.warning("Falha ao enviar log final do ticket %s", ticket["id"], exc_info=True)
+            result_message = None
+        message_id = _message_id(result_message)
+        if message_id:
+            for action_id in action_ids:
+                db_ticket_set_log_result(action_id, message_id=message_id)
+            await self.update_ticket_log_summary(
+                ticket,
+                summary,
+                last_title="Ticket finalizado",
+                last_detail=detail,
+            )
+            return True
+        for action_id in action_ids:
+            db_ticket_mark_log_attempt(action_id)
+        return False
+
+    async def finalizar_ticket(
+        self,
+        ticket_id: int,
+        motivo: str,
+        actor,
+        *,
+        action: str = "finalizacao",
+    ) -> tuple[bool, str]:
+        try:
+            result = db_ticket_finalize_with_auto_approval(
+                ticket_id,
+                str(actor.id),
+                motivo,
+                action=action,
+            )
+        except Exception:
+            log.exception("Falha ao finalizar ticket %s", ticket_id)
+            return False, "Nao foi possivel salvar a finalizacao no banco. O canal nao foi alterado."
+
+        if not result["processed"]:
+            return False, "O ticket ja foi finalizado."
+
+        logged = await self.send_finalization_log(result, actor, motivo)
+        if not logged:
+            return False, "O ticket foi finalizado no banco, mas o log do Discord ficou pendente. O canal nao foi apagado."
+        return True, "Ticket finalizado."
 
     async def show_admin_ticket_manager(self, interaction: discord.Interaction) -> None:
         if not interaction.user.guild_permissions.administrator:
@@ -727,6 +1133,24 @@ class FarmTicketsCog(commands.Cog):
             )
             return
         await interaction.response.defer(ephemeral=True)
+        ticket = db_ticket_get(ticket_id)
+        if ticket and ticket["status"] != "finalizado" and not ticket["finalizado_em"]:
+            finalized, message = await self.finalizar_ticket(
+                ticket_id,
+                "Ticket expirado - aprovação automática",
+                interaction.user,
+                action="exclusao_manual_finalizacao",
+            )
+            if not finalized:
+                await interaction.followup.send(message, ephemeral=True)
+                return
+            ticket = db_ticket_get(ticket_id)
+            if db_ticket_has_pending_logs(ticket_id):
+                await interaction.followup.send(
+                    "A finalizacao gerou logs pendentes. O canal nao foi excluido.",
+                    ephemeral=True,
+                )
+                return
         reason = "Exclusão manual confirmada por administrador"
         action_id = db_ticket_add_action(
             ticket_id, "exclusao_manual", str(interaction.user.id), payload={"motivo": reason}
@@ -754,6 +1178,8 @@ class FarmTicketsCog(commands.Cog):
             return
         try:
             channel = guild.get_channel(int(ticket["channel_id"])) or await guild.fetch_channel(int(ticket["channel_id"]))
+            if isinstance(channel, discord.TextChannel):
+                await self.ensure_ticket_admin_overwrites(guild, channel)
             message = await channel.fetch_message(int(ticket["panel_message_id"]))
             member = guild.get_member(int(ticket["user_id"])) or await guild.fetch_member(int(ticket["user_id"]))
             meta = db_get_meta(ticket["guild_id"], ticket["week_id"])
@@ -781,7 +1207,7 @@ class FarmTicketsCog(commands.Cog):
             db_ticket_mark_log_attempt(action_id)
             return False
         embed = discord.Embed(title=f"🎫 {title}", color=discord.Color.blue(), timestamp=discord.utils.utcnow())
-        embed.add_field(name="Membro", value=f"<@{ticket['user_id']}>", inline=True)
+        embed.add_field(name="Membro", value=self.ticket_member_display(ticket), inline=True)
         actor_mention = getattr(actor, "mention", f"<@{actor.id}>")
         embed.add_field(name="Responsável", value=actor_mention, inline=True)
         embed.add_field(name="Ticket", value=f"<#{ticket['channel_id']}>" if ticket["channel_id"] else f"#{ticket['id']}", inline=True)
@@ -799,7 +1225,7 @@ class FarmTicketsCog(commands.Cog):
             db_ticket_mark_log_attempt(action_id)
             return
         embed = discord.Embed(title="📤 Farm lançado no ticket", color=discord.Color.gold(), timestamp=discord.utils.utcnow())
-        embed.add_field(name="Membro", value=f"<@{ticket['user_id']}>", inline=True)
+        embed.add_field(name="Membro", value=self.ticket_member_display(ticket), inline=True)
         embed.add_field(name="Ticket", value=f"<#{ticket['channel_id']}>", inline=True)
         embed.add_field(name="Farm ativo", value=db_meta_tipo_efetivo(db_get_meta(ticket["guild_id"], ticket["week_id"])).title(), inline=True)
         embed.add_field(name="Valores", value="\n".join(f"**{name}:** {value}" for name, value in values.items()), inline=False)
@@ -815,6 +1241,86 @@ class FarmTicketsCog(commands.Cog):
         if isinstance(result, discord.Message):
             log_url = result.attachments[0].url if result.attachments else attachment.url
             db_ticket_set_log_result(action_id, message_id=str(result.id), event_id=event_id, proof_url=log_url)
+        else:
+            db_ticket_mark_log_attempt(action_id)
+
+    async def send_action_log(self, ticket, action_id: int, title: str, actor, detail: str):
+        summary, thread = await self.ensure_ticket_log_thread(
+            ticket,
+            last_title=title,
+            last_detail=detail,
+        )
+        if thread is None:
+            db_ticket_mark_log_attempt(action_id)
+            return False
+        embed = self.build_ticket_action_embed(ticket, title, actor, detail)
+        try:
+            result = await thread.send(
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(
+                    users=True,
+                    roles=False,
+                    everyone=False,
+                ),
+            )
+        except Exception:
+            log.warning("Falha ao enviar log de acao do ticket %s", ticket["id"], exc_info=True)
+            result = None
+        message_id = _message_id(result)
+        if message_id:
+            db_ticket_set_log_result(action_id, message_id=message_id)
+            await self.update_ticket_log_summary(
+                ticket,
+                summary,
+                last_title=title,
+                last_detail=detail,
+            )
+            return True
+        db_ticket_mark_log_attempt(action_id)
+        return False
+
+    async def log_launch(self, ticket, actor, event_id: int, action_id: int, values: dict, proof_message, attachment):
+        detail = ", ".join(f"{name}: {value}" for name, value in values.items())
+        summary, thread = await self.ensure_ticket_log_thread(
+            ticket,
+            last_title="Farm lancado no ticket",
+            last_detail=detail,
+        )
+        if thread is None:
+            db_ticket_mark_log_attempt(action_id)
+            return
+        embed = discord.Embed(title="Farm lancado no ticket", color=discord.Color.gold(), timestamp=discord.utils.utcnow())
+        embed.add_field(name="Membro", value=self.ticket_member_display(ticket), inline=True)
+        embed.add_field(name="Ticket", value=f"<#{ticket['channel_id']}>", inline=True)
+        embed.add_field(name="Farm ativo", value=db_meta_tipo_efetivo(db_get_meta(ticket["guild_id"], ticket["week_id"])).title(), inline=True)
+        embed.add_field(name="Valores", value="\n".join(f"**{name}:** {value}" for name, value in values.items()), inline=False)
+        embed.add_field(name="Observacao", value=proof_message.content[:1024] or "Sem observacao", inline=False)
+        embed.add_field(name="Status", value="Registrado", inline=True)
+        try:
+            file = await attachment.to_file(use_cached=True)
+            embed.set_image(url=f"attachment://{file.filename}")
+            result = await thread.send(
+                embed=embed,
+                files=[file],
+                allowed_mentions=discord.AllowedMentions(
+                    users=True,
+                    roles=False,
+                    everyone=False,
+                ),
+            )
+        except Exception:
+            result = None
+            log.exception("Falha ao copiar comprovante do ticket %s", ticket["id"])
+        message_id = _message_id(result)
+        if message_id:
+            log_url = result.attachments[0].url if result.attachments else attachment.url
+            db_ticket_set_log_result(action_id, message_id=message_id, event_id=event_id, proof_url=log_url)
+            await self.update_ticket_log_summary(
+                ticket,
+                summary,
+                last_title="Farm lancado no ticket",
+                last_detail=detail,
+            )
         else:
             db_ticket_mark_log_attempt(action_id)
 
@@ -898,7 +1404,7 @@ class FarmTicketsCog(commands.Cog):
             category = next((item for item in categories if len(item.channels) < 50), None)
             if not category:
                 raise RuntimeError("Todas as categorias configuradas estão lotadas ou inválidas.")
-            admin_roles = [interaction.guild.get_role(int(role_id)) for role_id in config["admin_role_ids"]]
+            admin_roles = _admin_roles_for_guild(interaction.guild, config["admin_role_ids"])
             overwrites = {
                 interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
                 interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, attach_files=True),
@@ -972,7 +1478,14 @@ class FarmTicketsCog(commands.Cog):
             if not guild:
                 continue
             reason = "Prazo semanal de entrega encerrado (domingo 23:59)"
-            if not db_ticket_finalize(int(ticket["id"]), str(guild.me.id), reason):
+            finalized_ok, message = await self.finalizar_ticket(
+                int(ticket["id"]),
+                reason,
+                guild.me,
+                action="prazo_encerrado",
+            )
+            if not finalized_ok:
+                log.warning("Ticket expirado %s nao foi fechado: %s", ticket["id"], message)
                 continue
             finalized = db_ticket_get(int(ticket["id"]))
             try:
@@ -980,13 +1493,6 @@ class FarmTicketsCog(commands.Cog):
                 await self.refresh_ticket(int(ticket["id"]))
             except Exception:
                 log.exception("Falha ao bloquear ticket expirado %s", ticket["id"])
-            action_id = db_ticket_add_action(
-                int(ticket["id"]), "prazo_encerrado", str(guild.me.id),
-                payload={"motivo": reason},
-            )
-            await self.send_action_log(
-                finalized, action_id, "Prazo do ticket encerrado", guild.me, reason
-            )
 
     async def retry_pending_logs(self) -> None:
         titles = {
@@ -997,6 +1503,7 @@ class FarmTicketsCog(commands.Cog):
             "correcao": "Lançamento corrigido",
             "aprovacao": "Meta aprovada",
             "finalizacao": "Ticket finalizado",
+            "exclusao_manual_finalizacao": "Ticket finalizado",
             "exclusao": "Canal de ticket excluído",
             "exclusao_manual": "Ticket excluído manualmente",
             "prazo_encerrado": "Prazo do ticket encerrado",
@@ -1009,6 +1516,31 @@ class FarmTicketsCog(commands.Cog):
                 continue
             actor = guild.get_member(int(action["actor_id"])) or discord.Object(id=int(action["actor_id"]))
             payload = json.loads(action["payload_json"] or "{}")
+            if payload.get("aprovacao_automatica") or (
+                action["action"] == "aprovacao" and payload.get("automatica")
+            ):
+                final_action = None
+                for action_name in (
+                    "exclusao_manual_finalizacao",
+                    "prazo_encerrado",
+                    "finalizacao",
+                ):
+                    final_action = db_ticket_latest_action(int(ticket["id"]), action_name)
+                    if final_action:
+                        break
+                approval_action = db_ticket_latest_action(int(ticket["id"]), "aprovacao")
+                detail = payload.get("motivo") or "Ticket expirado - aprovação automática"
+                await self.send_finalization_log(
+                    {
+                        "ticket": ticket,
+                        "logs": db_ticket_finalization_logs(int(ticket["id"])),
+                        "action_id": int(final_action["id"]) if final_action else int(action["id"]),
+                        "approval_action_id": int(approval_action["id"]) if approval_action else None,
+                    },
+                    actor,
+                    detail,
+                )
+                continue
             if action["action"] == "lancamento" and action["event_id"]:
                 launch = next((row for row in db_ticket_launches(int(ticket["id"])) if int(row["id"]) == int(action["event_id"])), None)
                 if not launch:

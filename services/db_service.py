@@ -22,6 +22,16 @@ PRODUTO_KEYS = ["folha", "opio", "seringa", "agulha"]
 DINHEIRO_SUJO_ITEM = "Dinheiro Sujo"
 DINHEIRO_LIMPO_ITEM = "Dinheiro Limpo"
 DINHEIRO_ITEMS = (DINHEIRO_SUJO_ITEM, DINHEIRO_LIMPO_ITEM)
+AUTO_FINALIZATION_REASON = "Ticket expirado - aprovação automática"
+AUTO_FINAL_STATUS_TOTAL = "APROVADA_TOTAL"
+AUTO_FINAL_STATUS_PARTIAL = "APROVADA_PARCIAL"
+AUTO_FINAL_STATUS_EMPTY = "SEM_ENTREGA"
+
+_AUTO_FINAL_STATUS_TO_RANKING = {
+    AUTO_FINAL_STATUS_TOTAL: "meta_batida",
+    AUTO_FINAL_STATUS_PARTIAL: "parcial",
+    AUTO_FINAL_STATUS_EMPTY: "zero",
+}
 
 _LEGACY_KEY_TO_NOME = {
     "folha": "Folha",
@@ -186,6 +196,21 @@ def db_meta_dinheiro_itens_ativos(meta) -> dict:
         nome: float(itens.get(nome, 0) or 0)
         for nome in DINHEIRO_ITEMS
         if float(itens.get(nome, 0) or 0) > 0
+    }
+
+def db_meta_alvos_ativos(meta) -> tuple[str, dict[str, float]]:
+    """Retorna o tipo efetivo e os alvos que contam para a meta ativa."""
+    meta_tipo = db_meta_tipo_efetivo(meta)
+    if meta_tipo == "dinheiro":
+        separados = db_meta_dinheiro_itens_ativos(meta)
+        if separados:
+            return meta_tipo, {nome: float(valor) for nome, valor in separados.items()}
+        total = float(db_meta_dinheiro_ativo(meta))
+        return meta_tipo, {"Dinheiro": total} if total > 0 else {}
+    return meta_tipo, {
+        nome: float(valor)
+        for nome, valor in db_meta_itens_ativos(meta).items()
+        if float(valor or 0) > 0
     }
 
 def db_prog_itens(prog) -> dict:
@@ -1094,6 +1119,138 @@ def db_get_all_system_configs(guild_id: str):
     ).fetchall()
 
 
+# ── Ações ─────────────────────────────────────────────────────────────────────
+
+def db_acao_criar(
+    guild_id: str,
+    acao_key: str,
+    tipo: str,
+    data: str,
+    horario: str,
+    criado_por: str,
+    channel_id: str,
+    message_id: str,
+) -> int:
+    conn = get_conn()
+    agora = now_tz().isoformat()
+    cur = conn.execute(
+        """INSERT INTO acoes
+           (guild_id, acao_key, tipo, data, horario, criado_por, status,
+            channel_id, message_id, criado_em, atualizado_em)
+           VALUES (?, ?, ?, ?, ?, ?, 'aberta', ?, ?, ?, ?)""",
+        (
+            guild_id,
+            acao_key,
+            tipo,
+            data,
+            horario,
+            criado_por,
+            channel_id,
+            message_id,
+            agora,
+            agora,
+        ),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def db_acao_get(acao_id: int):
+    return get_conn().execute("SELECT * FROM acoes WHERE id=?", (acao_id,)).fetchone()
+
+
+def db_acao_get_by_message(guild_id: str, message_id: str):
+    return get_conn().execute(
+        "SELECT * FROM acoes WHERE guild_id=? AND message_id=?",
+        (guild_id, message_id),
+    ).fetchone()
+
+
+def db_acao_participantes(acao_id: int) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT * FROM acao_participantes
+           WHERE acao_id=?
+           ORDER BY criado_em ASC""",
+        (acao_id,),
+    ).fetchall()
+
+
+def db_acao_participante_add(
+    acao_id: int,
+    user_id: str,
+    user_name: str,
+    origem: str,
+    adicionado_por: str | None = None,
+) -> bool:
+    conn = get_conn()
+    try:
+        conn.execute(
+            """INSERT INTO acao_participantes
+               (acao_id, user_id, user_name, origem, adicionado_por, criado_em)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (acao_id, user_id, user_name, origem, adicionado_por, now_tz().isoformat()),
+        )
+        conn.execute(
+            "UPDATE acoes SET atualizado_em=? WHERE id=?",
+            (now_tz().isoformat(), acao_id),
+        )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def db_acao_participante_remove(acao_id: int, user_id: str) -> bool:
+    conn = get_conn()
+    cur = conn.execute(
+        "DELETE FROM acao_participantes WHERE acao_id=? AND user_id=?",
+        (acao_id, user_id),
+    )
+    if cur.rowcount:
+        conn.execute(
+            "UPDATE acoes SET atualizado_em=? WHERE id=?",
+            (now_tz().isoformat(), acao_id),
+        )
+    conn.commit()
+    return bool(cur.rowcount)
+
+
+def db_acao_finalizar(
+    acao_id: int,
+    resultado: str,
+    finalizado_por: str,
+    observacao: str | None = None,
+    valor_total_centavos: int | None = None,
+    valor_faccao_centavos: int | None = None,
+    valor_participantes_centavos: int | None = None,
+    valor_por_participante_centavos: int | None = None,
+) -> None:
+    conn = get_conn()
+    agora = now_tz().isoformat()
+    conn.execute(
+        """UPDATE acoes
+           SET status=?, resultado=?, finalizado_por=?, observacao=?,
+               valor_total_centavos=?, valor_faccao_centavos=?,
+               valor_participantes_centavos=?, valor_por_participante_centavos=?,
+               finalizado_em=?, atualizado_em=?
+           WHERE id=?""",
+        (
+            resultado,
+            resultado,
+            finalizado_por,
+            observacao,
+            valor_total_centavos,
+            valor_faccao_centavos,
+            valor_participantes_centavos,
+            valor_por_participante_centavos,
+            agora,
+            agora,
+            acao_id,
+        ),
+    )
+    conn.commit()
+
+
 # ── Recolhimento — Ciclos ─────────────────────────────────────────────────────
 
 def db_recolhimento_ciclo_aberto(guild_id: str, channel_id: str, tipo: str, semana_inicio: str):
@@ -1637,6 +1794,30 @@ def db_ticket_activate(ticket_id: int, channel_id: str, message_id: str) -> None
     conn.commit()
 
 
+def db_ticket_set_log_anchor(
+    ticket_id: int,
+    *,
+    message_id: str | None = None,
+    thread_id: str | None = None,
+) -> None:
+    fields = []
+    params = []
+    if message_id is not None:
+        fields.append("log_message_id=?")
+        params.append(message_id)
+    if thread_id is not None:
+        fields.append("log_thread_id=?")
+        params.append(thread_id)
+    if not fields:
+        return
+    fields.append("atualizado_em=?")
+    params.append(now_tz().isoformat())
+    params.append(ticket_id)
+    conn = get_conn()
+    conn.execute(f"UPDATE farm_tickets SET {', '.join(fields)} WHERE id=?", tuple(params))
+    conn.commit()
+
+
 def db_ticket_release_failed(ticket_id: int) -> None:
     """Remove somente uma reserva que nunca chegou a criar canal ou lançamentos."""
     conn = get_conn()
@@ -1858,6 +2039,231 @@ def db_ticket_recalculate_completion(ticket_id: int) -> None:
     )
     conn.commit()
     db_verificar_conclusao(ticket["guild_id"], ticket["week_id"], ticket["user_id"])
+
+
+def _auto_final_status(delivered: float, target: float) -> str:
+    if delivered >= target:
+        return AUTO_FINAL_STATUS_TOTAL
+    if delivered > 0:
+        return AUTO_FINAL_STATUS_PARTIAL
+    return AUTO_FINAL_STATUS_EMPTY
+
+
+def _overall_auto_final_status(rows: list[dict]) -> str:
+    if rows and all(row["status_final"] == AUTO_FINAL_STATUS_TOTAL for row in rows):
+        return AUTO_FINAL_STATUS_TOTAL
+    if any(row["quantidade_entregue"] > 0 for row in rows):
+        return AUTO_FINAL_STATUS_PARTIAL
+    return AUTO_FINAL_STATUS_EMPTY
+
+
+def db_ticket_finalization_logs(ticket_id: int) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT * FROM farm_ticket_finalization_logs
+           WHERE ticket_id=? ORDER BY id ASC""",
+        (ticket_id,),
+    ).fetchall()
+
+
+def db_ticket_finalize_with_auto_approval(
+    ticket_id: int,
+    actor_id: str,
+    motivo: str | None,
+    *,
+    action: str = "finalizacao",
+    auto_reason: str = AUTO_FINALIZATION_REASON,
+) -> dict:
+    """Finaliza o ticket e aprova a entrega atual em uma unica transacao."""
+    conn = get_conn()
+    try:
+        ticket = conn.execute(
+            "SELECT * FROM farm_tickets WHERE id=?", (ticket_id,)
+        ).fetchone()
+        if not ticket:
+            raise ValueError("Ticket nao encontrado.")
+        if ticket["status"] == "finalizado" or ticket["finalizado_em"]:
+            return {
+                "processed": False,
+                "ticket": ticket,
+                "logs": db_ticket_finalization_logs(ticket_id),
+                "action_id": None,
+                "approval_action_id": None,
+                "status_final": None,
+            }
+        if ticket["status"] not in {"aberto", "revisao", "criando"}:
+            raise ValueError("Ticket nao esta aberto para finalizacao.")
+
+        agora = now_tz().isoformat()
+        guild_id = ticket["guild_id"]
+        week_id = ticket["week_id"]
+        user_id = ticket["user_id"]
+
+        meta = db_get_meta(guild_id, week_id)
+        meta_tipo, targets = db_meta_alvos_ativos(meta)
+        meta_id = (
+            f"{guild_id}:{week_id}:{meta_tipo}"
+            if meta is not None
+            else f"{guild_id}:{week_id}:sem_meta"
+        )
+
+        conn.execute(
+            "INSERT OR IGNORE INTO progresso (guild_id, week_id, user_id) VALUES (?,?,?)",
+            (guild_id, week_id, user_id),
+        )
+        progress = conn.execute(
+            "SELECT * FROM progresso WHERE guild_id=? AND week_id=? AND user_id=?",
+            (guild_id, week_id, user_id),
+        ).fetchone()
+        prog_itens = db_prog_itens(progress)
+
+        rows: list[dict] = []
+        for item, target in targets.items():
+            if meta_tipo == "dinheiro" and item == "Dinheiro":
+                delivered = float(sum(prog_itens.get(nome, 0) for nome in DINHEIRO_ITEMS))
+            else:
+                delivered = float(prog_itens.get(item, 0) or 0)
+            target_value = float(target or 0)
+            rows.append(
+                {
+                    "user_id": user_id,
+                    "ticket_id": ticket_id,
+                    "meta_id": meta_id,
+                    "item": item,
+                    "quantidade_meta": target_value,
+                    "quantidade_entregue": delivered,
+                    "status_final": _auto_final_status(delivered, target_value),
+                    "motivo": auto_reason,
+                    "criado_em": agora,
+                }
+            )
+
+        overall_status = _overall_auto_final_status(rows)
+        ranking_level = _AUTO_FINAL_STATUS_TO_RANKING[overall_status]
+        antecipada = overall_status != AUTO_FINAL_STATUS_TOTAL
+        concluida = overall_status == AUTO_FINAL_STATUS_TOTAL
+        conn.execute(
+            """UPDATE progresso SET aprovada=1,
+                   aprovada_por=COALESCE(aprovada_por, ?),
+                   aprovada_em=COALESCE(aprovada_em, ?),
+                   aprovacao_antecipada=CASE
+                       WHEN aprovada=1 THEN aprovacao_antecipada ELSE ?
+                   END,
+                   aprovacao_nivel=CASE
+                       WHEN aprovada=1 THEN aprovacao_nivel ELSE ?
+                   END,
+                   status=CASE WHEN ? THEN 'concluida' ELSE status END,
+                   concluida_em=CASE
+                       WHEN ? THEN COALESCE(concluida_em, ?) ELSE concluida_em
+                   END,
+                   ultimo_lancamento_em=COALESCE(ultimo_lancamento_em, ?)
+               WHERE guild_id=? AND week_id=? AND user_id=?""",
+            (
+                actor_id,
+                agora,
+                1 if antecipada else 0,
+                ranking_level,
+                1 if concluida else 0,
+                1 if concluida else 0,
+                agora,
+                agora,
+                guild_id,
+                week_id,
+                user_id,
+            ),
+        )
+
+        for row in rows:
+            conn.execute(
+                """INSERT OR IGNORE INTO farm_ticket_finalization_logs
+                   (ticket_id, user_id, meta_id, item, quantidade_meta,
+                    quantidade_entregue, status_final, motivo, criado_em)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (
+                    row["ticket_id"],
+                    row["user_id"],
+                    row["meta_id"],
+                    row["item"],
+                    row["quantidade_meta"],
+                    row["quantidade_entregue"],
+                    row["status_final"],
+                    row["motivo"],
+                    row["criado_em"],
+                ),
+            )
+
+        approval_action_id = None
+        existing_approval = conn.execute(
+            """SELECT id FROM farm_ticket_actions
+               WHERE ticket_id=? AND action='aprovacao' LIMIT 1""",
+            (ticket_id,),
+        ).fetchone()
+        if existing_approval:
+            approval_action_id = int(existing_approval["id"])
+        else:
+            approval_action = conn.execute(
+                """INSERT INTO farm_ticket_actions
+                   (ticket_id, action, actor_id, payload_json, criado_em)
+                   VALUES (?,?,?,?,?)""",
+                (
+                    ticket_id,
+                    "aprovacao",
+                    actor_id,
+                    json.dumps(
+                        {
+                            "automatica": True,
+                            "motivo": auto_reason,
+                            "status_final": overall_status,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    agora,
+                ),
+            )
+            approval_action_id = int(approval_action.lastrowid)
+
+        final_action = conn.execute(
+            """INSERT INTO farm_ticket_actions
+               (ticket_id, action, actor_id, payload_json, criado_em)
+               VALUES (?,?,?,?,?)""",
+            (
+                ticket_id,
+                action,
+                actor_id,
+                json.dumps(
+                    {
+                        "motivo": motivo or auto_reason,
+                        "aprovacao_automatica": True,
+                        "status_final": overall_status,
+                    },
+                    ensure_ascii=False,
+                ),
+                agora,
+            ),
+        )
+        action_id = int(final_action.lastrowid)
+
+        cursor = conn.execute(
+            """UPDATE farm_tickets SET status='finalizado', finalizado_em=?,
+               finalizado_por=?, finalizacao_motivo=?, atualizado_em=?
+               WHERE id=? AND status IN ('aberto','revisao','criando')
+                 AND finalizado_em IS NULL""",
+            (agora, actor_id, motivo or auto_reason, agora, ticket_id),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("Ticket ja foi finalizado.")
+
+        conn.commit()
+        return {
+            "processed": True,
+            "ticket": db_ticket_get(ticket_id),
+            "logs": db_ticket_finalization_logs(ticket_id),
+            "action_id": action_id,
+            "approval_action_id": approval_action_id,
+            "status_final": overall_status,
+        }
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def db_ticket_finalize(ticket_id: int, admin_id: str, motivo: str | None) -> bool:

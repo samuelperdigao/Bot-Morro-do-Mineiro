@@ -513,6 +513,98 @@ class FarmTicketsConfigModal(discord.ui.Modal, title="Configurar Tickets de Farm
         )
 
 
+class AcaoConfigModal(discord.ui.Modal):
+    """Modal com canais específicos do sistema de ações."""
+
+    def __init__(self, current: dict):
+        super().__init__(title="Configurar Sistema de Ação")
+        self.canal_interacao = discord.ui.TextInput(
+            label="Canal de Marcação (ID)",
+            placeholder="Canal de marcação de ação",
+            required=False,
+            max_length=20,
+            default=current.get("interacao", ""),
+        )
+        self.canal_ganhas = discord.ui.TextInput(
+            label="Canal de Ações Ganhas (ID)",
+            placeholder="Canal para embeds de vitória",
+            required=False,
+            max_length=20,
+            default=current.get("ganhas", ""),
+        )
+        self.canal_perdidas = discord.ui.TextInput(
+            label="Canal de Ações Perdidas (ID)",
+            placeholder="Canal para embeds de derrota",
+            required=False,
+            max_length=20,
+            default=current.get("perdidas", ""),
+        )
+        self.canal_pagamento = discord.ui.TextInput(
+            label="Canal de Pagamento (ID)",
+            placeholder="Canal para resumo de pagamento",
+            required=False,
+            max_length=20,
+            default=current.get("pagamento", ""),
+        )
+        self.add_item(self.canal_interacao)
+        self.add_item(self.canal_ganhas)
+        self.add_item(self.canal_perdidas)
+        self.add_item(self.canal_pagamento)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild_id = str(interaction.guild_id)
+        values = {
+            "interacao": self.canal_interacao.value.strip() or None,
+            "ganhas": self.canal_ganhas.value.strip() or None,
+            "perdidas": self.canal_perdidas.value.strip() or None,
+            "pagamento": self.canal_pagamento.value.strip() or None,
+        }
+        labels = {
+            "interacao": "Canal de Marcação",
+            "ganhas": "Canal de Ações Ganhas",
+            "perdidas": "Canal de Ações Perdidas",
+            "pagamento": "Canal de Pagamento",
+        }
+        for key, val in values.items():
+            if val and not val.isdigit():
+                await interaction.response.send_message(
+                    f"❌ **{labels[key]}** deve conter apenas números.",
+                    ephemeral=True,
+                )
+                return
+            if val:
+                ch = interaction.guild.get_channel(int(val))
+                if ch is None:
+                    try:
+                        ch = await interaction.guild.fetch_channel(int(val))
+                    except Exception:
+                        await interaction.response.send_message(
+                            f"❌ Canal `{val}` (**{labels[key]}**) não encontrado neste servidor.",
+                            ephemeral=True,
+                        )
+                        return
+
+        db_set_system_config(guild_id, "acao", values["interacao"], None)
+        db_set_system_config(guild_id, "acao_ganhas", values["ganhas"], None)
+        db_set_system_config(guild_id, "acao_perdidas", values["perdidas"], None)
+        db_set_system_config(guild_id, "acao_pagamento", values["pagamento"], None)
+
+        linhas = ["✅ **Sistema de Ação** configurado com sucesso!\n"]
+        for key in ("interacao", "ganhas", "perdidas", "pagamento"):
+            canal = f"<#{values[key]}>" if values[key] else "_não definido_"
+            linhas.append(f"**{labels[key]}:** {canal}")
+        embed = discord.Embed(description="\n".join(linhas), color=0x2ECC71)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        log.info("Ação configurada por %s (guild %s)", interaction.user, guild_id)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        log.error("Erro no AcaoConfigModal: %s", error, exc_info=True)
+        try:
+            await interaction.response.send_message("❌ Erro ao salvar configuração.", ephemeral=True)
+        except discord.InteractionResponded:
+            pass
+
+
 class SystemConfigModal(discord.ui.Modal):
     """Modal genérico: canal_interacao + canal_log, com sync opcional para guild_config."""
 
@@ -635,6 +727,17 @@ async def _handle_config_button(interaction: discord.Interaction, sistema_key: s
 
     elif sistema_key == "farm_tickets":
         modal = FarmTicketsConfigModal(current=db_ticket_config_get(guild_id))
+
+    elif sistema_key == "acao":
+        ganhas = db_get_system_config(guild_id, "acao_ganhas")
+        perdidas = db_get_system_config(guild_id, "acao_perdidas")
+        pagamento = db_get_system_config(guild_id, "acao_pagamento")
+        modal = AcaoConfigModal(current={
+            "interacao": current_interacao,
+            "ganhas": (ganhas["canal_interacao_id"] or "") if ganhas else "",
+            "perdidas": (perdidas["canal_interacao_id"] or "") if perdidas else "",
+            "pagamento": (pagamento["canal_interacao_id"] or "") if pagamento else "",
+        })
 
     elif sistema_key == "anuncio":
         modal = AnuncioConfigModal(current={

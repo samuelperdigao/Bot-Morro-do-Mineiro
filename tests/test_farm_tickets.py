@@ -14,11 +14,87 @@ from cogs.farm_painel import (
     LegacyFarmLaunchView,
     lock_farm_panel_channel,
 )
-from cogs.farm_tickets import FarmTicketView, _progress
+from cogs.farm_tickets import (
+    FarmTicketView,
+    FarmTicketsCog,
+    _expanded_admin_role_ids,
+    _progress,
+)
 from cogs.recolhimento import (
     RecolhimentoCog,
     RecolhimentoMetaModal,
 )
+
+
+class FakeLogThread:
+    def __init__(self, id=200):
+        self.id = id
+        self.sent = []
+
+    async def send(self, **kwargs):
+        self.sent.append(kwargs)
+        attachments = []
+        for file in kwargs.get("files") or []:
+            attachments.append(
+                SimpleNamespace(
+                    url=f"https://cdn.example/thread/{getattr(file, 'filename', 'proof.png')}"
+                )
+            )
+        return SimpleNamespace(id=300 + len(self.sent), attachments=attachments)
+
+
+class FakeLogMessage:
+    def __init__(self, id=100):
+        self.id = id
+        self.thread = None
+        self.attachments = []
+        self.edit = AsyncMock()
+
+    async def create_thread(self, *, name):
+        self.thread = FakeLogThread()
+        self.thread.name = name
+        return self.thread
+
+
+class FakeLogChannel:
+    def __init__(self):
+        self.sent = []
+        self.messages = {}
+
+    async def send(self, **kwargs):
+        self.sent.append(kwargs)
+        message = FakeLogMessage(100 + len(self.sent))
+        self.messages[message.id] = message
+        return message
+
+    async def fetch_message(self, message_id):
+        return self.messages[int(message_id)]
+
+
+class FakeLogGuild:
+    id = 1
+
+    def __init__(self, channel):
+        self.channel = channel
+
+    def get_channel(self, channel_id):
+        return self.channel if int(channel_id) == 900 else None
+
+    async def fetch_channel(self, channel_id):
+        return self.get_channel(channel_id)
+
+    def get_thread(self, thread_id):
+        message = next(iter(self.channel.messages.values()), None)
+        if message and message.thread and message.thread.id == int(thread_id):
+            return message.thread
+        return None
+
+
+class FakeAttachment:
+    url = "https://cdn.example/original.png"
+
+    async def to_file(self, use_cached=True):
+        return SimpleNamespace(filename="proof.png")
 
 
 class FarmPanelPermissionsTests(unittest.IsolatedAsyncioTestCase):
@@ -77,6 +153,14 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         self.assertTrue(created)
         db.db_ticket_activate(int(ticket["id"]), "100", "200")
         return db.db_ticket_get(int(ticket["id"]))
+
+    def _create_log_cog(self):
+        db.db_set_system_config("1", "farm", None, "900")
+        channel = FakeLogChannel()
+        guild = FakeLogGuild(channel)
+        cog = FarmTicketsCog.__new__(FarmTicketsCog)
+        cog.bot = SimpleNamespace(get_guild=lambda guild_id: guild if guild_id == 1 else None)
+        return cog, channel
 
     def test_ticket_is_unique_per_member_and_week(self):
         first, created = db.db_ticket_reserve("1", "2026-06-15", "10", "Membro")
@@ -186,12 +270,85 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         db.db_ticket_set_log_result(action_id, message_id="500")
         self.assertFalse(db.db_ticket_has_pending_logs(int(ticket["id"])))
 
+    def test_ticket_action_log_creates_summary_and_thread(self):
+        ticket = self._create_ticket()
+        action_id = db.db_ticket_add_action(int(ticket["id"]), "abertura", "10")
+        cog, channel = self._create_log_cog()
+        actor = SimpleNamespace(id=10, mention="<@10>")
+
+        logged = asyncio.run(
+            cog.send_action_log(ticket, action_id, "Ticket aberto", actor, "Semana 15/06/2026")
+        )
+
+        self.assertTrue(logged)
+        self.assertEqual(len(channel.sent), 1)
+        summary = next(iter(channel.messages.values()))
+        self.assertIsNotNone(summary.thread)
+        self.assertEqual(len(summary.thread.sent), 1)
+        updated = db.db_ticket_get(int(ticket["id"]))
+        self.assertEqual(updated["log_message_id"], str(summary.id))
+        self.assertEqual(updated["log_thread_id"], str(summary.thread.id))
+        self.assertFalse(db.db_ticket_has_pending_logs(int(ticket["id"])))
+
+    def test_ticket_log_member_uses_nickname_when_user_id_is_invalid(self):
+        ticket = dict(self._create_ticket())
+        ticket["user_id"] = "%5020808747556874"
+        ticket["folder_nickname"] = "Caxias Bondi | 32929"
+        ticket["member_name"] = "5020808747556874"
+        cog = FarmTicketsCog.__new__(FarmTicketsCog)
+
+        embed = cog.build_ticket_action_embed(
+            ticket,
+            "Canal de ticket excluido",
+            SimpleNamespace(id=1, mention="@Admin"),
+            "Retencao encerrada",
+        )
+
+        self.assertEqual(embed.fields[0].name, "Membro")
+        self.assertEqual(embed.fields[0].value, "Caxias Bondi | 32929")
+
+    def test_ticket_launch_log_copies_proof_to_thread(self):
+        ticket = self._create_ticket()
+        event_id, action_id = db.db_ticket_launch(
+            int(ticket["id"]), "10", {"Borracha": 50},
+            "100", "300", "https://cdn.example/original.png", "parcial",
+        )
+        cog, channel = self._create_log_cog()
+        actor = SimpleNamespace(id=10, mention="<@10>")
+        proof_message = SimpleNamespace(content="parcial")
+
+        asyncio.run(
+            cog.log_launch(
+                ticket,
+                actor,
+                event_id,
+                action_id,
+                {"Borracha": 50},
+                proof_message,
+                FakeAttachment(),
+            )
+        )
+
+        summary = next(iter(channel.messages.values()))
+        self.assertEqual(len(channel.sent), 1)
+        self.assertEqual(len(summary.thread.sent), 1)
+        launch = db.db_ticket_launches(int(ticket["id"]))[0]
+        self.assertEqual(launch["log_proof_url"], "https://cdn.example/thread/proof.png")
+        self.assertFalse(db.db_ticket_has_pending_logs(int(ticket["id"])))
+
     def test_config_is_separate_from_existing_farm_configuration(self):
         db.db_ticket_config_set("1", [11, 12], [21, 22])
         config = db.db_ticket_config_get("1")
         self.assertEqual(config["category_ids"], ["11", "12"])
         self.assertEqual(config["admin_role_ids"], ["21", "22"])
         self.assertIsNone(db.db_get_guild_config("1"))
+
+    def test_gerente_produtos_inherits_ticket_admin_from_gerente_producao(self):
+        producao = SimpleNamespace(id=21, name="| Gerente de Produção")
+        produtos = SimpleNamespace(id=22, name="| Gerente de Produtos")
+        guild = SimpleNamespace(roles=[producao, produtos])
+
+        self.assertEqual(_expanded_admin_role_ids(guild, ["21"]), [21, 22])
 
     def test_completed_ticket_can_be_approved_without_listing_other_members(self):
         db.db_set_meta("1", "2026-06-15", {"Borracha": 50}, "99")
@@ -208,6 +365,71 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         progress = db.db_get_progresso("1", "2026-06-15", "10")
         self.assertEqual(progress["aprovada"], 1)
         self.assertEqual(progress["aprovada_por"], "20")
+
+    def test_finalizing_ticket_auto_approves_partial_delivery_once(self):
+        db.db_set_meta("1", "2026-06-15", {"Borracha": 100}, "99")
+        ticket = self._create_ticket()
+        db.db_ticket_launch(
+            int(ticket["id"]), "10", {"Borracha": 40},
+            "100", "300", "https://cdn.example/proof.png", None,
+        )
+
+        result = db.db_ticket_finalize_with_auto_approval(
+            int(ticket["id"]),
+            "99",
+            "Ticket expirado - aprovação automática",
+            action="prazo_encerrado",
+        )
+
+        self.assertTrue(result["processed"])
+        finalized = db.db_ticket_get(int(ticket["id"]))
+        self.assertEqual(finalized["status"], "finalizado")
+        progress = db.db_get_progresso("1", "2026-06-15", "10")
+        self.assertEqual(progress["aprovada"], 1)
+        self.assertEqual(progress["aprovacao_antecipada"], 1)
+        self.assertEqual(progress["aprovacao_nivel"], "parcial")
+        logs = db.db_ticket_finalization_logs(int(ticket["id"]))
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0]["item"], "Borracha")
+        self.assertEqual(logs[0]["quantidade_meta"], 100)
+        self.assertEqual(logs[0]["quantidade_entregue"], 40)
+        self.assertEqual(logs[0]["status_final"], "APROVADA_PARCIAL")
+        self.assertIsNotNone(db.db_ticket_latest_action(int(ticket["id"]), "aprovacao"))
+
+        second = db.db_ticket_finalize_with_auto_approval(
+            int(ticket["id"]),
+            "99",
+            "Ticket expirado - aprovação automática",
+            action="prazo_encerrado",
+        )
+
+        self.assertFalse(second["processed"])
+        self.assertEqual(len(db.db_ticket_finalization_logs(int(ticket["id"]))), 1)
+        actions = db.get_conn().execute(
+            "SELECT COUNT(*) AS total FROM farm_ticket_actions WHERE ticket_id=? AND action='aprovacao'",
+            (int(ticket["id"]),),
+        ).fetchone()
+        self.assertEqual(actions["total"], 1)
+
+    def test_finalizing_ticket_with_no_delivery_logs_sem_entrega(self):
+        db.db_set_meta("1", "2026-06-15", {"Borracha": 100}, "99")
+        ticket = self._create_ticket()
+
+        result = db.db_ticket_finalize_with_auto_approval(
+            int(ticket["id"]),
+            "99",
+            "Ticket expirado - aprovação automática",
+            action="prazo_encerrado",
+        )
+
+        self.assertTrue(result["processed"])
+        progress = db.db_get_progresso("1", "2026-06-15", "10")
+        self.assertEqual(progress["aprovada"], 1)
+        self.assertEqual(progress["aprovacao_nivel"], "zero")
+        logs = db.db_ticket_finalization_logs(int(ticket["id"]))
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0]["quantidade_entregue"], 0)
+        self.assertEqual(logs[0]["status_final"], "SEM_ENTREGA")
 
     def test_operations_panel_no_longer_contains_general_approval(self):
         custom_ids = {button["custom_id"] for button in BOTOES_LIDERANCA}

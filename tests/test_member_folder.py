@@ -1,11 +1,15 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+import discord
 
 from services.set_service import (
     MemberFolderError,
+    member_folder_access_roles,
     parse_member_folder,
     resolve_member_folder,
+    sync_member_folder_manager_overwrites,
 )
 
 
@@ -21,6 +25,46 @@ class FakeTextChannel:
 class FakeCategory:
     def __init__(self, channels):
         self.text_channels = channels
+
+
+class FakeRole:
+    def __init__(self, role_id, name):
+        self.id = role_id
+        self.name = name
+
+    def __hash__(self):
+        return hash(self.id)
+
+    def __eq__(self, other):
+        return getattr(other, "id", None) == self.id
+
+
+class FakeGuild:
+    def __init__(self, roles, category):
+        self.roles = roles
+        self.category = category
+
+    def get_role(self, role_id):
+        return next((role for role in self.roles if role.id == role_id), None)
+
+    def get_channel(self, channel_id):
+        return self.category if channel_id == 40 else None
+
+
+class FakePermissionChannel:
+    def __init__(self, name, overwrites):
+        self.name = name
+        self.overwrites = dict(overwrites)
+        self.set_permissions = AsyncMock(side_effect=self._set_permissions)
+
+    async def _set_permissions(self, target, *, overwrite=None, reason=None):
+        if overwrite is None:
+            self.overwrites.pop(target, None)
+            return
+        self.overwrites[target] = overwrite
+
+    def overwrites_for(self, role):
+        return self.overwrites.get(role, discord.PermissionOverwrite())
 
 
 class MemberFolderParsingTests(unittest.TestCase):
@@ -43,6 +87,62 @@ class MemberFolderParsingTests(unittest.TestCase):
             parse_member_folder("┃📁-22-livre", 99)
         with self.assertRaises(MemberFolderError):
             parse_member_folder("┃📁-0-mineiro", 99)
+
+
+class MemberFolderPermissionTests(unittest.IsolatedAsyncioTestCase):
+    def test_filtra_apenas_gerentes_nao_permitidos(self):
+        geral = FakeRole(1, "| Gerente Geral")
+        farm = FakeRole(2, "| Gerente de Farm")
+        producao = FakeRole(3, "| Gerente de Producao")
+        acao = FakeRole(4, "| Gerente de Acao")
+        lider = FakeRole(5, "| Lider")
+        guild = FakeGuild([geral, farm, producao, acao, lider], None)
+
+        roles = member_folder_access_roles(guild, [1, 2, 3, 4, 5])
+
+        self.assertEqual([role.id for role in roles], [1, 2, 5])
+
+    async def test_sincroniza_pastas_mantendo_so_gerentes_permitidos(self):
+        geral = FakeRole(1, "| Gerente Geral")
+        farm = FakeRole(2, "| Gerente de Farm")
+        producao = FakeRole(3, "| Gerente de Producao")
+        acao = FakeRole(4, "| Gerente de Acao")
+        lider = FakeRole(5, "| Lider")
+        member = FakeRole(99, "Membro")
+        channel = FakePermissionChannel(
+            "pasta",
+            {
+                farm: discord.PermissionOverwrite(view_channel=True),
+                producao: discord.PermissionOverwrite(view_channel=True),
+                acao: discord.PermissionOverwrite(view_channel=True),
+                lider: discord.PermissionOverwrite(view_channel=True),
+                member: discord.PermissionOverwrite(view_channel=True),
+            },
+        )
+        guild = FakeGuild(
+            [geral, farm, producao, acao, lider],
+            FakeCategory([channel]),
+        )
+
+        result = await sync_member_folder_manager_overwrites(
+            guild,
+            40,
+            [1, 2, 3, 4, 5],
+        )
+
+        self.assertIn(geral, channel.overwrites)
+        self.assertIn(farm, channel.overwrites)
+        self.assertIn(lider, channel.overwrites)
+        self.assertIn(member, channel.overwrites)
+        self.assertNotIn(producao, channel.overwrites)
+        self.assertNotIn(acao, channel.overwrites)
+        self.assertTrue(channel.overwrites[geral].view_channel)
+        self.assertTrue(channel.overwrites[geral].send_messages)
+        self.assertTrue(channel.overwrites[geral].read_message_history)
+        self.assertEqual(result.checked_channels, 1)
+        self.assertEqual(result.updated_channels, 1)
+        self.assertEqual(result.removed_overwrites, 2)
+        self.assertEqual(result.ensured_overwrites, 2)
 
 
 class MemberFolderResolutionTests(unittest.IsolatedAsyncioTestCase):
