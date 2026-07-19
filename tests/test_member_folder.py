@@ -3,11 +3,15 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import discord
+import services.set_service as set_service
 
 from services.set_service import (
     MemberFolderError,
+    liberar_pasta,
     member_folder_access_roles,
+    organizar_ordem_pastas,
     parse_member_folder,
+    proximo_numero_pasta,
     resolve_member_folder,
     sync_member_folder_manager_overwrites,
 )
@@ -183,6 +187,144 @@ class MemberFolderResolutionTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaises(MemberFolderError):
                 await resolve_member_folder(guild, "1", member, 40)
+
+
+class MemberFolderOrderingTests(unittest.IsolatedAsyncioTestCase):
+    def test_next_number_fills_first_gap(self):
+        category = SimpleNamespace(
+            channels=[
+                SimpleNamespace(name="┃📁-1-joao-10"),
+                SimpleNamespace(name="┃📁-3-maria-20"),
+            ]
+        )
+        guild = SimpleNamespace(get_channel=lambda channel_id: category)
+
+        with patch.dict(set_service._ultimo_numero, {}, clear=True):
+            self.assertEqual(proximo_numero_pasta(guild, 40), 2)
+            self.assertEqual(proximo_numero_pasta(guild, 40), 4)
+
+    async def test_reorders_folders_by_numeric_slot(self):
+        channels = [
+            SimpleNamespace(id=10, name="┃📁-10-dez-10", position=1),
+            SimpleNamespace(id=2, name="┃📁-2-dois-2", position=2),
+            SimpleNamespace(id=99, name="avisos", position=3),
+            SimpleNamespace(id=1, name="┃📁-1-um-1", position=4),
+        ]
+        category = SimpleNamespace(text_channels=channels)
+        http = SimpleNamespace(bulk_channel_update=AsyncMock())
+        guild = SimpleNamespace(
+            id=123,
+            _state=SimpleNamespace(http=http),
+            get_channel=lambda channel_id: category,
+        )
+
+        changed = await organizar_ordem_pastas(guild, 40)
+
+        self.assertEqual(changed, 2)
+        http.bulk_channel_update.assert_awaited_once()
+        payload = http.bulk_channel_update.await_args.args[1]
+        self.assertEqual(
+            payload,
+            [
+                {"id": 1, "position": 1},
+                {"id": 2, "position": 2},
+                {"id": 10, "position": 4},
+            ],
+        )
+
+
+class MemberFolderReleaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_member_exit_cleans_messages_removes_access_and_marks_free(self):
+        events = []
+        member_target = FakeRole(10, "Member")
+        manager_target = FakeRole(20, "Manager")
+        channel = SimpleNamespace(
+            id=50,
+            name="┃📁-7-mineiro-6627",
+            category_id=40,
+            overwrites={member_target: "member", manager_target: "manager"},
+        )
+
+        async def purge(**kwargs):
+            events.append("purge")
+            return [1, 2]
+
+        async def edit(**kwargs):
+            events.append("edit")
+            return None
+
+        channel.purge = AsyncMock(side_effect=purge)
+        channel.edit = AsyncMock(side_effect=edit)
+        guild = SimpleNamespace(get_channel=lambda channel_id: channel if channel_id == 50 else None)
+        member = SimpleNamespace(id=10)
+
+        with (
+            patch("services.set_service.db_channel_map_get", return_value=50),
+            patch("services.set_service.db_channel_map_delete") as delete_map,
+            patch("services.set_service.organizar_ordem_pastas", new=AsyncMock()) as organize,
+        ):
+            released = await liberar_pasta(guild, member, "1")
+
+        self.assertTrue(released)
+        self.assertEqual(events, ["purge", "edit"])
+        edit_kwargs = channel.edit.await_args.kwargs
+        self.assertEqual(edit_kwargs["name"], "┃📁-7-livre")
+        self.assertNotIn(member_target, edit_kwargs["overwrites"])
+        self.assertIn(manager_target, edit_kwargs["overwrites"])
+        delete_map.assert_called_once_with("1", "10")
+        organize.assert_awaited_once()
+
+    async def test_folder_is_not_marked_free_when_cleanup_fails(self):
+        channel = SimpleNamespace(
+            id=50,
+            name="┃📁-7-mineiro-6627",
+            category_id=40,
+            overwrites={},
+            edit=AsyncMock(),
+        )
+        guild = SimpleNamespace(get_channel=lambda channel_id: channel)
+
+        with (
+            patch("services.set_service.db_channel_map_get", return_value=50),
+            patch("services.set_service.db_channel_map_delete") as delete_map,
+            patch("services.set_service.limpar_mensagens_pasta", new=AsyncMock(return_value=None)),
+        ):
+            released = await liberar_pasta(guild, SimpleNamespace(id=10), "1")
+
+        self.assertFalse(released)
+        channel.edit.assert_not_awaited()
+        delete_map.assert_not_called()
+
+    async def test_finds_folder_by_member_overwrite_when_map_is_missing(self):
+        member_target = FakeRole(10, "Member")
+        channel = SimpleNamespace(
+            id=50,
+            name="┃📁-7-mineiro-6627",
+            category_id=40,
+            overwrites={member_target: "member"},
+            purge=AsyncMock(return_value=[]),
+            edit=AsyncMock(return_value=None),
+        )
+        category = SimpleNamespace(text_channels=[channel])
+        guild = SimpleNamespace(
+            get_channel=lambda channel_id: category if channel_id == 40 else None,
+        )
+
+        with (
+            patch("services.set_service.db_channel_map_get", return_value=None),
+            patch(
+                "services.set_service.db_get_guild_config",
+                return_value={"private_category_id": "40"},
+            ),
+            patch("services.set_service.db_channel_map_delete") as delete_map,
+            patch("services.set_service.organizar_ordem_pastas", new=AsyncMock()),
+        ):
+            released = await liberar_pasta(guild, SimpleNamespace(id=10), "1")
+
+        self.assertTrue(released)
+        channel.purge.assert_awaited_once()
+        channel.edit.assert_awaited_once()
+        delete_map.assert_called_once_with("1", "10")
 
     async def test_admin_uses_unique_slot_zero_folder_without_explicit_overwrite(self):
         member = SimpleNamespace(

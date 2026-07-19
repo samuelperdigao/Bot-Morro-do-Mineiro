@@ -10,7 +10,7 @@ from core.date_utils import format_datetime_br
 from core.discord_helpers import fetch_channel_safe
 from core.logger import get_logger
 from services.db_service import db_channel_map_all, db_get_guild_config
-from services.set_service import liberar_pasta
+from services.set_service import liberar_pasta, organizar_ordem_pastas
 
 log = get_logger("bot", "bot.log")
 
@@ -52,13 +52,24 @@ class MembrosCog(commands.Cog):
                     liberado = await liberar_pasta(guild, None, guild_id, user_id=user_id_str)
                     if liberado:
                         total += 1
+            cfg = db_get_guild_config(guild_id)
+            private_cat_id = cfg["private_category_id"] if cfg else None
+            if private_cat_id:
+                await organizar_ordem_pastas(guild, int(private_cat_id))
         if total:
             log.info("Reconciliacao: %s pasta(s) liberada(s) de membros ausentes.", total)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         guild_id = str(member.guild.id)
-        await liberar_pasta(member.guild, member, guild_id)
+        liberado = await liberar_pasta(member.guild, member, guild_id)
+        if not liberado:
+            log.warning(
+                "Nao foi possivel liberar a pasta do membro ausente %s (%s). "
+                "Ela permanecera ocupada para evitar reutilizacao com mensagens antigas.",
+                member,
+                member.id,
+            )
 
         motivo = "Saiu voluntariamente"
         responsavel = None

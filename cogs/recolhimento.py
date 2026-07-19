@@ -979,6 +979,7 @@ class RecolhimentoCog(commands.Cog):
 
     async def _iniciar_ciclo(self, interaction: discord.Interaction, tipo: str):
         """Cria e posta um novo ciclo no canal."""
+        await interaction.response.defer(ephemeral=True)
         guild_id    = str(interaction.guild_id)
         channel_id  = str(interaction.channel_id)
         week_inicio = current_week_id()
@@ -1011,7 +1012,7 @@ class RecolhimentoCog(commands.Cog):
         db_recolhimento_salvar_message_id(ciclo_id, str(msg.id))
 
         tipo_label = "Dinheiro Sujo" if tipo == "dinheiro" else "Farm"
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ Ciclo de **{tipo_label}** criado!\n"
             f"Semana: `{format_date_br(week_inicio)}` → `{format_date_br(week_fim)}`",
             ephemeral=True,

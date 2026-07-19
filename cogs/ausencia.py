@@ -172,6 +172,7 @@ class Ausencia(commands.Cog):
                 ephemeral=True,
             )
             return
+        await interaction.response.defer(ephemeral=True)
         embed = discord.Embed(
             title="🏖️ Sistema de Ausência",
             description=(
@@ -187,12 +188,18 @@ class Ausencia(commands.Cog):
         )
         embed.set_footer(text="Sistema de Ausências • Cidade")
         await interaction.channel.send(embed=embed, view=AusenciaPanelView())
-        await interaction.response.send_message("✅ Painel de ausências postado!", ephemeral=True)
+        await interaction.followup.send("✅ Painel de ausências postado!", ephemeral=True)
 
     @setup_ausencia_painel.error
     async def setup_ausencia_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
             await interaction.response.send_message("❌ Sem permissão para usar este comando.", ephemeral=True)
+            return
+        log.error("Erro em /painel_ausencia: %s", error, exc_info=True)
+        if interaction.response.is_done():
+            await interaction.followup.send("❌ Erro inesperado.", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Erro inesperado.", ephemeral=True)
 
     @app_commands.command(name="ausencias", description="Lista todos os jogadores atualmente ausentes.")
     async def listar_ausencias(self, interaction: discord.Interaction):

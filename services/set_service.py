@@ -15,6 +15,7 @@ import discord
 from services.db_service import (
     db_channel_map_get,
     db_channel_map_delete,
+    db_get_guild_config,
 )
 
 # Lock global para evitar race condition na numeração de pastas
@@ -288,7 +289,7 @@ async def safe_fetch_channel(guild: discord.Guild, channel_id: int):
 
 # ── Numeração de pastas ───────────────────────────────────────────────────────
 
-async def limpar_mensagens_pasta(canal: discord.TextChannel, motivo: str) -> int:
+async def limpar_mensagens_pasta(canal: discord.TextChannel, motivo: str) -> int | None:
     """Remove todo o historico visivel de uma pasta privada."""
     total = 0
     try:
@@ -297,22 +298,90 @@ async def limpar_mensagens_pasta(canal: discord.TextChannel, motivo: str) -> int
         log.info("Pasta limpa: %s mensagem(ns) removida(s) em %s (%s)", total, canal.name, canal.id)
     except discord.Forbidden:
         log.warning("Sem permissao para limpar mensagens da pasta %s (%s)", canal.name, canal.id)
+        return None
     except Exception as e:
         log.error("Erro ao limpar mensagens da pasta %s (%s): %s", canal.name, canal.id, e)
+        return None
     return total
 
 
 def proximo_numero_pasta(guild: discord.Guild, private_cat_id: int) -> int:
     category = guild.get_channel(private_cat_id)
-    maior = _ultimo_numero.get(private_cat_id, 0)
+    usados: set[int] = set()
     if category and hasattr(category, "channels"):
         for ch in category.channels:
             numero = numero_da_pasta(ch.name)
-            if numero is not None and numero > maior:
-                maior = numero
-    proximo = maior + 1
+            if numero is not None and numero > 0:
+                usados.add(numero)
+
+    reservado = _ultimo_numero.get(private_cat_id)
+    if reservado:
+        usados.add(reservado)
+
+    proximo = 1
+    while proximo in usados:
+        proximo += 1
     _ultimo_numero[private_cat_id] = proximo
     return proximo
+
+
+async def organizar_ordem_pastas(
+    guild: discord.Guild,
+    private_cat_id: int,
+    extra_channels: tuple[discord.TextChannel, ...] = (),
+) -> int:
+    """Reposiciona as pastas numeradas pela ordem do slot, sem renumera-las."""
+    category = guild.get_channel(private_cat_id)
+    if category is None:
+        category = await safe_fetch_channel(guild, private_cat_id)
+    if category is None or not hasattr(category, "text_channels"):
+        return 0
+
+    channels = list(category.text_channels)
+    known_ids = {channel.id for channel in channels}
+    channels.extend(channel for channel in extra_channels if channel.id not in known_ids)
+
+    numeradas = []
+    for channel in channels:
+        numero = numero_da_pasta(channel.name)
+        if numero is not None:
+            numeradas.append((numero, channel))
+    if len(numeradas) < 2:
+        return 0
+
+    atuais = sorted(
+        numeradas,
+        key=lambda item: (getattr(item[1], "position", 0), item[1].id),
+    )
+    desejadas = sorted(
+        numeradas,
+        key=lambda item: (item[0], item[1].id),
+    )
+    posicoes = sorted(getattr(channel, "position", index) for index, (_, channel) in enumerate(atuais))
+    alteradas = sum(
+        atual[1].id != desejada[1].id
+        for atual, desejada in zip(atuais, desejadas)
+    )
+    if not alteradas:
+        return 0
+
+    payload = [
+        {"id": channel.id, "position": position}
+        for position, (_, channel) in zip(posicoes, desejadas)
+    ]
+    try:
+        await guild._state.http.bulk_channel_update(
+            guild.id,
+            payload,
+            reason="Organizacao numerica das pastas de membros",
+        )
+        log.info("Pastas reorganizadas na guild %s: %s canal(is) reposicionados", guild.id, alteradas)
+        return alteradas
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        log.warning("Nao foi possivel organizar as pastas da guild %s: %s", guild.id, exc)
+    except Exception as exc:
+        log.error("Erro ao organizar pastas da guild %s: %s", guild.id, exc)
+    return 0
 
 
 def encontrar_pasta_livre(guild: discord.Guild, private_cat_id: int) -> discord.TextChannel | None:
@@ -376,13 +445,19 @@ async def criar_pasta(
             numero    = numero_da_pasta(pasta_livre.name)
             novo_nome = montar_nome_pasta(numero, f"{safe_name}{sufixo}")
             try:
-                await pasta_livre.edit(
+                pasta_atualizada = await pasta_livre.edit(
                     name=novo_nome,
                     overwrites=overwrites,
                     reason=f"Pasta reutilizada — Set aprovado por {approver}",
                 )
                 log.info(f"Pasta reutilizada: {pasta_livre.name} → {novo_nome} ({pasta_livre.id})")
-                return pasta_livre
+                pasta_resultado = pasta_atualizada or pasta_livre
+                await organizar_ordem_pastas(
+                    guild,
+                    private_cat_id,
+                    extra_channels=(pasta_resultado,),
+                )
+                return pasta_resultado
             except Exception as e:
                 log.error(f"Erro ao reutilizar pasta livre: {e}")
 
@@ -396,13 +471,55 @@ async def criar_pasta(
                 reason=f"Set aprovado por {approver}",
             )
             log.info(f"Canal privado criado: {channel.name} ({channel.id})")
+            await organizar_ordem_pastas(
+                guild,
+                private_cat_id,
+                extra_channels=(channel,),
+            )
             return channel
         except Exception as e:
             log.error(f"Erro ao criar canal privado: {e}")
+            if _ultimo_numero.get(private_cat_id) == numero:
+                _ultimo_numero.pop(private_cat_id, None)
             return None
 
 
 # ── Liberação de pasta ao membro sair ─────────────────────────────────────────
+
+async def encontrar_pasta_por_usuario(
+    guild: discord.Guild,
+    guild_id: str,
+    user_id: str,
+) -> discord.TextChannel | None:
+    """Localiza a pasta pelo overwrite individual quando o mapa esta ausente."""
+    cfg = db_get_guild_config(guild_id)
+    private_cat_id = cfg["private_category_id"] if cfg else None
+    if not private_cat_id:
+        return None
+
+    category = guild.get_channel(int(private_cat_id)) or await safe_fetch_channel(
+        guild,
+        int(private_cat_id),
+    )
+    if category is None or not hasattr(category, "text_channels"):
+        return None
+
+    uid = int(user_id)
+    candidates = [
+        channel
+        for channel in category.text_channels
+        if "livre" not in channel.name.casefold()
+        and any(getattr(target, "id", None) == uid for target in channel.overwrites)
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        log.warning(
+            "Mais de uma pasta encontrada para o usuario %s na guild %s",
+            user_id,
+            guild_id,
+        )
+    return None
 
 async def liberar_pasta(
     guild: discord.Guild,
@@ -419,15 +536,29 @@ async def liberar_pasta(
     """
     uid = user_id if user_id else str(member.id)
     ch_id = db_channel_map_get(guild_id, uid)
-    if not ch_id:
-        return False
-
-    canal = guild.get_channel(ch_id) or await safe_fetch_channel(guild, ch_id)
+    canal = None
+    if ch_id:
+        canal = guild.get_channel(ch_id) or await safe_fetch_channel(guild, ch_id)
+    if canal is None:
+        canal = await encontrar_pasta_por_usuario(guild, guild_id, uid)
     if not canal:
-        db_channel_map_delete(guild_id, uid)
+        if ch_id:
+            db_channel_map_delete(guild_id, uid)
         return False
 
     async with _pasta_lock:
+        if limpar_mensagens:
+            removidas = await limpar_mensagens_pasta(
+                canal,
+                f"Limpeza automatica apos saida do membro {member or uid}",
+            )
+            if removidas is None:
+                log.error(
+                    "Pasta %s nao foi liberada porque a limpeza das mensagens falhou",
+                    canal.id,
+                )
+                return False
+
         numero = numero_da_pasta(canal.name)
         if numero is not None:
             novo_nome = montar_nome_pasta(numero, "livre")
@@ -435,20 +566,29 @@ async def liberar_pasta(
             novo_nome = f"{SEPARADOR_PASTA}{nome_sem_separador(canal.name)}-livre"[:MAX_CHANNEL_NAME_LENGTH]
 
         try:
-            overwrites = dict(canal.overwrites)
-            overwrites.pop(discord.Object(id=int(uid)), None)
-            if member:
-                overwrites.pop(member, None)
+            overwrites = {
+                target: overwrite
+                for target, overwrite in canal.overwrites.items()
+                if getattr(target, "id", None) != int(uid)
+            }
             razao = f"Membro {member or uid} saiu do servidor"
             nome_antigo = canal.name
-            await canal.edit(name=novo_nome, overwrites=overwrites, reason=razao)
+            canal_atualizado = await canal.edit(
+                name=novo_nome,
+                overwrites=overwrites,
+                reason=razao,
+            )
             log.info("Pasta liberada: %s -> %s (%s)", nome_antigo, novo_nome, canal.id)
         except Exception as e:
             log.error("Erro ao liberar pasta de %s: %s", uid, e)
             return False
 
-        if limpar_mensagens:
-            await limpar_mensagens_pasta(canal, f"Limpeza automatica apos saida do membro {member or uid}")
-
     db_channel_map_delete(guild_id, uid)
+    private_cat_id = getattr(canal, "category_id", None)
+    if private_cat_id:
+        await organizar_ordem_pastas(
+            guild,
+            int(private_cat_id),
+            extra_channels=((canal_atualizado or canal),),
+        )
     return True

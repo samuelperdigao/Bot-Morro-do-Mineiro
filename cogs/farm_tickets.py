@@ -570,14 +570,15 @@ class FarmTicketView(discord.ui.View):
         if not ticket or not cog.is_admin(interaction.user, ticket["guild_id"]):
             await interaction.response.send_message("Sem permissão administrativa.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
         if not db_ticket_claim(int(ticket["id"]), str(interaction.user.id)):
             current = db_ticket_get(int(ticket["id"]))
-            await interaction.response.send_message(f"Ticket já assumido por <@{current['assigned_to']}>.", ephemeral=True)
+            await interaction.followup.send(f"Ticket já assumido por <@{current['assigned_to']}>.", ephemeral=True)
             return
         action_id = db_ticket_add_action(int(ticket["id"]), "assuncao", str(interaction.user.id))
         await cog.send_action_log(db_ticket_get(int(ticket["id"])), action_id, "Ticket assumido", interaction.user, "Atendimento iniciado")
         await cog.refresh_ticket(int(ticket["id"]))
-        await interaction.response.send_message("Ticket assumido.", ephemeral=True)
+        await interaction.followup.send("Ticket assumido.", ephemeral=True)
 
     @discord.ui.button(label="Revisar", emoji="🔎", style=discord.ButtonStyle.secondary, custom_id="farm_ticket:review", row=1)
     async def review(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -608,6 +609,7 @@ class FarmTicketView(discord.ui.View):
         if progress and progress["aprovada"]:
             await interaction.response.send_message("Esta meta já foi aprovada.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
         db_aprovar(ticket["guild_id"], ticket["week_id"], ticket["user_id"], str(interaction.user.id))
         action_id = db_ticket_add_action(
             int(ticket["id"]), "aprovacao", str(interaction.user.id),
@@ -624,7 +626,7 @@ class FarmTicketView(discord.ui.View):
             )
             await farm_cog._atualizar_ranking_fixo(ticket["guild_id"])
         await cog.refresh_ticket(int(ticket["id"]))
-        await interaction.response.send_message("✅ Meta do membro aprovada pelo ticket.", ephemeral=True)
+        await interaction.followup.send("✅ Meta do membro aprovada pelo ticket.", ephemeral=True)
 
     @discord.ui.button(label="Finalizar Ticket", emoji="🔒", style=discord.ButtonStyle.danger, custom_id="farm_ticket:finish", row=1)
     async def finish(self, interaction: discord.Interaction, button: discord.ui.Button):

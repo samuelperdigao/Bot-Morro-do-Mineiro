@@ -201,12 +201,14 @@ class EncomendaCog(commands.Cog):
             )
             return
 
+        await interaction.response.defer(ephemeral=True)
+
         canal = interaction.guild.get_channel(int(row["canal_interacao_id"]))
         if canal is None:
             try:
                 canal = await interaction.guild.fetch_channel(int(row["canal_interacao_id"]))
             except Exception:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "❌ Canal configurado não encontrado. Reconfigure pelo dashboard.", ephemeral=True
                 )
                 return
@@ -222,7 +224,7 @@ class EncomendaCog(commands.Cog):
         )
         embed.set_footer(text="Morro do Mineiro — Sistema de Encomendas")
         await canal.send(embed=embed, view=EncomendaPainelView())
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ Painel de encomendas postado em {canal.mention}!", ephemeral=True
         )
         log.info("Painel de encomendas postado em #%s (guild %s) por %s", canal.name, guild_id, interaction.user)
@@ -233,7 +235,9 @@ class EncomendaCog(commands.Cog):
             await interaction.response.send_message("❌ Sem permissão para usar este comando.", ephemeral=True)
         else:
             log.error("Erro no /setup_encomenda_painel: %s", error, exc_info=True)
-            if not interaction.response.is_done():
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Ocorreu um erro.", ephemeral=True)
+            else:
                 await interaction.response.send_message("❌ Ocorreu um erro.", ephemeral=True)
 
     @app_commands.command(

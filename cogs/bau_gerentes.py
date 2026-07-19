@@ -25,6 +25,23 @@ CANAL_GERENTES_ID = 1502107652027715705
 SLOTS_INICIAIS    = 10
 
 
+def can_manage_bau_gerentes(member: discord.Member) -> bool:
+    """Restrict slot changes to members who can manage the guild."""
+    permissions = getattr(member, "guild_permissions", None)
+    return bool(permissions and permissions.manage_guild)
+
+
+class BauGerentesAuthorizedView(discord.ui.View):
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if can_manage_bau_gerentes(interaction.user):
+            return True
+        await interaction.response.send_message(
+            "Voce precisa da permissao Gerenciar Servidor para alterar os slots.",
+            ephemeral=True,
+        )
+        return False
+
+
 # ── Banco de Dados ─────────────────────────────────────────────────────────────
 
 def _get_conn() -> sqlite3.Connection:
@@ -188,6 +205,7 @@ class SlotSelect(discord.ui.Select):
         super().__init__(placeholder=placeholder, options=options[:25])
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         slot_num = int(self.values[0])
         cog      = interaction.client.get_cog("BauGerentesCog")
 
@@ -195,7 +213,7 @@ class SlotSelect(discord.ui.Select):
             _remove_slot(slot_num)
             if cog:
                 await cog.atualizar_painel()
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=f"✅ Slot **`{slot_num:02d}`** removido!", view=None
             )
 
@@ -203,24 +221,24 @@ class SlotSelect(discord.ui.Select):
             _limpar_slot(slot_num)
             if cog:
                 await cog.atualizar_painel()
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=f"✅ Slot **`{slot_num:02d}`** limpo!", view=None
             )
 
         elif self.acao == "definir":
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=f"👤 **Slot `{slot_num:02d}`** — Selecione o membro do servidor:",
                 view=MembroSelectView(slot_num),
             )
 
         elif self.acao == "editar":
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=f"🔁 **Slot `{slot_num:02d}`** — Selecione o novo membro:",
                 view=MembroSelectView(slot_num),
             )
 
 
-class SlotSelectView(discord.ui.View):
+class SlotSelectView(BauGerentesAuthorizedView):
     def __init__(self, slots: list, acao: str, placeholder: str) -> None:
         super().__init__(timeout=60)
         self.add_item(SlotSelect(slots, acao, placeholder))
@@ -236,18 +254,19 @@ class MembroUserSelect(discord.ui.UserSelect):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         membro = self.values[0]
         _definir_membro(self.slot_num, str(membro.id), membro.display_name)
         cog = interaction.client.get_cog("BauGerentesCog")
         if cog:
             await cog.atualizar_painel()
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content=f"✅ Slot **`{self.slot_num:02d}`** definido para **{membro.display_name}**!",
             view=None,
         )
 
 
-class MembroSelectView(discord.ui.View):
+class MembroSelectView(BauGerentesAuthorizedView):
     def __init__(self, slot_num: int) -> None:
         super().__init__(timeout=60)
         self.add_item(MembroUserSelect(slot_num))
@@ -255,7 +274,7 @@ class MembroSelectView(discord.ui.View):
 
 # ── Painel principal (persistente) ─────────────────────────────────────────────
 
-class BauGerentesPainelView(discord.ui.View):
+class BauGerentesPainelView(BauGerentesAuthorizedView):
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
@@ -269,11 +288,12 @@ class BauGerentesPainelView(discord.ui.View):
     async def add_slot(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
+        await interaction.response.defer(ephemeral=True)
         novo = _add_slot()
         cog  = interaction.client.get_cog("BauGerentesCog")
         if cog:
             await cog.atualizar_painel()
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ Slot **`{novo:02d}`** adicionado!", ephemeral=True
         )
 
