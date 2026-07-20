@@ -20,6 +20,7 @@ COG_EXTENSIONS = (
     "cogs.farm_painel",
     "cogs.farm_tickets",
     "cogs.farm_relatorio",
+    "cogs.farm_advertencias",
     "cogs.ranking_painel",
     "cogs.parcerias",
     "cogs.hierarquia",

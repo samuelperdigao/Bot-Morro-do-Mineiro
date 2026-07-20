@@ -319,6 +319,49 @@ def db_get_editores_farm_role_ids(guild_id: str) -> list[int]:
         return []
     return [int(x.strip()) for x in cfg["cargos_editar_farm"].split(",") if x.strip()]
 
+def db_set_farm_adv_role_ids(
+    guild_id: str,
+    adv1_role_id: str,
+    adv2_role_id: str,
+    adv3_role_id: str,
+) -> None:
+    db_set_guild_config(
+        guild_id,
+        farm_adv1_role_id=adv1_role_id,
+        farm_adv2_role_id=adv2_role_id,
+        farm_adv3_role_id=adv3_role_id,
+    )
+
+def db_get_farm_adv_role_ids(guild_id: str) -> dict[int, str]:
+    cfg = db_get_guild_config(guild_id)
+    if not cfg:
+        return {}
+    result: dict[int, str] = {}
+    for nivel, key in (
+        (1, "farm_adv1_role_id"),
+        (2, "farm_adv2_role_id"),
+        (3, "farm_adv3_role_id"),
+    ):
+        value = cfg[key] if key in cfg.keys() else None
+        if value:
+            result[nivel] = str(value)
+    return result
+
+def db_set_farm_adv_panel(guild_id: str, channel_id: str, message_id: str) -> None:
+    db_set_guild_config(
+        guild_id,
+        farm_adv_panel_channel_id=channel_id,
+        farm_adv_panel_message_id=message_id,
+    )
+
+def db_get_farm_adv_panel(guild_id: str) -> tuple[str | None, str | None]:
+    cfg = db_get_guild_config(guild_id)
+    if not cfg:
+        return None, None
+    channel_id = cfg["farm_adv_panel_channel_id"] if "farm_adv_panel_channel_id" in cfg.keys() else None
+    message_id = cfg["farm_adv_panel_message_id"] if "farm_adv_panel_message_id" in cfg.keys() else None
+    return channel_id, message_id
+
 def db_all_configured_guilds() -> list[str]:
     """Retorna todos os guild_ids que têm ao menos uma configuração salva."""
     rows = get_conn().execute("SELECT guild_id FROM guild_config").fetchall()
@@ -1694,6 +1737,206 @@ def db_ticket_approved_user_ids(guild_id: str, week_id: str) -> set[str]:
         (guild_id, week_id),
     ).fetchall()
     return {str(row["user_id"]) for row in rows}
+
+
+# ── Advertencias de farm ─────────────────────────────────────────────────────
+
+def db_farm_ausencia_registrar(
+    guild_id: str,
+    week_id: str,
+    user_id: str,
+    motivo: str,
+) -> tuple[bool, sqlite3.Row | None]:
+    conn = get_conn()
+    try:
+        conn.execute(
+            """INSERT INTO farm_ausencias
+               (guild_id, week_id, user_id, motivo, status, criado_em)
+               VALUES (?,?,?,?, 'registrada', ?)""",
+            (guild_id, week_id, user_id, motivo, now_tz().isoformat()),
+        )
+        conn.commit()
+        return True, db_farm_ausencia_get(guild_id, week_id, user_id)
+    except sqlite3.IntegrityError:
+        return False, db_farm_ausencia_get(guild_id, week_id, user_id)
+
+
+def db_farm_ausencia_get(
+    guild_id: str,
+    week_id: str,
+    user_id: str,
+) -> sqlite3.Row | None:
+    return get_conn().execute(
+        """SELECT * FROM farm_ausencias
+           WHERE guild_id=? AND week_id=? AND user_id=?""",
+        (guild_id, week_id, user_id),
+    ).fetchone()
+
+
+def db_farm_ausencias_semana(guild_id: str, week_id: str) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT * FROM farm_ausencias
+           WHERE guild_id=? AND week_id=? AND status='registrada'
+           ORDER BY criado_em ASC""",
+        (guild_id, week_id),
+    ).fetchall()
+
+
+def db_farm_ausencia_user_ids(guild_id: str, week_id: str) -> set[str]:
+    return {
+        str(row["user_id"])
+        for row in db_farm_ausencias_semana(guild_id, week_id)
+    }
+
+
+def db_farm_advertencia_criar(
+    guild_id: str,
+    week_id: str,
+    user_id: str,
+    nivel: int,
+    motivo: str,
+    multa: int,
+    dias_sem_desmanche: int,
+    aplicado_por: str,
+) -> tuple[bool, sqlite3.Row | None]:
+    conn = get_conn()
+    try:
+        cursor = conn.execute(
+            """INSERT INTO farm_advertencias
+               (guild_id, week_id, user_id, nivel, motivo, multa,
+                dias_sem_desmanche, aplicado_por, status, criado_em)
+               VALUES (?,?,?,?,?,?,?,?, 'ativa', ?)""",
+            (
+                guild_id,
+                week_id,
+                user_id,
+                nivel,
+                motivo,
+                multa,
+                dias_sem_desmanche,
+                aplicado_por,
+                now_tz().isoformat(),
+            ),
+        )
+        conn.commit()
+        return True, db_farm_advertencia_get(int(cursor.lastrowid))
+    except sqlite3.IntegrityError:
+        row = conn.execute(
+            """SELECT * FROM farm_advertencias
+               WHERE guild_id=? AND week_id=? AND user_id=? AND status='ativa'
+               ORDER BY id DESC LIMIT 1""",
+            (guild_id, week_id, user_id),
+        ).fetchone()
+        return False, row
+
+
+def db_farm_advertencia_get(advertencia_id: int) -> sqlite3.Row | None:
+    return get_conn().execute(
+        "SELECT * FROM farm_advertencias WHERE id=?",
+        (advertencia_id,),
+    ).fetchone()
+
+
+def db_farm_advertencia_status(advertencia_id: int, status: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        "UPDATE farm_advertencias SET status=? WHERE id=?",
+        (status, advertencia_id),
+    )
+    conn.commit()
+
+
+def db_farm_advertencias_usuario(guild_id: str, user_id: str) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT * FROM farm_advertencias
+           WHERE guild_id=? AND user_id=?
+           ORDER BY criado_em DESC, id DESC""",
+        (guild_id, user_id),
+    ).fetchall()
+
+
+def db_farm_advertencia_remover(
+    guild_id: str,
+    user_id: str,
+    nivel: int,
+    removido_por: str,
+    motivo_remocao: str,
+) -> sqlite3.Row | None:
+    conn = get_conn()
+    row = conn.execute(
+        """SELECT * FROM farm_advertencias
+           WHERE guild_id=? AND user_id=? AND nivel=? AND status='ativa'
+           ORDER BY criado_em DESC, id DESC LIMIT 1""",
+        (guild_id, user_id, nivel),
+    ).fetchone()
+    if not row:
+        return None
+    conn.execute(
+        """UPDATE farm_advertencias
+           SET status='removida', removido_por=?, removido_em=?, motivo_remocao=?
+           WHERE id=?""",
+        (removido_por, now_tz().isoformat(), motivo_remocao, int(row["id"])),
+    )
+    conn.commit()
+    return db_farm_advertencia_get(int(row["id"]))
+
+
+def db_farm_adv_fechamento_criar(
+    guild_id: str,
+    week_id: str,
+    snapshot: dict,
+    responsavel: str,
+) -> sqlite3.Row:
+    conn = get_conn()
+    cursor = conn.execute(
+        """INSERT INTO farm_advertencia_fechamentos
+           (guild_id, week_id, snapshot_json, status, responsavel, criado_em)
+           VALUES (?,?,?,?,?,?)""",
+        (
+            guild_id,
+            week_id,
+            json.dumps(snapshot, ensure_ascii=False),
+            "previa",
+            responsavel,
+            now_tz().isoformat(),
+        ),
+    )
+    conn.commit()
+    return db_farm_adv_fechamento_get(int(cursor.lastrowid))
+
+
+def db_farm_adv_fechamento_get(fechamento_id: int) -> sqlite3.Row | None:
+    return get_conn().execute(
+        "SELECT * FROM farm_advertencia_fechamentos WHERE id=?",
+        (fechamento_id,),
+    ).fetchone()
+
+
+def db_farm_adv_fechamento_claim(fechamento_id: int, aplicado_por: str) -> bool:
+    conn = get_conn()
+    cursor = conn.execute(
+        """UPDATE farm_advertencia_fechamentos
+           SET status='aplicando', aplicado_por=?, aplicado_em=?
+           WHERE id=? AND status IN ('previa', 'erro')""",
+        (aplicado_por, now_tz().isoformat(), fechamento_id),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def db_farm_adv_fechamento_finalizar(
+    fechamento_id: int,
+    snapshot: dict,
+    status: str = "aplicada",
+) -> None:
+    conn = get_conn()
+    conn.execute(
+        """UPDATE farm_advertencia_fechamentos
+           SET status=?, snapshot_json=?
+           WHERE id=?""",
+        (status, json.dumps(snapshot, ensure_ascii=False), fechamento_id),
+    )
+    conn.commit()
 
 
 def db_ticket_get(ticket_id: int):

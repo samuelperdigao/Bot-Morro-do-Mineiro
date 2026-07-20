@@ -22,6 +22,11 @@ CREATE TABLE IF NOT EXISTS guild_config (
     flanelinha_role_id     TEXT,
     flanelinha_auto_promote INTEGER DEFAULT 0,
     flanelinha_notify_user_id TEXT,
+    farm_adv1_role_id TEXT,
+    farm_adv2_role_id TEXT,
+    farm_adv3_role_id TEXT,
+    farm_adv_panel_channel_id TEXT,
+    farm_adv_panel_message_id TEXT,
     parceria_category_id TEXT,
     parceria_registrar_channel_id TEXT,
     parceria_ativas_channel_id TEXT,
@@ -313,6 +318,59 @@ ON farm_ticket_actions (log_enviado_em, id);
 CREATE INDEX IF NOT EXISTS idx_farm_ticket_finalization_logs_ticket
 ON farm_ticket_finalization_logs (ticket_id, criado_em);
 
+CREATE TABLE IF NOT EXISTS farm_ausencias (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id  TEXT NOT NULL,
+    week_id   TEXT NOT NULL,
+    user_id   TEXT NOT NULL,
+    motivo    TEXT NOT NULL,
+    status    TEXT NOT NULL DEFAULT 'registrada',
+    criado_em TEXT NOT NULL,
+    UNIQUE (guild_id, week_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_farm_ausencias_week
+ON farm_ausencias (guild_id, week_id, status);
+
+CREATE TABLE IF NOT EXISTS farm_advertencias (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id            TEXT NOT NULL,
+    week_id             TEXT NOT NULL,
+    user_id             TEXT NOT NULL,
+    nivel               INTEGER NOT NULL,
+    motivo              TEXT NOT NULL,
+    multa               INTEGER NOT NULL DEFAULT 0,
+    dias_sem_desmanche  INTEGER NOT NULL DEFAULT 0,
+    aplicado_por        TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'ativa',
+    criado_em           TEXT NOT NULL,
+    removido_por        TEXT,
+    removido_em         TEXT,
+    motivo_remocao      TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_farm_advertencias_active_week
+ON farm_advertencias (guild_id, week_id, user_id)
+WHERE status='ativa';
+
+CREATE INDEX IF NOT EXISTS idx_farm_advertencias_user
+ON farm_advertencias (guild_id, user_id, status, nivel);
+
+CREATE TABLE IF NOT EXISTS farm_advertencia_fechamentos (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id      TEXT NOT NULL,
+    week_id       TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'previa',
+    responsavel   TEXT NOT NULL,
+    criado_em     TEXT NOT NULL,
+    aplicado_por  TEXT,
+    aplicado_em   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_farm_adv_fechamentos_week
+ON farm_advertencia_fechamentos (guild_id, week_id, status, criado_em);
+
 CREATE TABLE IF NOT EXISTS parcerias (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id TEXT NOT NULL,
@@ -363,6 +421,11 @@ MIGRATIONS = (
     ("guild_config", "flanelinha_role_id", "TEXT"),
     ("guild_config", "flanelinha_auto_promote", "INTEGER DEFAULT 0"),
     ("guild_config", "flanelinha_notify_user_id", "TEXT"),
+    ("guild_config", "farm_adv1_role_id", "TEXT"),
+    ("guild_config", "farm_adv2_role_id", "TEXT"),
+    ("guild_config", "farm_adv3_role_id", "TEXT"),
+    ("guild_config", "farm_adv_panel_channel_id", "TEXT"),
+    ("guild_config", "farm_adv_panel_message_id", "TEXT"),
     ("guild_config", "parceria_category_id", "TEXT"),
     ("guild_config", "parceria_registrar_channel_id", "TEXT"),
     ("guild_config", "parceria_ativas_channel_id", "TEXT"),
