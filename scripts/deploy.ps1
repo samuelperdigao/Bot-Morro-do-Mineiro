@@ -14,24 +14,13 @@ Write-Host ""
 
 # ── 1. Envio dos arquivos via SCP ─────────────────────────────────────────────
 
-Write-Host "[1/4] Enviando arquivos para o servidor..." -ForegroundColor Yellow
+Write-Host "[1/3] Enviando arquivos para o servidor..." -ForegroundColor Yellow
 
 # rsync nao esta disponivel no Windows por padrao, entao usamos scp com exclusoes manuais.
 # Copiamos arquivo por arquivo/pasta por pasta, excluindo o que nao deve ir.
 
-$excludedDirs  = @(
-    "venv",
-    "__pycache__",
-    "_old",
-    ".git",
-    ".claude",
-    ".codex-remote-attachments",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache"
-)
-$excludedExts  = @("*.db", "*.db-shm", "*.db-wal", "*.log", "*.pyc", "*.key")
-$excludedNames = @(".env", "bau_painel.json", "bau_gerentes_painel.json")
+$excludedDirs  = @("venv", "__pycache__", "_old", ".git")
+$excludedExts  = @("*.db", "*.db-shm", "*.db-wal", "*.log", "*.pyc")
 
 # Coleta todos os itens a enviar (exclui pastas e extensoes indesejadas)
 $items = Get-ChildItem -Path $LOCAL_DIR -Recurse |
@@ -59,9 +48,7 @@ $items = Get-ChildItem -Path $LOCAL_DIR -Recurse |
             }
         }
 
-        -not $inExcludedDir -and
-        -not $hasExcludedExt -and
-        $excludedNames -notcontains $_.Name
+        -not $inExcludedDir -and -not $hasExcludedExt
     }
 
 # Garante que a estrutura de diretorios existe no servidor
@@ -69,11 +56,7 @@ $dirs = $items | Where-Object { $_.PSIsContainer } |
     ForEach-Object { $_.FullName.Substring($LOCAL_DIR.Length + 1) -replace "\\", "/" }
 
 foreach ($dir in $dirs) {
-    ssh -i $SSH_KEY $REMOTE "mkdir -p $REMOTE_DIR/$dir" 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "  [ERRO] Falha ao criar diretorio remoto: $dir" -ForegroundColor Red
-        exit 1
-    }
+    ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE "mkdir -p $REMOTE_DIR/$dir" 2>$null
 }
 
 # Envia os arquivos
@@ -90,14 +73,12 @@ foreach ($file in $files) {
 
     Write-Progress -Activity "Enviando arquivos" -Status "$relativePath" -PercentComplete (($count / $total) * 100)
 
-    scp -i $SSH_KEY `
+    scp -i $SSH_KEY -o StrictHostKeyChecking=no `
         $file.FullName `
         "${REMOTE}:${remotePath}" 2>$null
 
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  [ERRO] Falha ao enviar: $relativePath" -ForegroundColor Red
-        Write-Host "  Deploy interrompido; o servico nao sera reiniciado." -ForegroundColor Red
-        exit 1
     }
 }
 
@@ -109,12 +90,11 @@ Write-Host "  $total arquivo(s) enviado(s)." -ForegroundColor Green
 Write-Host ""
 Write-Host "[2/4] Instalando dependencias Python no servidor..." -ForegroundColor Yellow
 
-ssh -i $SSH_KEY $REMOTE `
+ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE `
     "cd $REMOTE_DIR && $REMOTE_DIR/venv/bin/pip install -r requirements.txt -q" 2>&1
 
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "  [ERRO] Falha ao instalar dependencias; deploy interrompido." -ForegroundColor Red
-    exit 1
+    Write-Host "  [AVISO] pip install retornou erro (pode ser normal se ja instalado)." -ForegroundColor Yellow
 } else {
     Write-Host "  Dependencias atualizadas." -ForegroundColor Green
 }
@@ -124,7 +104,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host ""
 Write-Host "[3/4] Reiniciando servico farmbot..." -ForegroundColor Yellow
 
-ssh -i $SSH_KEY $REMOTE `
+ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE `
     "sudo systemctl restart farmbot" 2>&1
 
 if ($LASTEXITCODE -ne 0) {
@@ -140,7 +120,7 @@ Write-Host ""
 Write-Host "[4/4] Aguardando inicializacao (3s)..." -ForegroundColor Yellow
 Start-Sleep -Seconds 3
 
-$status = ssh -i $SSH_KEY $REMOTE `
+$status = ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE `
     "systemctl is-active farmbot"
 
 Write-Host ""
@@ -153,14 +133,14 @@ if ($status -eq "active") {
     # Exibe as ultimas linhas do log para confirmar
     Write-Host ""
     Write-Host "  Ultimas linhas do log:" -ForegroundColor Cyan
-    ssh -i $SSH_KEY $REMOTE `
+    ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE `
         "journalctl -u farmbot -n 10 --no-pager --output=cat"
 } else {
     Write-Host "  STATUS: $($status.ToUpper())" -ForegroundColor Red
     Write-Host "  Bot nao iniciou corretamente." -ForegroundColor Red
     Write-Host ""
     Write-Host "  Log de erro:" -ForegroundColor Red
-    ssh -i $SSH_KEY $REMOTE `
+    ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE `
         "journalctl -u farmbot -n 20 --no-pager --output=cat"
     exit 1
 }

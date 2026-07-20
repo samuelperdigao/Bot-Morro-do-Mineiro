@@ -103,7 +103,6 @@ class AnuncioModal(discord.ui.Modal, title="Novo Anúncio"):
         content = "@everyone"
 
         if not com_arquivo:
-            await interaction.response.defer(ephemeral=True)
             await self.canal_anuncio.send(
                 content=content,
                 embed=embed,
@@ -113,7 +112,7 @@ class AnuncioModal(discord.ui.Modal, title="Novo Anúncio"):
                 f"{interaction.user} publicou anúncio '{self.titulo.value.strip()}' "
                 f"no canal {self.canal_anuncio.id} (everyone={mencionar})"
             )
-            await interaction.followup.send("✅ Anúncio publicado com sucesso!", ephemeral=True)
+            await interaction.response.send_message("✅ Anúncio publicado com sucesso!", ephemeral=True)
 
             log_embed = discord.Embed(
                 title="📢 Anúncio Publicado",
@@ -306,8 +305,6 @@ class AnuncioCog(commands.Cog):
             )
             return
 
-        await interaction.response.defer(ephemeral=True)
-
         embed = discord.Embed(
             title="📢 Painel de Anúncios",
             description=(
@@ -319,7 +316,7 @@ class AnuncioCog(commands.Cog):
         )
         embed.set_footer(text="Morro do Mineiro • Sistema de Anúncios")
         await interaction.channel.send(embed=embed, view=AnuncioPainelView())
-        await interaction.followup.send("✅ Painel postado!", ephemeral=True)
+        await interaction.response.send_message("✅ Painel postado!", ephemeral=True)
         log.info(f"{interaction.user} postou painel de anúncios em #{interaction.channel}")
 
     @painel_anuncio.error
@@ -328,10 +325,7 @@ class AnuncioCog(commands.Cog):
             await interaction.response.send_message("❌ Sem permissão para usar este comando.", ephemeral=True)
         else:
             log.error(f"Erro em /painel_anuncio: {error}", exc_info=True)
-            if interaction.response.is_done():
-                await interaction.followup.send("❌ Erro inesperado.", ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ Erro inesperado.", ephemeral=True)
+            await interaction.response.send_message("❌ Erro inesperado.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

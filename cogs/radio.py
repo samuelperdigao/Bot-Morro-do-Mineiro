@@ -220,13 +220,12 @@ class RadioCog(commands.Cog):
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def setup_radio_painel(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
         canal = self.bot.get_channel(CANAL_RADIO_ID)
         if canal is None:
             try:
                 canal = await self.bot.fetch_channel(CANAL_RADIO_ID)
             except Exception:
-                await interaction.followup.send(
+                await interaction.response.send_message(
                     f"❌ Canal de rádio (`{CANAL_RADIO_ID}`) não encontrado.", ephemeral=True
                 )
                 return
@@ -234,7 +233,7 @@ class RadioCog(commands.Cog):
         try:
             await configurar_permissoes_radio(canal)
         except discord.HTTPException:
-            await interaction.followup.send(
+            await interaction.response.send_message(
                 "❌ Não consegui bloquear o envio de mensagens no canal. "
                 "Verifique a permissão **Gerenciar Canais** do bot.",
                 ephemeral=True,
@@ -242,7 +241,7 @@ class RadioCog(commands.Cog):
             return
 
         await canal.send(embed=criar_embed_painel_radio(), view=RadioPainelView())
-        await interaction.followup.send(
+        await interaction.response.send_message(
             f"✅ Painel de rádio postado em {canal.mention}!", ephemeral=True
         )
         log.info("Painel de rádio postado por %s (guild %s)", interaction.user, interaction.guild_id)
@@ -253,9 +252,7 @@ class RadioCog(commands.Cog):
             await interaction.response.send_message("❌ Sem permissão para usar este comando.", ephemeral=True)
         else:
             log.error("Erro no /setup_radio_painel: %s", error, exc_info=True)
-            if interaction.response.is_done():
-                await interaction.followup.send("❌ Ocorreu um erro.", ephemeral=True)
-            else:
+            if not interaction.response.is_done():
                 await interaction.response.send_message("❌ Ocorreu um erro.", ephemeral=True)
 
 

@@ -25,12 +25,6 @@ EVERYONE_ALLOWED_MENTIONS = discord.AllowedMentions(
     replied_user=False,
 )
 
-
-def can_manage_broadcast(member: discord.Member) -> bool:
-    """Restrict global broadcasts to members who can manage the guild."""
-    permissions = getattr(member, "guild_permissions", None)
-    return bool(permissions and permissions.manage_guild)
-
 BLOCKED_CHANNEL_NAMES = {
     "tutorial-de-farm",
     "lançar-farm",
@@ -205,13 +199,6 @@ class BroadcastModal(discord.ui.Modal, title="Disparo de Mensagem Global"):
             )
             return
 
-        if not can_manage_broadcast(interaction.user):
-            await interaction.response.send_message(
-                "Voce precisa da permissao Gerenciar Servidor para realizar disparos.",
-                ephemeral=True,
-            )
-            return
-
         category = interaction.guild.get_channel(BROADCAST_CATEGORY_ID)
         if category is None:
             try:
@@ -336,13 +323,6 @@ class DeleteBroadcastConfirmView(discord.ui.View):
         self.requester_id = requester_id
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if not can_manage_broadcast(interaction.user):
-            await interaction.response.send_message(
-                "Voce precisa da permissao Gerenciar Servidor para apagar disparos.",
-                ephemeral=True,
-            )
-            return False
-
         if interaction.user.id == self.requester_id:
             return True
 
@@ -471,15 +451,6 @@ class BroadcastView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if can_manage_broadcast(interaction.user):
-            return True
-        await interaction.response.send_message(
-            "Voce precisa da permissao Gerenciar Servidor para usar este painel.",
-            ephemeral=True,
-        )
-        return False
-
     @discord.ui.button(
         label="Enviar Mensagem",
         emoji="📨",
@@ -543,7 +514,6 @@ class DisparoCog(commands.Cog):
         description="Posta o painel administrativo de disparo de mensagens.",
     )
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
     async def painel_disparo(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_message(
             embed=build_broadcast_embed(),
@@ -562,12 +532,6 @@ class DisparoCog(commands.Cog):
         interaction: discord.Interaction,
         error: app_commands.AppCommandError,
     ) -> None:
-        if isinstance(error, app_commands.MissingPermissions):
-            await interaction.response.send_message(
-                "Voce precisa da permissao Gerenciar Servidor para usar este comando.",
-                ephemeral=True,
-            )
-            return
         log.error("Erro em /painel_disparo: %s", error, exc_info=True)
         if interaction.response.is_done():
             await interaction.followup.send("❌ Erro inesperado.", ephemeral=True)

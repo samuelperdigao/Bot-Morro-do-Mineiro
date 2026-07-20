@@ -64,10 +64,7 @@ class SetupPaineisCog(commands.Cog):
             await interaction.response.send_message("❌ Sem permissão para usar este comando.", ephemeral=True)
         else:
             log.error("Erro em /setup_painel_operacoes: %s", error, exc_info=True)
-            if interaction.response.is_done():
-                await interaction.followup.send("❌ Erro inesperado.", ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ Erro inesperado.", ephemeral=True)
+            await interaction.response.send_message(f"❌ Erro inesperado: {error}", ephemeral=True)
 
     @app_commands.command(
         name="setup_painel_set",
@@ -112,10 +109,7 @@ class SetupPaineisCog(commands.Cog):
             await interaction.response.send_message("❌ Sem permissão para usar este comando.", ephemeral=True)
         else:
             log.error("Erro em /setup_painel_set: %s", error, exc_info=True)
-            if interaction.response.is_done():
-                await interaction.followup.send("❌ Erro inesperado.", ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ Erro inesperado.", ephemeral=True)
+            await interaction.response.send_message(f"❌ Erro inesperado: {error}", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

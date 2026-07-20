@@ -25,8 +25,6 @@ class SetupSetCog(commands.Cog):
             )
             return
 
-        await interaction.response.defer(ephemeral=True)
-
         embed = discord.Embed(
             title="Sistema de Set",
             description=(
@@ -39,7 +37,7 @@ class SetupSetCog(commands.Cog):
         )
         embed.set_footer(text="Use o botao abaixo para iniciar")
         await interaction.channel.send(embed=embed, view=SetPanelView())
-        await interaction.followup.send("Painel postado!", ephemeral=True)
+        await interaction.response.send_message("Painel postado!", ephemeral=True)
 
     @setup_set.error
     async def setup_set_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -48,10 +46,7 @@ class SetupSetCog(commands.Cog):
             return
 
         log.error("Erro em /setup_set: %s", error, exc_info=True)
-        if interaction.response.is_done():
-            await interaction.followup.send("Erro inesperado.", ephemeral=True)
-        else:
-            await interaction.response.send_message("Erro inesperado.", ephemeral=True)
+        await interaction.response.send_message("Erro inesperado.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

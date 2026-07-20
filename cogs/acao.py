@@ -251,26 +251,25 @@ class AdicionarMembroPaginadoView(discord.ui.View):
             self.add_item(nxt)
 
     async def _on_select(self, interaction: discord.Interaction):
-        await interaction.response.defer()
         member_id = int(interaction.data["values"][0])
         member    = interaction.guild.get_member(member_id)
         if not member:
             try:
                 member = await interaction.guild.fetch_member(member_id)
             except Exception:
-                await interaction.edit_original_response(content="❌ Membro não encontrado no servidor.", view=None)
+                await interaction.response.edit_message(content="❌ Membro não encontrado no servidor.", view=None)
                 return
         pv = self.painel_view
         if pv._esta_inscrito(member):
-            await interaction.edit_original_response(content=f"⚠️ {member.display_name} já está inscrito.", view=None)
+            await interaction.response.edit_message(content=f"⚠️ {member.display_name} já está inscrito.", view=None)
             return
         max_b = pv._max_bandidos()
         if max_b and len(pv.inscritos) >= max_b:
-            await interaction.edit_original_response(content=f"❌ Vagas esgotadas (máximo: {max_b}).", view=None)
+            await interaction.response.edit_message(content=f"❌ Vagas esgotadas (máximo: {max_b}).", view=None)
             return
         pv.inscritos.append(member)
         log.info("Liderança %s adicionou %s à ação '%s'", interaction.user, member, ACOES[pv.acao_key]["nome"])
-        await interaction.edit_original_response(content=f"✅ {member.mention} adicionado à ação!", view=None)
+        await interaction.response.edit_message(content=f"✅ {member.mention} adicionado à ação!", view=None)
         try:
             await self.painel_msg.edit(embed=pv._atualizar_embed(), view=pv)
         except Exception as e:
@@ -787,9 +786,8 @@ class AdicionarMembroPaginadoView(discord.ui.View):
 
     async def _on_select(self, interaction: discord.Interaction):
         acao_row = db_acao_get(self.acao_id)
-        await interaction.response.defer()
         if not acao_row or acao_row["status"] != "aberta":
-            await interaction.edit_original_response(content="❌ Ação não encontrada ou já finalizada.", view=None)
+            await interaction.response.edit_message(content="❌ Ação não encontrada ou já finalizada.", view=None)
             return
         member_id = int(interaction.data["values"][0])
         member = interaction.guild.get_member(member_id)
@@ -797,21 +795,21 @@ class AdicionarMembroPaginadoView(discord.ui.View):
             try:
                 member = await interaction.guild.fetch_member(member_id)
             except Exception:
-                await interaction.edit_original_response(content="❌ Membro não encontrado no servidor.", view=None)
+                await interaction.response.edit_message(content="❌ Membro não encontrado no servidor.", view=None)
                 return
         participantes = db_acao_participantes(self.acao_id)
         max_b = ACOES[acao_row["acao_key"]]["max_bandidos"]
         if max_b and len(participantes) >= max_b:
-            await interaction.edit_original_response(content=f"❌ Vagas esgotadas (máximo: {max_b}).", view=None)
+            await interaction.response.edit_message(content=f"❌ Vagas esgotadas (máximo: {max_b}).", view=None)
             return
         added = db_acao_participante_add(self.acao_id, str(member.id), member.display_name, "lideranca_add", str(interaction.user.id))
         if not added:
-            await interaction.edit_original_response(content=f"⚠️ {member.display_name} já está inscrito.", view=None)
+            await interaction.response.edit_message(content=f"⚠️ {member.display_name} já está inscrito.", view=None)
             return
         acao_row = db_acao_get(self.acao_id)
         embed = _build_regras_embed(acao_row["acao_key"], db_acao_participantes(self.acao_id), acao_row["horario"], acao_row["tipo"], acao_row["data"], acao_row["criado_por"])
         await self.painel_msg.edit(embed=embed, view=AcaoParticipantesView())
-        await interaction.edit_original_response(content=f"✅ {member.mention} adicionado à ação!", view=None)
+        await interaction.response.edit_message(content=f"✅ {member.mention} adicionado à ação!", view=None)
 
     async def _prev(self, interaction: discord.Interaction):
         self.pagina -= 1
