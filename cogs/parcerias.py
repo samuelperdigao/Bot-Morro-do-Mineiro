@@ -61,6 +61,13 @@ def _clean(value: str | None) -> str | None:
     return value or None
 
 
+def _row_value(row, key: str):
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
 def _has_staff_permission(member: discord.Member, guild_id: str) -> bool:
     if member.guild_permissions.administrator or member.guild_permissions.manage_guild:
         return True
@@ -94,6 +101,9 @@ def build_partner_embed(parceria) -> discord.Embed:
         timestamp=discord.utils.utcnow(),
     )
     embed.add_field(name="\U0001f6d2 Produto", value=parceria["produto"], inline=False)
+    cor_carro = _row_value(parceria, "cor_carro")
+    if cor_carro:
+        embed.add_field(name="\U0001f697 Cor do carro", value=cor_carro, inline=True)
     if parceria["contato_01"]:
         embed.add_field(name="\U0001f4de Contato Principal", value=parceria["contato_01"], inline=True)
     if parceria["contato_02"]:
@@ -153,13 +163,18 @@ class ParceriasPanelView(discord.ui.View):
 class RegistroParceriaModal(discord.ui.Modal, title="Registro de Parceria - Morro do Mineiro"):
     nome_familia = discord.ui.TextInput(
         label="Nome da Familia",
-        placeholder="Ex: Comando Vermelho",
+        placeholder="Ex: Morro do Mineiro",
         max_length=100,
     )
     produto = discord.ui.TextInput(
         label="Produto da Parceria",
         placeholder="Ex: Armamento, Municao, Veiculos",
         max_length=100,
+    )
+    cor_carro = discord.ui.TextInput(
+        label="Cor do carro",
+        placeholder="Ex: Preto com dourado",
+        max_length=80,
     )
     contato_01 = discord.ui.TextInput(
         label="Contato Principal",
@@ -206,6 +221,7 @@ class RegistroParceriaModal(discord.ui.Modal, title="Registro de Parceria - Morr
         provisional = {
             "nome_familia": nome,
             "produto": self.produto.value.strip(),
+            "cor_carro": self.cor_carro.value.strip(),
             "contato_01": _clean(self.contato_01.value),
             "contato_02": _clean(self.contato_02.value),
             "nome_arquivo_imagem": filename,
@@ -219,6 +235,7 @@ class RegistroParceriaModal(discord.ui.Modal, title="Registro de Parceria - Morr
                     guild_id=guild_id,
                     nome_familia=nome,
                     produto=self.produto.value,
+                    cor_carro=self.cor_carro.value,
                     contato_01=_clean(self.contato_01.value),
                     contato_02=_clean(self.contato_02.value),
                     mensagem_lista_id=message.id,
@@ -246,6 +263,11 @@ class EdicaoParceriaModal(discord.ui.Modal):
         self.parceria_id = int(parceria["id"])
         self.nome_familia = discord.ui.TextInput(label="Nome da Familia", default=parceria["nome_familia"], max_length=100)
         self.produto = discord.ui.TextInput(label="Produto da Parceria", default=parceria["produto"], max_length=100)
+        self.cor_carro = discord.ui.TextInput(
+            label="Cor do carro",
+            default=_row_value(parceria, "cor_carro") or "",
+            max_length=80,
+        )
         self.contato_01 = discord.ui.TextInput(
             label="Contato Principal",
             default=parceria["contato_01"] or "",
@@ -258,7 +280,7 @@ class EdicaoParceriaModal(discord.ui.Modal):
             required=False,
             max_length=150,
         )
-        for item in (self.nome_familia, self.produto, self.contato_01, self.contato_02):
+        for item in (self.nome_familia, self.produto, self.cor_carro, self.contato_01, self.contato_02):
             self.add_item(item)
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -280,6 +302,7 @@ class EdicaoParceriaModal(discord.ui.Modal):
             self.parceria_id,
             nome,
             self.produto.value,
+            self.cor_carro.value,
             _clean(self.contato_01.value),
             _clean(self.contato_02.value),
         )
