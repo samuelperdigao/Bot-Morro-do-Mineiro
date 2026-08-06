@@ -71,106 +71,11 @@ class FarmPainelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    # ── Ver Meu Farm ──────────────────────────────────────────────────────────
-
-    @discord.ui.button(
-        label="📊 Ver Meu Farm",
-        style=discord.ButtonStyle.primary,
-        custom_id="farm_painel:ver",
-        row=0,
-    )
-    async def ver(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild_id       = str(interaction.guild_id)
-        member         = interaction.user
-        permitidos_ids = db_get_permitidos_role_ids(guild_id)
-
-        if not is_permitido_farm(member, permitidos_ids):
-            await interaction.response.send_message(
-                "❌ Você não tem permissão para ver farm.", ephemeral=True
-            )
-            return
-
-        week_id = current_week_id()
-        prog    = db_get_progresso(guild_id, week_id, str(member.id))
-        meta    = db_get_meta(guild_id, week_id)
-
-        if not prog and not meta:
-            await interaction.response.send_message(
-                "⚠️ Nenhum farm registrado esta semana.", ephemeral=True
-            )
-            return
-
-        from cogs.farm import build_farm_embed
-        embed = build_farm_embed(meta, prog, member, week_id)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        log.info("ver_meu_farm via painel: %s (guild %s)", member.name, guild_id)
-
-    # ── Editar Farm ───────────────────────────────────────────────────────────
-
-    @discord.ui.button(
-        label="✏️ Editar Farm",
-        style=discord.ButtonStyle.secondary,
-        custom_id="farm_painel:editar",
-        row=1,
-    )
-    async def editar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild_id      = str(interaction.guild_id)
-        member        = interaction.user
-        lideranca_ids = db_get_lideranca_role_ids(guild_id)
-        editores_ids  = db_get_editores_farm_role_ids(guild_id)
-
-        if not is_lideranca(member, lideranca_ids) and not is_lideranca(member, editores_ids):
-            await interaction.response.send_message(
-                "❌ Você não tem permissão para editar farms.", ephemeral=True
-            )
-            return
-
-        week_id = current_week_id()
-        ultimo  = db_get_ultimo_evento(guild_id, week_id, str(member.id))
-
-        if not ultimo:
-            await interaction.response.send_message(
-                "❌ Nenhum lançamento encontrado para editar.", ephemeral=True
-            )
-            return
-
-        farm_cog = interaction.client.get_cog("FarmCog")
-        if not farm_cog:
-            await interaction.response.send_message(
-                "❌ Erro interno: FarmCog não carregado.", ephemeral=True
-            )
-            return
-
-        from cogs.farm import EditarUltimoModal
-        await interaction.response.send_modal(
-            EditarUltimoModal(farm_cog, week_id, guild_id, str(member.id), db_evento_itens(ultimo))
-        )
-        log.info("editar_farm via painel: %s (guild %s)", member.name, guild_id)
-
-    # ── Farm Membro ──────────────────────────────────────────────────────────
-
-    @discord.ui.button(
-        label="👥 Farm Membro",
-        style=discord.ButtonStyle.secondary,
-        custom_id="farm_painel:farm_membro",
-        row=1,
-    )
-    async def farm_membro(self, interaction: discord.Interaction, button: discord.ui.Button):
-        cog = interaction.client.get_cog("FarmPainelCog")
-        if not cog:
-            await interaction.response.send_message(
-                "❌ Erro interno: FarmPainelCog não carregado.",
-                ephemeral=True,
-            )
-            return
-
-        await cog.mostrar_acoes_farm_membro(interaction)
-
     @discord.ui.button(
         label="🎫 Abrir Ticket Semanal",
         style=discord.ButtonStyle.success,
         custom_id="farm_painel:abrir_ticket",
-        row=2,
+        row=0,
     )
     async def abrir_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild_id = str(interaction.guild_id)
@@ -188,10 +93,10 @@ class FarmPainelView(discord.ui.View):
         await cog.open_ticket(interaction)
 
     @discord.ui.button(
-        label="Abrir para Membro",
+        label="👥 Abrir para Membro",
         style=discord.ButtonStyle.success,
         custom_id="farm_painel:abrir_ticket_membro",
-        row=2,
+        row=0,
     )
     async def abrir_ticket_membro(self, interaction: discord.Interaction, button: discord.ui.Button):
         cog = interaction.client.get_cog("FarmTicketsCog")
@@ -216,7 +121,7 @@ class FarmPainelView(discord.ui.View):
         label="🗑️ Excluir Ticket",
         style=discord.ButtonStyle.danger,
         custom_id="farm_painel:excluir_ticket_admin",
-        row=2,
+        row=0,
     )
     async def excluir_ticket_admin(self, interaction: discord.Interaction, button: discord.ui.Button):
         cog = interaction.client.get_cog("FarmTicketsCog")
@@ -383,13 +288,11 @@ class FarmMembroEventoSelectView(discord.ui.View):
 
 def _build_painel_embed() -> discord.Embed:
     embed = discord.Embed(
-        title="🌾 Painel de Farm — Morro do Mineiro",
+        title="🎫 Central de Tickets | Farm Semanal",
         description=(
-            "**Abrir para Membro** - Gerente de Farm, Gerente Geral e Administrador abrem ticket para outra pessoa.\n"
-            "**🎫 Abrir Ticket Semanal** — Único local para enviar novos lançamentos e comprovantes.\n"
-            "**📊 Ver Meu Farm** — Veja seu progresso e percentual atingido.\n"
-            "**👥 Farm Membro** — Liderança consulta lançamentos para edição administrativa.\n"
-            "**✏️ Editar Farm** — Correção administrativa de registros existentes."
+            "**🎫 Abrir Ticket Semanal** — Abra seu próprio ticket de farm.\n"
+            "**👥 Abrir para Membro** — Gerentes e administradores abrem um ticket para outra pessoa.\n"
+            "**🗑️ Excluir Ticket** — Administração de tickets existentes."
         ),
         color=COR_FARM,
     )

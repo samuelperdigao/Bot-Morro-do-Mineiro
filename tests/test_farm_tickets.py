@@ -838,9 +838,14 @@ class FarmTicketDatabaseTests(unittest.TestCase):
             return fixed, personal
 
         fixed_labels, personal_labels = asyncio.run(labels())
-        self.assertIn("Abrir para Membro", fixed_labels)
-        self.assertIn("🎫 Abrir Ticket Semanal", fixed_labels)
-        self.assertIn("🗑️ Excluir Ticket", fixed_labels)
+        self.assertEqual(
+            fixed_labels,
+            {
+                "🎫 Abrir Ticket Semanal",
+                "👥 Abrir para Membro",
+                "🗑️ Excluir Ticket",
+            },
+        )
         self.assertIn("🎫 Abrir Ticket de Farm", personal_labels)
         self.assertNotIn("🚜 Lançar Farm", fixed_labels)
         self.assertNotIn("💵 Lançar Dinheiro", fixed_labels | personal_labels)
