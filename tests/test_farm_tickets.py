@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -336,6 +337,33 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         self.assertEqual(launch["log_proof_url"], "https://cdn.example/thread/proof.png")
         self.assertFalse(db.db_ticket_has_pending_logs(int(ticket["id"])))
 
+    def test_ticket_launch_log_identifies_actor(self):
+        ticket = self._create_ticket()
+        event_id, action_id = db.db_ticket_launch(
+            int(ticket["id"]), "99", {"Borracha": 50},
+            "100", "300", "https://cdn.example/original.png", "parcial",
+        )
+        cog, channel = self._create_log_cog()
+        actor = SimpleNamespace(id=99, mention="<@99>")
+        proof_message = SimpleNamespace(content="parcial")
+
+        asyncio.run(
+            cog.log_launch(
+                ticket,
+                actor,
+                event_id,
+                action_id,
+                {"Borracha": 50},
+                proof_message,
+                FakeAttachment(),
+            )
+        )
+
+        summary = next(iter(channel.messages.values()))
+        embed = summary.thread.sent[0]["embed"]
+        fields = {field.name: field.value for field in embed.fields}
+        self.assertEqual(fields["Lancado por"], "<@99>")
+
     def test_config_is_separate_from_existing_farm_configuration(self):
         db.db_ticket_config_set("1", [11, 12], [21, 22])
         config = db.db_ticket_config_get("1")
@@ -349,6 +377,60 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         guild = SimpleNamespace(roles=[producao, produtos])
 
         self.assertEqual(_expanded_admin_role_ids(guild, ["21"]), [21, 22])
+
+    def test_exact_farm_ticket_operator_roles_are_allowed(self):
+        cog = FarmTicketsCog.__new__(FarmTicketsCog)
+        admin = SimpleNamespace(
+            id=1,
+            roles=[],
+            guild_permissions=SimpleNamespace(administrator=True),
+        )
+        gerente_farm = SimpleNamespace(
+            id=2,
+            roles=[SimpleNamespace(id=20, name="| Gerente de Farm")],
+            guild_permissions=SimpleNamespace(administrator=False),
+        )
+        gerente_geral = SimpleNamespace(
+            id=3,
+            roles=[SimpleNamespace(id=30, name="Gerente Geral")],
+            guild_permissions=SimpleNamespace(administrator=False),
+        )
+        gerente_produtos = SimpleNamespace(
+            id=4,
+            roles=[SimpleNamespace(id=40, name="Gerente de Produtos")],
+            guild_permissions=SimpleNamespace(administrator=False),
+        )
+        manage_guild_only = SimpleNamespace(
+            id=5,
+            roles=[],
+            guild_permissions=SimpleNamespace(
+                administrator=False,
+                manage_guild=True,
+            ),
+        )
+
+        self.assertTrue(cog.is_ticket_operator(admin))
+        self.assertTrue(cog.is_ticket_operator(gerente_farm))
+        self.assertTrue(cog.is_ticket_operator(gerente_geral))
+        self.assertFalse(cog.is_ticket_operator(gerente_produtos))
+        self.assertFalse(cog.is_ticket_operator(manage_guild_only))
+
+    def test_manager_launch_credits_ticket_owner_and_records_actor(self):
+        ticket = self._create_ticket()
+        event_id, action_id = db.db_ticket_launch(
+            int(ticket["id"]), "99", {"Borracha": 50},
+            "100", "300", "https://cdn.example/proof.png", "gerente lancou",
+        )
+
+        progress_owner = db.db_get_progresso("1", "2026-06-15", "10")
+        progress_actor = db.db_get_progresso("1", "2026-06-15", "99")
+        action = db.db_ticket_latest_action(int(ticket["id"]), "lancamento")
+
+        self.assertEqual(db.db_prog_itens(progress_owner), {"Borracha": 50})
+        self.assertIsNone(progress_actor)
+        self.assertEqual(action["actor_id"], "99")
+        self.assertEqual(action["event_id"], event_id)
+        self.assertEqual(action["id"], action_id)
 
     def test_completed_ticket_can_be_approved_without_listing_other_members(self):
         db.db_set_meta("1", "2026-06-15", {"Borracha": 50}, "99")
@@ -365,6 +447,74 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         progress = db.db_get_progresso("1", "2026-06-15", "10")
         self.assertEqual(progress["aprovada"], 1)
         self.assertEqual(progress["aprovada_por"], "20")
+
+    def test_admin_can_approve_partial_ticket_by_manual_decision(self):
+        db.db_set_meta("1", "2026-06-15", {"Borracha": 100}, "99")
+        ticket = self._create_ticket()
+        db.db_ticket_launch(
+            int(ticket["id"]), "10", {"Borracha": 97},
+            "100", "300", "https://cdn.example/proof.png", None,
+        )
+
+        async def invoke():
+            view = FarmTicketView()
+            button = next(
+                item for item in view.children
+                if item.custom_id == "farm_ticket:approve"
+            )
+            self.assertFalse(button.disabled)
+            response = SimpleNamespace(send_message=AsyncMock())
+            ticket_cog = SimpleNamespace(
+                is_admin=lambda member, guild_id: True,
+                send_action_log=AsyncMock(return_value=True),
+                refresh_ticket=AsyncMock(),
+            )
+            interaction = SimpleNamespace(
+                guild_id=1,
+                channel_id=100,
+                guild=SimpleNamespace(),
+                user=SimpleNamespace(id=99),
+                client=SimpleNamespace(
+                    get_cog=lambda name: (
+                        ticket_cog if name == "FarmTicketsCog" else None
+                    )
+                ),
+                response=response,
+            )
+            await button.callback(interaction)
+            return response, ticket_cog
+
+        response, ticket_cog = asyncio.run(invoke())
+
+        progress = db.db_get_progresso("1", "2026-06-15", "10")
+        self.assertEqual(progress["aprovada"], 1)
+        self.assertEqual(progress["aprovacao_antecipada"], 1)
+        self.assertEqual(progress["aprovacao_nivel"], "meta_batida")
+        ranking = db.db_ranking_semana("1", "2026-06-15", ["10"])
+        self.assertEqual(ranking[0]["classificacao"], "meta_batida")
+        action = db.db_ticket_latest_action(int(ticket["id"]), "aprovacao")
+        payload = json.loads(action["payload_json"])
+        self.assertFalse(payload["meta_atingida_no_ticket"])
+        self.assertEqual(payload["percentual_no_momento"], 97.0)
+        ticket_cog.refresh_ticket.assert_awaited_once_with(int(ticket["id"]))
+        response.send_message.assert_awaited_once()
+
+    def test_manual_approval_also_works_with_zero_progress(self):
+        db.db_set_meta("1", "2026-06-15", {"Borracha": 100}, "99")
+
+        db.db_aprovar(
+            "1",
+            "2026-06-15",
+            "10",
+            "99",
+            antecipada=True,
+            nivel="meta_batida",
+        )
+
+        progress = db.db_get_progresso("1", "2026-06-15", "10")
+        self.assertIsNotNone(progress)
+        self.assertEqual(progress["aprovada"], 1)
+        self.assertEqual(progress["aprovacao_nivel"], "meta_batida")
 
     def test_finalizing_ticket_auto_approves_partial_delivery_once(self):
         db.db_set_meta("1", "2026-06-15", {"Borracha": 100}, "99")
@@ -688,6 +838,7 @@ class FarmTicketDatabaseTests(unittest.TestCase):
             return fixed, personal
 
         fixed_labels, personal_labels = asyncio.run(labels())
+        self.assertIn("Abrir para Membro", fixed_labels)
         self.assertIn("🎫 Abrir Ticket Semanal", fixed_labels)
         self.assertIn("🗑️ Excluir Ticket", fixed_labels)
         self.assertIn("🎫 Abrir Ticket de Farm", personal_labels)

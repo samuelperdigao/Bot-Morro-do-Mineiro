@@ -782,6 +782,10 @@ def db_aprovar(
            Quando definido, o membro aparece no ranking/fechamento com esse nível.
     """
     conn = get_conn()
+    conn.execute(
+        "INSERT OR IGNORE INTO progresso (guild_id, week_id, user_id) VALUES (?,?,?)",
+        (guild_id, week_id, user_id),
+    )
     conn.execute("""
         UPDATE progresso SET aprovada=1, aprovada_por=?, aprovada_em=?,
             aprovacao_antecipada=?, aprovacao_nivel=?

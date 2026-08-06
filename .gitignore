@@ -8,6 +8,7 @@ logs/
 bau_painel.json
 bau_gerentes_painel.json
 venv/
+.codex-test-venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/

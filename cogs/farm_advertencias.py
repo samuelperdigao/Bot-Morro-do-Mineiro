@@ -10,6 +10,12 @@ from discord.ext import commands
 
 from core.config import BASE_DIR
 from core.date_utils import format_week_range_br
+from core.farm_policy import (
+    farm_week_membership,
+    member_is_exempt_from_farm,
+    member_joined_date,
+    previous_farm_week_id,
+)
 from core.logger import get_logger
 from core.permissions import is_lideranca
 from cogs.hierarquia import HIERARQUIA_CARGOS
@@ -38,6 +44,7 @@ from services.db_service import (
     db_set_farm_adv_panel,
     db_set_farm_adv_role_ids,
     db_set_system_config,
+    now_tz,
 )
 from services.log_service import send_log
 
@@ -179,10 +186,10 @@ def build_farm_warning_preview(
         raise ValueError("Configure os tres cargos de advertencia antes de gerar a previa.")
 
     if db_get_meta(guild_id, week_id) is None:
-        raise ValueError("Nenhuma meta de Farm foi encontrada para a semana ativa.")
+        raise ValueError("Nenhuma meta de Farm foi encontrada para a semana encerrada.")
 
     permitidos_ids = db_get_permitidos_role_ids(guild_id)
-    members = sorted(
+    eligible_members = sorted(
         [
             member
             for member in guild.members
@@ -190,6 +197,22 @@ def build_farm_warning_preview(
         ],
         key=lambda member: member.display_name.casefold(),
     )
+    members: list[discord.Member] = []
+    isentos: list[dict] = []
+    for member in eligible_members:
+        membership = farm_week_membership(member, week_id)
+        if membership == "obrigado":
+            members.append(member)
+        elif membership == "isento_entrada":
+            joined_date = member_joined_date(member)
+            isentos.append(
+                {
+                    "user_id": str(member.id),
+                    "display_name": member.display_name,
+                    "joined_date": joined_date.isoformat() if joined_date else "",
+                    "motivo": "Entrou no servidor durante a semana",
+                }
+            )
     ranking = {
         str(row["user_id"]): row
         for row in db_ranking_semana(guild_id, week_id, [str(member.id) for member in members])
@@ -230,18 +253,22 @@ def build_farm_warning_preview(
         "entregaram": entregaram,
         "parciais": parciais,
         "ausentes": ausentes,
+        "isentos": isentos,
         "pendentes": pendentes,
+        "gerado_em": now_tz().isoformat(),
     }
 
 
-def build_preview_embed(snapshot: dict, *, title: str = "🌾 Fechamento do Farm - Previa") -> discord.Embed:
+def build_preview_embed(snapshot: dict, *, title: str = "🌾 Fechamento do Farm - Prévia") -> discord.Embed:
     week_id = snapshot["week_id"]
     pendentes = snapshot.get("pendentes", [])
     parciais = snapshot.get("parciais", [])
+    isentos = snapshot.get("isentos", [])
     embed = discord.Embed(
         title=title,
         description=(
             f"**Semana:** `{format_week_range_br(week_id)}`\n"
+            f"\U0001F6E1\ufe0f **Isentos por entrada recente:** `{len(isentos)}`\n"
             f"✅ **Completo:** `{len(snapshot.get('entregaram', []))}`\n"
             f"🟡 **Incompleto:** `{len(parciais)}`\n"
             f"📌 **Ausencias:** `{len(snapshot.get('ausentes', []))}`\n"
@@ -272,11 +299,33 @@ def build_preview_embed(snapshot: dict, *, title: str = "🌾 Fechamento do Farm
             ],
         ),
     ]
+    sections.insert(
+        3,
+        (
+            "\U0001F6E1\ufe0f Isentos - entraram nesta semana",
+            [
+                f"`{_display(item)}` - entrada {item.get('joined_date') or 'nao informada'}"
+                for item in isentos
+            ],
+        ),
+    )
+    rendered_sections = 0
     for name, lines in sections:
+        if not lines:
+            continue
         for index, chunk in enumerate(_chunk(lines)):
             field_name = name if index == 0 else f"{name} (cont.)"
             embed.add_field(name=field_name, value=chunk, inline=False)
-    embed.set_footer(text="Parcial nao aplica advertencia. Contagem iniciada pelo novo sistema.")
+            rendered_sections += 1
+    if rendered_sections == 0:
+        embed.add_field(
+            name="Resultado",
+            value="Nenhum membro obrigado foi encontrado para esta semana.",
+            inline=False,
+        )
+    embed.set_footer(
+        text="A situacao de cada membro sera validada novamente antes da aplicacao."
+    )
     return embed
 
 
@@ -349,11 +398,15 @@ def build_panel_embed(guild: discord.Guild, guild_id: str) -> discord.Embed:
     embed = discord.Embed(
         title=PANEL_TITLE,
         description=(
-            "**Fechamento semanal com prévia antes da aplicação.**\n\n"
+            "**Fechamento da última semana encerrada, com prévia antes da aplicação.**\n\n"
+            "\U0001F6E1\ufe0f Entradas na semana ficam isentas automaticamente.\n"
+            "\U0001F6AA Membros que sairam sao desconsiderados.\n"
             "📊 Gere a lista organizada antes de punir.\n"
             "🟡 Farm parcial aparece apenas para cobrança da liderança.\n"
             "⚠️ Use advertência individual para um membro zerado específico.\n"
-            "🧹 Remova uma advertência aplicada por engano."
+            "🧹 Remova uma advertência aplicada por engano.\n\n"
+            "**Seguranca:** entrega, ausencia, cargo e permanencia no servidor "
+            "sao conferidos novamente ao confirmar."
         ),
         color=COR_ADV,
         timestamp=discord.utils.utcnow(),
@@ -375,7 +428,7 @@ class FarmAdvertenciasPanelView(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="Gerar previa",
+        label="Gerar prévia",
         emoji="📊",
         style=discord.ButtonStyle.primary,
         custom_id="farm_adv:preview",
@@ -386,7 +439,7 @@ class FarmAdvertenciasPanelView(discord.ui.View):
             await cog.gerar_previa(interaction)
 
     @discord.ui.button(
-        label="Ausencias",
+        label="Ausências",
         emoji="📌",
         style=discord.ButtonStyle.secondary,
         custom_id="farm_adv:ausencias",
@@ -408,7 +461,7 @@ class FarmAdvertenciasPanelView(discord.ui.View):
             await cog.abrir_consulta(interaction)
 
     @discord.ui.button(
-        label="Advertencia individual",
+        label="Advertência individual",
         emoji="⚠️",
         style=discord.ButtonStyle.danger,
         custom_id="farm_adv:individual",
@@ -786,7 +839,7 @@ class FarmAdvertenciasCog(commands.Cog):
             return
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id)
-        week_id = current_week_id()
+        week_id = previous_farm_week_id(current_week_id())
         try:
             snapshot = build_farm_warning_preview(interaction.guild, guild_id, week_id)
         except ValueError as exc:
@@ -843,10 +896,16 @@ class FarmAdvertenciasCog(commands.Cog):
 
     async def aplicar_individual(self, interaction: discord.Interaction, member: discord.Member):
         guild_id = str(interaction.guild_id)
-        week_id = current_week_id()
+        week_id = previous_farm_week_id(current_week_id())
         if not is_farm_warning_eligible(member, db_get_permitidos_role_ids(guild_id)):
             await interaction.response.send_message(
                 "Esse membro nao esta abaixo do cargo 02 nem nos cargos configurados de farm.",
+                ephemeral=True,
+            )
+            return
+        if member_is_exempt_from_farm(member, week_id):
+            await interaction.response.send_message(
+                "Esse membro entrou no servidor nesta semana e esta isento do Farm.",
                 ephemeral=True,
             )
             return
@@ -1063,11 +1122,35 @@ class FarmAdvertenciasCog(commands.Cog):
             "display_name": item.get("display_name"),
             "nivel": nivel,
         }
-        if nivel is None:
-            return {**result, "status": "ja_pd"}
         member = interaction.guild.get_member(int(user_id))
         if member is None:
-            return {**result, "status": "membro_nao_encontrado"}
+            return {**result, "status": "saiu_do_servidor"}
+
+        guild_id = snapshot["guild_id"]
+        week_id = snapshot["week_id"]
+        if not is_farm_warning_eligible(member, db_get_permitidos_role_ids(guild_id)):
+            return {**result, "status": "nao_participa_mais_do_farm"}
+        if member_is_exempt_from_farm(member, week_id):
+            return {**result, "status": "isento_entrada_na_semana"}
+        if user_id in db_farm_ausencia_user_ids(guild_id, week_id):
+            return {**result, "status": "ausencia_registrada"}
+
+        ranking = db_ranking_semana(guild_id, week_id, [user_id])
+        current = next(
+            (row for row in ranking if str(row["user_id"]) == user_id),
+            {},
+        )
+        classificacao = current.get("classificacao", "zero")
+        if classificacao in {"elite", "meta_batida"}:
+            return {**result, "status": "entrega_completa"}
+        if classificacao == "parcial":
+            return {**result, "status": "farm_parcial"}
+
+        # O nivel tambem pode mudar entre a previa e a confirmacao.
+        nivel = next_warning_level_from_history(guild_id, user_id)
+        result["nivel"] = nivel
+        if nivel is None:
+            return {**result, "status": "ja_pd"}
         role_id = role_ids.get(int(nivel)) or role_ids.get(str(nivel))
         role = interaction.guild.get_role(int(role_id)) if role_id else None
         if role is None:
@@ -1112,12 +1195,27 @@ class FarmAdvertenciasCog(commands.Cog):
         snapshot: dict,
         results: list[dict],
     ) -> None:
+        status_labels = {
+            "aplicada": "advertencia aplicada",
+            "duplicada": "ja advertido nesta semana",
+            "ja_pd": "ja esta em PD",
+            "saiu_do_servidor": "ignorado: saiu do servidor",
+            "nao_participa_mais_do_farm": "ignorado: nao participa mais do Farm",
+            "isento_entrada_na_semana": "isento: entrou nesta semana",
+            "ausencia_registrada": "isento: ausencia registrada",
+            "entrega_completa": "ignorado: entrega concluida apos a previa",
+            "farm_parcial": "ignorado: Farm parcial apos a previa",
+            "cargo_inexistente": "erro: cargo de advertencia inexistente",
+            "sem_permissao": "erro: bot sem permissao de cargo",
+            "erro_discord": "erro ao atualizar o Discord",
+        }
         lines = []
         for result in results:
             nivel = result.get("nivel")
             suffix = f" Adv {nivel}" if nivel else ""
             display = result.get("display_name") or f"ID {result['user_id']}"
-            lines.append(f"`{display}`: {result['status']}{suffix}")
+            status = status_labels.get(result["status"], result["status"])
+            lines.append(f"`{display}`: {status}{suffix}")
         embed = discord.Embed(
             title="Resultado da aplicacao de advertencias",
             description=f"Semana: `{format_week_range_br(snapshot['week_id'])}`",

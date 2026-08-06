@@ -379,34 +379,31 @@ def _saldo_recolhimento_ticket(
     ciclo_id: int,
     item_names: list[str],
 ) -> dict[str, float]:
-    movimentos = []
+    movimentos: dict[str, list[tuple[int, dict]]] = {}
     for lancamento in db_ticket_launches(ticket_id):
-        movimentos.append(
-            (
-                lancamento["criado_em"],
-                0,
-                db_evento_itens(lancamento),
-            )
+        movimentos.setdefault(lancamento["criado_em"], []).append(
+            (0, db_evento_itens(lancamento))
         )
     for entrega in db_recolhimento_get_entregas(ciclo_id):
-        movimentos.append(
-            (
-                entrega["data"],
-                1,
-                db_recolhimento_entrega_itens(entrega),
-            )
+        movimentos.setdefault(entrega["data"], []).append(
+            (1, db_recolhimento_entrega_itens(entrega))
         )
 
     saldos = {nome: 0.0 for nome in item_names}
-    for _, tipo_movimento, valores in sorted(movimentos, key=lambda item: (item[0], item[1])):
-        for nome, valor in valores.items():
-            if nome not in saldos:
-                continue
-            quantidade = float(valor or 0)
-            if tipo_movimento == 0:
-                saldos[nome] += quantidade
+    for timestamp in sorted(movimentos):
+        adicionados = {nome: 0.0 for nome in item_names}
+        retirados = {nome: 0.0 for nome in item_names}
+        for tipo_movimento, valores in movimentos[timestamp]:
+            destino = adicionados if tipo_movimento == 0 else retirados
+            for nome, valor in valores.items():
+                if nome in destino:
+                    destino[nome] += float(valor or 0)
+        for nome in item_names:
+            disponivel_no_instante = saldos[nome] + adicionados[nome]
+            if retirados[nome] > disponivel_no_instante:
+                saldos[nome] = max(saldos[nome] - retirados[nome], 0) + adicionados[nome]
             else:
-                saldos[nome] = max(saldos[nome] - quantidade, 0)
+                saldos[nome] = disponivel_no_instante - retirados[nome]
     return saldos
 
 

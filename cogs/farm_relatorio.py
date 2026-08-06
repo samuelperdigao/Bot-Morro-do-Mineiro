@@ -1,13 +1,15 @@
-"""Painel privado para consultar pendentes da ultima meta semanal encerrada."""
+"""Painel privado para consultar pendentes da semana de Farm atualmente aberta."""
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date, timedelta
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from core.farm_policy import farm_week_membership, member_joined_date, previous_farm_week_id
 from core.logger import get_logger
 from core.permissions import is_permitido_farm
 from services.db_service import (
@@ -15,25 +17,23 @@ from services.db_service import (
     db_farm_report_get,
     db_farm_report_set_panel,
     db_farm_report_set_report_message,
-    db_farm_report_set_snapshot,
     db_get_meta,
     db_get_permitidos_role_ids,
     db_is_farm_configured,
     db_meta_tipo_efetivo,
     db_ticket_approved_user_ids,
     db_ticket_config_get,
-    now_tz,
 )
 
 log = get_logger("farm_relatorio", "farm.log")
 
 REPORT_CHANNEL_NAME = "┃📊-relatório-farm"
 REPORT_FIELD_LIMIT = 1000
+REPORT_FIELDS_PER_EMBED = 5
 
 
 def previous_week_id(week_id: str | None = None) -> str:
-    current_start = date.fromisoformat(week_id or current_week_id())
-    return (current_start - timedelta(days=7)).isoformat()
+    return previous_farm_week_id(week_id or current_week_id())
 
 
 def format_report_week_range(week_id: str) -> str:
@@ -55,14 +55,83 @@ def can_generate_report(member: discord.Member, guild_id: str) -> bool:
     return bool(allowed.intersection(role.id for role in member.roles))
 
 
-def snapshot_eligible_members(guild: discord.Guild, guild_id: str) -> list[dict[str, str]]:
+def snapshot_eligible_members(
+    guild: discord.Guild,
+    guild_id: str,
+    week_id: str | None = None,
+) -> list[dict[str, str]]:
+    week_id = week_id or current_week_id()
     permitted_role_ids = db_get_permitidos_role_ids(guild_id)
     members = [
         {"user_id": str(member.id), "display_name": member.display_name}
         for member in guild.members
-        if not member.bot and is_permitido_farm(member, permitted_role_ids)
+        if (
+            not member.bot
+            and is_permitido_farm(member, permitted_role_ids)
+            and farm_week_membership(member, week_id) == "obrigado"
+        )
     ]
     return sorted(members, key=lambda member: member["display_name"].casefold())
+
+
+def report_member_control(
+    guild: discord.Guild,
+    guild_id: str,
+    week_id: str,
+    snapshot_members: list[dict[str, str]],
+) -> tuple[list[dict[str, str]], list[dict[str, str]], list[dict[str, str]]]:
+    """Separa obrigados atuais, novos isentos e membros que sairam.
+
+    O snapshot preserva quem tinha obrigacao no fechamento. A intersecao com
+    os membros atuais garante que quem saiu do servidor nunca apareca como
+    pendente quando o relatorio for consultado.
+    """
+    current_by_id = {
+        str(member.id): member
+        for member in guild.members
+        if not getattr(member, "bot", False)
+    }
+    present: list[dict[str, str]] = []
+    departed: list[dict[str, str]] = []
+    exempt_by_id: dict[str, dict[str, str]] = {}
+    for item in snapshot_members:
+        user_id = str(item["user_id"])
+        member = current_by_id.get(user_id)
+        if member is None:
+            departed.append(item)
+            continue
+        membership = farm_week_membership(member, week_id)
+        if membership == "obrigado":
+            present.append(item)
+        elif membership == "isento_entrada":
+            joined_date = member_joined_date(member)
+            exempt_by_id[user_id] = {
+                "user_id": user_id,
+                "display_name": member.display_name,
+                "joined_date": joined_date.isoformat() if joined_date else "",
+            }
+
+    permitted_role_ids = db_get_permitidos_role_ids(guild_id)
+    for member in guild.members:
+        if (
+            getattr(member, "bot", False)
+            or not is_permitido_farm(member, permitted_role_ids)
+            or farm_week_membership(member, week_id) != "isento_entrada"
+        ):
+            continue
+        joined_date = member_joined_date(member)
+        exempt_by_id[str(member.id)] = {
+            "user_id": str(member.id),
+            "display_name": member.display_name,
+            "joined_date": joined_date.isoformat() if joined_date else "",
+        }
+
+    key = lambda member: member.get("display_name", "").casefold()
+    return (
+        sorted(present, key=key),
+        sorted(exempt_by_id.values(), key=key),
+        sorted(departed, key=key),
+    )
 
 
 def _meta_label(meta) -> str:
@@ -96,7 +165,12 @@ def build_pending_report_embeds(
     week_id: str,
     required_members: list[dict[str, str]],
     approved_user_ids: set[str],
+    *,
+    exempt_members: list[dict[str, str]] | None = None,
+    departed_members: list[dict[str, str]] | None = None,
 ) -> list[discord.Embed]:
+    exempt_members = exempt_members or []
+    departed_members = departed_members or []
     required_ids = {str(member["user_id"]) for member in required_members}
     delivered_ids = required_ids.intersection(approved_user_ids)
     pending = [
@@ -111,13 +185,19 @@ def build_pending_report_embeds(
         f"🎯 **Meta:** {_meta_label(meta)}\n"
         f"👥 **Membros obrigados:** {len(required_ids)}\n"
         f"✅ **Entregaram:** {len(delivered_ids)}\n"
-        f"❌ **Pendentes:** {len(pending)}"
+        f"❌ **Pendentes:** {len(pending)}\n"
+        f"🛡️ **Isentos (entraram na semana):** {len(exempt_members)}"
     )
+    if departed_members:
+        summary += (
+            f"\n🚪 **Desconsiderados (saíram do servidor):** "
+            f"{len(departed_members)}"
+        )
     if not pending:
         summary += "\n\n✅ Todos os membros obrigados entregaram a meta desta semana."
 
     first = discord.Embed(
-        title="📋 Relatório de Pendentes da Meta Semanal",
+        title="📋 Relatório de Pendentes — Semana Atual",
         description=summary,
         color=discord.Color.green() if not pending else discord.Color.red(),
     )
@@ -129,7 +209,7 @@ def build_pending_report_embeds(
         )
     ):
         current = embeds[-1]
-        if len(current.fields) == 25:
+        if len(current.fields) == REPORT_FIELDS_PER_EMBED:
             current = discord.Embed(
                 title="📋 Relatório de Pendentes — Continuação",
                 color=discord.Color.red(),
@@ -142,7 +222,7 @@ def build_pending_report_embeds(
         )
 
     for embed in embeds:
-        embed.set_footer(text="Morro do Mineiro • última semana encerrada")
+        embed.set_footer(text="Morro do Mineiro • semana aberta • atualização automática")
     return embeds
 
 
@@ -150,12 +230,30 @@ def build_report_panel_embed() -> discord.Embed:
     embed = discord.Embed(
         title="📊 Relatório de Pendentes de Farm",
         description=(
-            "Clique no botão abaixo para gerar a lista dos membros que não "
-            "entregaram a meta de farm da semana encerrada."
+            "Acompanhe a **semana atualmente aberta** com as regras de participação "
+            "aplicadas automaticamente.\n\n"
+            "🛡️ Quem entrou durante a semana fica **isento**.\n"
+            "🚪 Quem saiu do servidor é **retirado da contagem**.\n"
+            "🔄 O relatório é atualizado automaticamente a cada 5 minutos.\n"
+            "📋 Use o botão para atualizar imediatamente."
         ),
         color=discord.Color.gold(),
     )
     embed.set_footer(text="Morro do Mineiro • Sistema de Farm")
+    return embed
+
+
+def build_no_meta_report_embed(week_id: str) -> discord.Embed:
+    embed = discord.Embed(
+        title="\U0001F4CB Relatório de Pendentes — Semana Atual",
+        description=(
+            f"\U0001F4C5 **Período:** {format_report_week_range(week_id)}\n\n"
+            "⏳ A meta desta semana ainda não foi configurada. O relatório será "
+            "preenchido automaticamente assim que a meta estiver disponível."
+        ),
+        color=discord.Color.orange(),
+    )
+    embed.set_footer(text="Morro do Mineiro • semana aberta • aguardando meta")
     return embed
 
 
@@ -189,7 +287,7 @@ class FarmPendingReportView(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="📋 Gerar Relatório de Pendentes",
+        label="🔄 Atualizar Relatório Agora",
         style=discord.ButtonStyle.primary,
         custom_id="farm_pending_report:generate",
     )
@@ -208,10 +306,10 @@ class FarmPendingReportCog(commands.Cog):
         self.bot = bot
         self._permissions_reconciled = False
         bot.add_view(FarmPendingReportView())
-        self.snapshot_task.start()
+        self.report_refresh_task.start()
 
     def cog_unload(self):
-        self.snapshot_task.cancel()
+        self.report_refresh_task.cancel()
 
     async def _get_text_channel(
         self, guild: discord.Guild, channel_id: str | None
@@ -324,41 +422,58 @@ class FarmPendingReportCog(commands.Cog):
         db_farm_report_set_report_message(guild_id, str(report_message.id))
         return report_message
 
-    async def capture_snapshot(self, guild: discord.Guild, week_id: str) -> None:
-        members = snapshot_eligible_members(guild, str(guild.id))
-        db_farm_report_set_snapshot(str(guild.id), week_id, members)
-        log.info(
-            "Snapshot semanal de Farm salvo (guild %s, semana %s, membros %s)",
-            guild.id,
+    async def _refresh_current_report(
+        self,
+        guild: discord.Guild,
+        channel: discord.TextChannel | None = None,
+    ) -> tuple[str, bool]:
+        guild_id = str(guild.id)
+        week_id = current_week_id()
+        config = db_farm_report_get(guild_id) or {}
+        channel = channel or await self._get_text_channel(guild, config.get("channel_id"))
+        if channel is None:
+            raise LookupError("Canal do relatório não encontrado.")
+
+        meta = db_get_meta(guild_id, week_id)
+        if meta is None:
+            await self._upsert_report_message(
+                channel,
+                [build_no_meta_report_embed(week_id)],
+            )
+            return week_id, False
+
+        current_members = snapshot_eligible_members(guild, guild_id, week_id)
+        required_members, exempt_members, _ = report_member_control(
+            guild,
+            guild_id,
             week_id,
-            len(members),
+            current_members,
         )
+        embeds = build_pending_report_embeds(
+            meta,
+            week_id,
+            required_members,
+            db_ticket_approved_user_ids(guild_id, week_id),
+            exempt_members=exempt_members,
+        )
+        await self._upsert_report_message(channel, embeds)
+        return week_id, True
 
     async def generate_report(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
         guild_id = str(interaction.guild_id)
         if guild is None or not can_generate_report(interaction.user, guild_id):
             await interaction.response.send_message(
-                "❌ Apenas os responsáveis pelos tickets de Farm podem gerar este relatório.",
+                "❌ Apenas os responsáveis pelos tickets de Farm podem atualizar este relatório.",
                 ephemeral=True,
             )
             return
 
         await interaction.response.defer(ephemeral=True)
-        week_id = previous_week_id()
         config = db_farm_report_get(guild_id)
-        if not config or config.get("snapshot_week_id") != week_id:
+        if not config:
             await interaction.followup.send(
-                "⚠️ O snapshot da última semana encerrada ainda não está disponível. "
-                "O primeiro relatório poderá ser gerado após o próximo fechamento semanal.",
-                ephemeral=True,
-            )
-            return
-
-        meta = db_get_meta(guild_id, week_id)
-        if meta is None:
-            await interaction.followup.send(
-                "⚠️ Nenhuma meta de Farm foi encontrada para a semana encerrada.",
+                "❌ O painel do relatório ainda não foi configurado.",
                 ephemeral=True,
             )
             return
@@ -370,17 +485,10 @@ class FarmPendingReportCog(commands.Cog):
                 ephemeral=True,
             )
             return
-
-        approved_user_ids = db_ticket_approved_user_ids(guild_id, week_id)
-        embeds = build_pending_report_embeds(
-            meta,
-            week_id,
-            config.get("snapshot_members", []),
-            approved_user_ids,
-        )
-        await self._upsert_report_message(channel, embeds)
+        week_id, meta_available = await self._refresh_current_report(guild, channel)
+        status = "atualizado" if meta_available else "aguardando a configuração da meta"
         await interaction.followup.send(
-            f"✅ Relatório da semana `{format_report_week_range(week_id)}` atualizado.",
+            f"✅ Relatório da semana aberta `{format_report_week_range(week_id)}` {status}.",
             ephemeral=True,
         )
 
@@ -402,27 +510,35 @@ class FarmPendingReportCog(commands.Cog):
                 await self._configure_channel_permissions(
                     channel, ticket_config["admin_role_ids"]
                 )
+                await self._upsert_panel(channel)
+                await self._refresh_current_report(guild, channel)
             except discord.HTTPException:
-                log.exception("Falha ao reconciliar permissões do relatório na guild %s", guild.id)
+                log.exception(
+                    "Falha ao reconciliar painel e permissões do relatório na guild %s",
+                    guild.id,
+                )
 
-    @tasks.loop(minutes=1)
-    async def snapshot_task(self):
-        now = now_tz()
-        if now.weekday() != 6 or now.hour != 23 or now.minute != 59:
-            return
-        week_id = current_week_id()
+    @tasks.loop(minutes=5)
+    async def report_refresh_task(self):
         for guild in self.bot.guilds:
             guild_id = str(guild.id)
             if not db_is_farm_configured(guild_id) or not db_ticket_config_get(guild_id):
                 continue
+            if not db_farm_report_get(guild_id):
+                continue
             try:
-                await self.capture_snapshot(guild, week_id)
+                await self._refresh_current_report(guild)
             except Exception:
-                log.exception("Falha ao salvar snapshot semanal de Farm na guild %s", guild.id)
+                log.exception(
+                    "Falha ao atualizar automaticamente o relatório de Farm na guild %s",
+                    guild.id,
+                )
 
-    @snapshot_task.before_loop
-    async def before_snapshot_task(self):
+    @report_refresh_task.before_loop
+    async def before_report_refresh_task(self):
         await self.bot.wait_until_ready()
+        # O on_ready faz a primeira atualizacao; evita uma segunda edicao concorrente.
+        await asyncio.sleep(10)
 
     @app_commands.command(
         name="setup_relatorio_farm",

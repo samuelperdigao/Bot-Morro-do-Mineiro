@@ -188,6 +188,31 @@ class FarmPainelView(discord.ui.View):
         await cog.open_ticket(interaction)
 
     @discord.ui.button(
+        label="Abrir para Membro",
+        style=discord.ButtonStyle.success,
+        custom_id="farm_painel:abrir_ticket_membro",
+        row=2,
+    )
+    async def abrir_ticket_membro(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cog = interaction.client.get_cog("FarmTicketsCog")
+        if not cog:
+            await interaction.response.send_message(
+                "Sistema de tickets indisponivel.", ephemeral=True
+            )
+            return
+        if not cog.is_ticket_operator(interaction.user):
+            await interaction.response.send_message(
+                "Apenas Gerente de Farm, Gerente Geral ou Administrador podem abrir ticket para outro membro.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            "Selecione o membro que sera dono do ticket:",
+            view=FarmTicketMemberSelectView(cog),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
         label="🗑️ Excluir Ticket",
         style=discord.ButtonStyle.danger,
         custom_id="farm_painel:excluir_ticket_admin",
@@ -227,6 +252,45 @@ class LegacyFarmLaunchView(discord.ui.View):
     )
     async def lancar_dinheiro(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._disabled(interaction)
+
+
+class FarmTicketMemberSelect(discord.ui.UserSelect):
+    def __init__(self, ticket_cog):
+        super().__init__(
+            placeholder="Selecione quem sera dono do ticket",
+            min_values=1,
+            max_values=1,
+        )
+        self.ticket_cog = ticket_cog
+
+    async def callback(self, interaction: discord.Interaction):
+        member = self.values[0]
+        if not isinstance(member, discord.Member):
+            if not interaction.guild:
+                await interaction.response.send_message(
+                    "Nao consegui identificar o servidor desta interacao.",
+                    ephemeral=True,
+                )
+                return
+            try:
+                member = await interaction.guild.fetch_member(member.id)
+            except Exception:
+                await interaction.response.send_message(
+                    "Nao consegui encontrar esse membro no servidor.",
+                    ephemeral=True,
+                )
+                return
+        await self.ticket_cog._open_ticket_for_owner(
+            interaction,
+            member,
+            administrative=True,
+        )
+
+
+class FarmTicketMemberSelectView(discord.ui.View):
+    def __init__(self, ticket_cog):
+        super().__init__(timeout=180)
+        self.add_item(FarmTicketMemberSelect(ticket_cog))
 
 
 class FarmMembroSelect(discord.ui.UserSelect):
@@ -321,6 +385,7 @@ def _build_painel_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🌾 Painel de Farm — Morro do Mineiro",
         description=(
+            "**Abrir para Membro** - Gerente de Farm, Gerente Geral e Administrador abrem ticket para outra pessoa.\n"
             "**🎫 Abrir Ticket Semanal** — Único local para enviar novos lançamentos e comprovantes.\n"
             "**📊 Ver Meu Farm** — Veja seu progresso e percentual atingido.\n"
             "**👥 Farm Membro** — Liderança consulta lançamentos para edição administrativa.\n"

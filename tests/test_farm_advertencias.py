@@ -1,8 +1,10 @@
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 import services.db_service as db
 from cogs.farm_advertencias import (
@@ -21,11 +23,12 @@ class FakeRole:
 
 
 class FakeMember:
-    def __init__(self, user_id, name, roles, *, administrator=False):
+    def __init__(self, user_id, name, roles, *, administrator=False, joined_at=None):
         self.id = user_id
         self.display_name = name
         self.roles = roles
         self.bot = False
+        self.joined_at = joined_at
         self.guild_permissions = SimpleNamespace(
             administrator=administrator,
             manage_guild=False,
@@ -142,6 +145,31 @@ class FarmAdvertenciasTests(unittest.TestCase):
 
         self.assertFalse(is_farm_warning_eligible(member, [50]))
 
+    def test_member_who_joined_during_week_is_exempt_from_warning(self):
+        guild_id = "1"
+        week_id = "2026-06-15"
+        newcomer = FakeMember(
+            10,
+            "Novato",
+            [FakeRole(50)],
+            joined_at=datetime(
+                2026, 6, 18, 12, 0, tzinfo=ZoneInfo("America/Sao_Paulo")
+            ),
+        )
+        db.db_set_guild_config(
+            guild_id,
+            cargos_permitidos_farm="50",
+            farm_adv1_role_id="101",
+            farm_adv2_role_id="102",
+            farm_adv3_role_id="103",
+        )
+        db.db_set_meta(guild_id, week_id, {"Borracha": 100}, "99")
+
+        snapshot = build_farm_warning_preview(FakeGuild([newcomer]), guild_id, week_id)
+
+        self.assertEqual(snapshot["pendentes"], [])
+        self.assertEqual([item["user_id"] for item in snapshot["isentos"]], ["10"])
+
     def test_panel_uses_stable_title_for_message_recovery(self):
         embed = build_panel_embed(SimpleNamespace(), "1")
 
@@ -184,6 +212,21 @@ class FarmAdvertenciasTests(unittest.TestCase):
 
 
 class FarmAdvertenciasInteractionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_apply_ignores_member_who_left_after_preview(self):
+        cog = FarmAdvertenciasCog.__new__(FarmAdvertenciasCog)
+        interaction = SimpleNamespace(
+            guild=SimpleNamespace(get_member=lambda _user_id: None),
+        )
+
+        result = await cog._apply_warning_item(
+            interaction,
+            {"guild_id": "1", "week_id": "2026-06-15"},
+            {"user_id": "10", "display_name": "Saiu", "nivel": 1},
+            {1: "101", 2: "102", 3: "103"},
+        )
+
+        self.assertEqual(result["status"], "saiu_do_servidor")
+
     async def test_apply_failure_marks_preview_for_retry(self):
         cog = FarmAdvertenciasCog.__new__(FarmAdvertenciasCog)
         cog.bot = SimpleNamespace()

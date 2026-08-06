@@ -1,17 +1,22 @@
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 import discord
 import services.db_service as db
 from cogs.farm_relatorio import (
+    FarmPendingReportCog,
     FarmPendingReportView,
     build_pending_report_embeds,
     build_report_overwrites,
     can_generate_report,
     is_main_farm_category,
     previous_week_id,
+    report_member_control,
     snapshot_eligible_members,
 )
 
@@ -70,8 +75,28 @@ class FarmReportLayoutTests(unittest.IsolatedAsyncioTestCase):
         view = FarmPendingReportView()
         self.assertEqual(len(view.children), 1)
         self.assertEqual(view.children[0].custom_id, "farm_pending_report:generate")
-        self.assertEqual(view.children[0].label, "📋 Gerar Relatório de Pendentes")
+        self.assertEqual(view.children[0].label, "🔄 Atualizar Relatório Agora")
         view.stop()
+
+    async def test_automatic_report_uses_current_open_week(self):
+        report_cog = FarmPendingReportCog.__new__(FarmPendingReportCog)
+        report_cog._upsert_report_message = AsyncMock()
+        guild = SimpleNamespace(id=1, members=[])
+        channel = SimpleNamespace()
+
+        with (
+            patch("cogs.farm_relatorio.current_week_id", return_value="2026-07-27"),
+            patch("cogs.farm_relatorio.db_farm_report_get", return_value={}),
+            patch("cogs.farm_relatorio.db_get_meta", return_value=None),
+        ):
+            week_id, meta_available = await report_cog._refresh_current_report(
+                guild, channel
+            )
+
+        self.assertEqual(week_id, "2026-07-27")
+        self.assertFalse(meta_available)
+        embed = report_cog._upsert_report_message.await_args.args[1][0]
+        self.assertIn("27/07 a 02/08", embed.description)
 
     async def test_report_lists_only_pending_nicknames_without_ids(self):
         meta = {
@@ -187,12 +212,13 @@ class FarmReportPermissionTests(unittest.TestCase):
         permitted_role = SimpleNamespace(id=50)
         other_role = SimpleNamespace(id=60)
 
-        def member(user_id, name, role, *, bot=False):
+        def member(user_id, name, role, *, bot=False, joined_at=None):
             return SimpleNamespace(
                 id=user_id,
                 display_name=name,
                 roles=[role],
                 bot=bot,
+                joined_at=joined_at,
                 guild_permissions=SimpleNamespace(administrator=False),
             )
 
@@ -206,6 +232,72 @@ class FarmReportPermissionTests(unittest.TestCase):
             snapshot_eligible_members(guild, "1"),
             [{"user_id": "10", "display_name": "Mineiro"}],
         )
+
+    def test_snapshot_exempts_members_who_joined_during_the_week(self):
+        db.db_set_guild_config("1", cargos_permitidos_farm="50")
+        role = SimpleNamespace(id=50)
+        tz = ZoneInfo("America/Sao_Paulo")
+
+        def member(user_id, name, joined_at):
+            return SimpleNamespace(
+                id=user_id,
+                display_name=name,
+                roles=[role],
+                bot=False,
+                joined_at=joined_at,
+                guild_permissions=SimpleNamespace(administrator=False),
+            )
+
+        guild = SimpleNamespace(
+            members=[
+                member(10, "Veterano", datetime(2026, 6, 14, 23, 59, tzinfo=tz)),
+                member(20, "Novato", datetime(2026, 6, 18, 12, 0, tzinfo=tz)),
+            ]
+        )
+
+        self.assertEqual(
+            snapshot_eligible_members(guild, "1", "2026-06-15"),
+            [{"user_id": "10", "display_name": "Veterano"}],
+        )
+
+    def test_report_removes_departed_and_identifies_new_member_exemption(self):
+        db.db_set_guild_config("1", cargos_permitidos_farm="50")
+        role = SimpleNamespace(id=50)
+        new_member = SimpleNamespace(
+            id=30,
+            display_name="Novato",
+            roles=[role],
+            bot=False,
+            joined_at=datetime(
+                2026, 6, 20, 12, 0, tzinfo=ZoneInfo("America/Sao_Paulo")
+            ),
+            guild_permissions=SimpleNamespace(administrator=False),
+        )
+        veteran = SimpleNamespace(
+            id=10,
+            display_name="Veterano",
+            roles=[role],
+            bot=False,
+            joined_at=None,
+            guild_permissions=SimpleNamespace(administrator=False),
+        )
+        snapshot = [
+            {"user_id": "10", "display_name": "Veterano"},
+            {"user_id": "20", "display_name": "Saiu"},
+            # Compatibilidade: snapshots feitos antes da regra podiam conter novatos.
+            {"user_id": "30", "display_name": "Novato"},
+        ]
+
+        required, exempt, departed = report_member_control(
+            SimpleNamespace(members=[veteran, new_member]),
+            "1",
+            "2026-06-15",
+            snapshot,
+        )
+
+        self.assertEqual([item["user_id"] for item in required], ["10"])
+        self.assertEqual([item["user_id"] for item in exempt], ["30"])
+        self.assertEqual([item["user_id"] for item in departed], ["20"])
 
 
 if __name__ == "__main__":
