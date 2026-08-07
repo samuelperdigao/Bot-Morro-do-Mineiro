@@ -26,6 +26,16 @@ log = get_logger("farm_painel", "farm.log")
 
 COR_FARM   = 0xFFD700
 FOOTER_FARM = "Morro do Mineiro — Sistema de Farm"
+TICKET_MEMBER_PAGE_SIZE = 25
+
+
+async def fetch_ticket_target_members(guild: discord.Guild) -> list[discord.Member]:
+    """Busca todos os membros humanos diretamente na API do Discord."""
+    members = [member async for member in guild.fetch_members(limit=None) if not member.bot]
+    return sorted(
+        members,
+        key=lambda member: (member.display_name.casefold(), member.id),
+    )
 
 
 async def lock_farm_panel_channel(
@@ -111,11 +121,36 @@ class FarmPainelView(discord.ui.View):
                 ephemeral=True,
             )
             return
-        await interaction.response.send_message(
-            "Selecione o membro que sera dono do ticket:",
-            view=FarmTicketMemberSelectView(cog),
-            ephemeral=True,
-        )
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ Não consegui identificar o servidor desta interação.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            members = await fetch_ticket_target_members(interaction.guild)
+        except (discord.Forbidden, discord.HTTPException):
+            log.exception(
+                "Falha ao carregar a lista completa de membros (guild %s)",
+                interaction.guild.id,
+            )
+            await interaction.followup.send(
+                "❌ Não consegui carregar todos os membros do servidor. Tente novamente em instantes.",
+                ephemeral=True,
+            )
+            return
+
+        if not members:
+            await interaction.followup.send(
+                "❌ Não encontrei membros disponíveis neste servidor.",
+                ephemeral=True,
+            )
+            return
+
+        view = FarmTicketMemberSelectView(cog, members)
+        await interaction.followup.send(view.message, view=view, ephemeral=True)
 
     @discord.ui.button(
         label="🗑️ Excluir Ticket",
@@ -159,33 +194,46 @@ class LegacyFarmLaunchView(discord.ui.View):
         await self._disabled(interaction)
 
 
-class FarmTicketMemberSelect(discord.ui.UserSelect):
-    def __init__(self, ticket_cog):
+class FarmTicketMemberSelect(discord.ui.Select):
+    def __init__(self, owner_view: "FarmTicketMemberSelectView"):
+        self.owner_view = owner_view
+        start = owner_view.page * TICKET_MEMBER_PAGE_SIZE
+        page_members = owner_view.members[start:start + TICKET_MEMBER_PAGE_SIZE]
+        options = [
+            discord.SelectOption(
+                label=member.display_name[:100],
+                value=str(member.id),
+                description=f"@{member.name} • ID: {member.id}"[:100],
+            )
+            for member in page_members
+        ]
         super().__init__(
-            placeholder="Selecione quem sera dono do ticket",
+            placeholder=f"Selecione pelo apelido • página {owner_view.page + 1}/{owner_view.page_count}",
             min_values=1,
             max_values=1,
+            options=options,
+            row=0,
         )
-        self.ticket_cog = ticket_cog
 
     async def callback(self, interaction: discord.Interaction):
-        member = self.values[0]
-        if not isinstance(member, discord.Member):
-            if not interaction.guild:
-                await interaction.response.send_message(
-                    "Nao consegui identificar o servidor desta interacao.",
-                    ephemeral=True,
-                )
-                return
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "❌ Não consegui identificar o servidor desta interação.",
+                ephemeral=True,
+            )
+            return
+        member_id = int(self.values[0])
+        member = interaction.guild.get_member(member_id)
+        if member is None:
             try:
-                member = await interaction.guild.fetch_member(member.id)
-            except Exception:
+                member = await interaction.guild.fetch_member(member_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 await interaction.response.send_message(
-                    "Nao consegui encontrar esse membro no servidor.",
+                    "❌ Esse membro não está mais no servidor.",
                     ephemeral=True,
                 )
                 return
-        await self.ticket_cog._open_ticket_for_owner(
+        await self.owner_view.ticket_cog._open_ticket_for_owner(
             interaction,
             member,
             administrative=True,
@@ -193,9 +241,57 @@ class FarmTicketMemberSelect(discord.ui.UserSelect):
 
 
 class FarmTicketMemberSelectView(discord.ui.View):
-    def __init__(self, ticket_cog):
+    def __init__(self, ticket_cog, members: list[discord.Member], page: int = 0):
         super().__init__(timeout=180)
-        self.add_item(FarmTicketMemberSelect(ticket_cog))
+        self.ticket_cog = ticket_cog
+        self.members = tuple(members)
+        self.page_count = max(
+            1,
+            (len(self.members) + TICKET_MEMBER_PAGE_SIZE - 1) // TICKET_MEMBER_PAGE_SIZE,
+        )
+        self.page = max(0, min(page, self.page_count - 1))
+        self._build_page()
+
+    @property
+    def message(self) -> str:
+        return (
+            f"👥 **Selecione pelo apelido do servidor** "
+            f"— página {self.page + 1} de {self.page_count} "
+            f"({len(self.members)} membros)."
+        )
+
+    def _build_page(self) -> None:
+        self.clear_items()
+        self.add_item(FarmTicketMemberSelect(self))
+
+        previous = discord.ui.Button(
+            label="⬅️ Anterior",
+            style=discord.ButtonStyle.secondary,
+            row=1,
+            disabled=self.page == 0,
+        )
+        previous.callback = self._previous_page
+        self.add_item(previous)
+
+        following = discord.ui.Button(
+            label="Próxima ➡️",
+            style=discord.ButtonStyle.secondary,
+            row=1,
+            disabled=self.page >= self.page_count - 1,
+        )
+        following.callback = self._next_page
+        self.add_item(following)
+
+    async def _change_page(self, interaction: discord.Interaction, offset: int) -> None:
+        self.page = max(0, min(self.page + offset, self.page_count - 1))
+        self._build_page()
+        await interaction.response.edit_message(content=self.message, view=self)
+
+    async def _previous_page(self, interaction: discord.Interaction) -> None:
+        await self._change_page(interaction, -1)
+
+    async def _next_page(self, interaction: discord.Interaction) -> None:
+        await self._change_page(interaction, 1)
 
 
 class FarmMembroSelect(discord.ui.UserSelect):

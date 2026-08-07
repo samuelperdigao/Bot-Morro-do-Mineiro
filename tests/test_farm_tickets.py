@@ -12,7 +12,9 @@ from config.paineis import BOTOES_LIDERANCA
 from cogs.farm import FarmView
 from cogs.farm_painel import (
     FarmPainelView,
+    FarmTicketMemberSelectView,
     LegacyFarmLaunchView,
+    fetch_ticket_target_members,
     lock_farm_panel_channel,
 )
 from cogs.farm_tickets import (
@@ -849,6 +851,48 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         self.assertIn("🎫 Abrir Ticket de Farm", personal_labels)
         self.assertNotIn("🚜 Lançar Farm", fixed_labels)
         self.assertNotIn("💵 Lançar Dinheiro", fixed_labels | personal_labels)
+
+    def test_ticket_member_pages_include_every_human_by_server_nickname(self):
+        class FakeGuild:
+            def __init__(self, members):
+                self._members = members
+
+            async def fetch_members(self, *, limit=None):
+                self.requested_limit = limit
+                for member in self._members:
+                    yield member
+
+        members = [
+            SimpleNamespace(
+                id=index,
+                display_name=f"Apelido {index:02d}",
+                name=f"usuario{index}",
+                bot=False,
+            )
+            for index in range(1, 61)
+        ]
+        members.append(
+            SimpleNamespace(id=999, display_name="Bot", name="bot", bot=True)
+        )
+        guild = FakeGuild(list(reversed(members)))
+
+        async def collect_options():
+            targets = await fetch_ticket_target_members(guild)
+            values = []
+            labels = []
+            for page in range(3):
+                view = FarmTicketMemberSelectView(None, targets, page)
+                select = view.children[0]
+                values.extend(option.value for option in select.options)
+                labels.extend(option.label for option in select.options)
+            return targets, values, labels
+
+        targets, values, labels = asyncio.run(collect_options())
+        self.assertIsNone(guild.requested_limit)
+        self.assertEqual(len(targets), 60)
+        self.assertEqual(set(values), {str(index) for index in range(1, 61)})
+        self.assertEqual(labels[0], "Apelido 01")
+        self.assertEqual(labels[-1], "Apelido 60")
 
     def test_legacy_fixed_panel_ids_remain_registered_as_blockers(self):
         async def ids():
