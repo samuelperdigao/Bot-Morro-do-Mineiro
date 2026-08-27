@@ -4,6 +4,7 @@ cogs/farm.py - Extensão FARM: metas semanais, lançamentos e aprovações.
 
 import asyncio
 import logging
+from pathlib import Path
 
 import discord
 from discord import app_commands
@@ -17,6 +18,7 @@ from core.role_promotion import promote_role
 from core.command_config import is_enabled as _cmd_enabled
 from cogs.colete import MATERIAIS_POR_COLETE
 from services.log_service import send_log
+from services.set_service import MemberFolderError, resolve_member_folder
 from services.db_service import (
     DINHEIRO_ITEMS, DINHEIRO_LIMPO_ITEM, DINHEIRO_SUJO_ITEM,
     init_db, current_week_id, now_tz, janela_valida, fmt_dt,
@@ -46,6 +48,15 @@ EVERYONE_ALLOWED_MENTIONS = discord.AllowedMentions(
 )
 FARM_PRINT_TIMEOUT_SECONDS = 180.0
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+# A primeira imagem existente é usada; o logo das advertências serve de reserva
+# para o aviso nunca sair sem a marca do Morro.
+META_APROVADA_IMAGE_PATHS = (
+    BASE_DIR / "assets" / "farm" / "meta-aprovada.png",
+    BASE_DIR / "assets" / "farm" / "meta-aprovada.jpg",
+    BASE_DIR / "assets" / "farm_advertencias" / "logo.jpg",
+)
 FARM_EXTRA_ITEM = "Ferro"
 COLETE_MATERIAL_EMOJIS = {
     "ferro": "🔩",
@@ -940,6 +951,32 @@ async def _safe_respond(interaction: discord.Interaction, msg: str):
     except Exception:
         pass
 
+def _meta_aprovada_asset() -> Path | None:
+    """Caminho da arte usada na parabenização da meta, se estiver no disco."""
+    for caminho in META_APROVADA_IMAGE_PATHS:
+        if caminho.exists():
+            return caminho
+    return None
+
+
+def _meta_aprovada_filename() -> str | None:
+    """Nome do anexo referenciado pelo embed, sem abrir o arquivo."""
+    caminho = _meta_aprovada_asset()
+    return f"mdm-meta{caminho.suffix.lower()}" if caminho else None
+
+
+def _meta_aprovada_anexo() -> discord.File | None:
+    """Cria um anexo novo a cada tentativa de envio (o arquivo é consumido)."""
+    caminho = _meta_aprovada_asset()
+    if not caminho:
+        return None
+    try:
+        return discord.File(caminho, filename=f"mdm-meta{caminho.suffix.lower()}")
+    except OSError as e:
+        log.warning("Falha ao abrir a arte da meta aprovada: %s", e)
+        return None
+
+
 async def _safe_fetch_member(guild: discord.Guild, member_id: int):
     try:
         return await guild.fetch_member(member_id)
@@ -1070,8 +1107,27 @@ class FarmCog(commands.Cog):
             color=discord.Color.gold(), timestamp=discord.utils.utcnow(),
         )
         embed.set_thumbnail(url=membro.display_avatar.url)
+        embed.set_footer(text="Morro do Mineiro — Sistema de Farm")
+
+        arte = _meta_aprovada_filename()
+        if arte:
+            embed.set_image(url=f"attachment://{arte}")
+
+        def _arquivos() -> list[discord.File]:
+            anexo = _meta_aprovada_anexo()
+            return [anexo] if anexo else []
+
+        pasta = await self._resolver_pasta_privada(guild, membro)
+        if pasta:
+            try:
+                await pasta.send(membro.mention, embed=embed, files=_arquivos())
+                log.info("Aprovação enviada na pasta privada: user=%s canal=%s", user_id, pasta.id)
+                return
+            except Exception as e:
+                log.warning("Falha ao notificar pasta privada de %s: %s", user_id, e)
+
         try:
-            await membro.send(embed=embed)
+            await membro.send(embed=embed, files=_arquivos())
             return
         except Exception:
             pass
@@ -1081,9 +1137,30 @@ class FarmCog(commands.Cog):
         if canal_avisos_id:
             try:
                 canal = guild.get_channel(canal_avisos_id) or await guild.fetch_channel(canal_avisos_id)
-                await canal.send(membro.mention, embed=embed)
+                await canal.send(membro.mention, embed=embed, files=_arquivos())
             except Exception as e:
                 log.warning(f"Falha ao notificar canal de avisos: {e}")
+
+    async def _resolver_pasta_privada(
+        self, guild: discord.Guild, membro: discord.Member,
+    ) -> discord.TextChannel | None:
+        """Canal da pasta individual do membro, quando identificável com segurança."""
+        cfg = db_get_guild_config(str(guild.id))
+        if not cfg or not cfg["private_category_id"]:
+            return None
+        try:
+            pasta = await resolve_member_folder(
+                guild, str(guild.id), membro, int(cfg["private_category_id"]),
+            )
+        except MemberFolderError as e:
+            log.info("Pasta privada não identificada para %s: %s", membro.id, e)
+            return None
+        except Exception as e:
+            log.warning("Falha ao resolver pasta privada de %s: %s", membro.id, e)
+            return None
+
+        canal = guild.get_channel(pasta.channel_id) or await _safe_fetch_channel(guild, pasta.channel_id)
+        return canal if isinstance(canal, discord.TextChannel) else None
 
     async def _notificar_conclusao(self, guild: discord.Guild, user_id: str, week_id: str):
         """
