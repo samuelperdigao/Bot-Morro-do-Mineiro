@@ -23,6 +23,8 @@ DINHEIRO_SUJO_ITEM = "Dinheiro Sujo"
 DINHEIRO_LIMPO_ITEM = "Dinheiro Limpo"
 DINHEIRO_ITEMS = (DINHEIRO_SUJO_ITEM, DINHEIRO_LIMPO_ITEM)
 AUTO_FINALIZATION_REASON = "Ticket expirado - aprovação automática"
+APROVACAO_ORIGEM_META = "meta_atingida"
+APROVACAO_ORIGEM_EXPIRACAO = "ticket_expirado"
 AUTO_FINAL_STATUS_TOTAL = "APROVADA_TOTAL"
 AUTO_FINAL_STATUS_PARTIAL = "APROVADA_PARCIAL"
 AUTO_FINAL_STATUS_EMPTY = "SEM_ENTREGA"
@@ -2461,7 +2463,8 @@ def db_ticket_finalize_with_auto_approval(
                     actor_id,
                     json.dumps(
                         {
-                            "automatica": True,
+                            "aprovacao_automatica": True,
+                            "origem": APROVACAO_ORIGEM_EXPIRACAO,
                             "motivo": auto_reason,
                             "status_final": overall_status,
                         },

@@ -20,8 +20,15 @@ from cogs.farm_painel import (
 from cogs.farm_tickets import (
     FarmTicketView,
     FarmTicketsCog,
+    _approval_is_automatic,
+    _approval_origin,
     _expanded_admin_role_ids,
+    _payload_approval_origin,
     _progress,
+)
+from services.db_service import (
+    APROVACAO_ORIGEM_EXPIRACAO,
+    APROVACAO_ORIGEM_META,
 )
 from cogs.recolhimento import (
     RecolhimentoCog,
@@ -500,6 +507,175 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         self.assertEqual(payload["percentual_no_momento"], 97.0)
         ticket_cog.refresh_ticket.assert_awaited_once_with(int(ticket["id"]))
         response.send_message.assert_awaited_once()
+
+    def _create_auto_approval_cog(self):
+        cog, channel = self._create_log_cog()
+        get_guild = cog.bot.get_guild
+        cog.bot = SimpleNamespace(
+            get_guild=get_guild,
+            get_cog=lambda name: None,
+            user=SimpleNamespace(id=7, mention="<@7>"),
+        )
+        return cog, channel
+
+    def test_reaching_the_goal_approves_the_ticket_automatically(self):
+        db.db_set_meta("1", "2026-06-15", {"Borracha": 50}, "99")
+        ticket = self._create_ticket()
+        db.db_ticket_launch(
+            int(ticket["id"]), "10", {"Borracha": 50},
+            "100", "300", "https://cdn.example/proof.png", None,
+        )
+        cog, _ = self._create_auto_approval_cog()
+
+        approved = asyncio.run(cog.auto_approve_if_completed(int(ticket["id"])))
+
+        self.assertTrue(approved)
+        progress = db.db_get_progresso("1", "2026-06-15", "10")
+        self.assertEqual(progress["aprovada"], 1)
+        self.assertEqual(progress["aprovada_por"], "7")
+        self.assertEqual(progress["aprovacao_antecipada"], 0)
+        self.assertIsNone(progress["aprovacao_nivel"])
+        action = db.db_ticket_latest_action(int(ticket["id"]), "aprovacao")
+        payload = json.loads(action["payload_json"])
+        self.assertTrue(payload["aprovacao_automatica"])
+        self.assertFalse(payload["aprovacao_manual"])
+        self.assertEqual(payload["percentual_no_momento"], 100.0)
+        self.assertTrue(_approval_is_automatic(db.db_ticket_get(int(ticket["id"]))))
+
+        self.assertFalse(
+            asyncio.run(cog.auto_approve_if_completed(int(ticket["id"])))
+        )
+        actions = db.get_conn().execute(
+            "SELECT COUNT(*) AS total FROM farm_ticket_actions WHERE ticket_id=? AND action='aprovacao'",
+            (int(ticket["id"]),),
+        ).fetchone()
+        self.assertEqual(actions["total"], 1)
+
+    def test_partial_ticket_is_not_approved_automatically(self):
+        db.db_set_meta("1", "2026-06-15", {"Borracha": 100}, "99")
+        ticket = self._create_ticket()
+        db.db_ticket_launch(
+            int(ticket["id"]), "10", {"Borracha": 99},
+            "100", "300", "https://cdn.example/proof.png", None,
+        )
+        cog, _ = self._create_auto_approval_cog()
+
+        approved = asyncio.run(cog.auto_approve_if_completed(int(ticket["id"])))
+
+        self.assertFalse(approved)
+        progress = db.db_get_progresso("1", "2026-06-15", "10")
+        self.assertEqual(progress["aprovada"], 0)
+        self.assertIsNone(db.db_ticket_latest_action(int(ticket["id"]), "aprovacao"))
+
+    def test_ticket_in_review_is_not_approved_automatically(self):
+        db.db_set_meta("1", "2026-06-15", {"Borracha": 50}, "99")
+        ticket = self._create_ticket()
+        event_id, _ = db.db_ticket_launch(
+            int(ticket["id"]), "10", {"Borracha": 50},
+            "100", "300", "https://cdn.example/proof.png", None,
+        )
+        db.db_ticket_set_review(int(ticket["id"]), event_id, "99", "Comprovante duvidoso")
+        cog, _ = self._create_auto_approval_cog()
+
+        self.assertFalse(
+            asyncio.run(cog.auto_approve_if_completed(int(ticket["id"])))
+        )
+        self.assertEqual(db.db_get_progresso("1", "2026-06-15", "10")["aprovada"], 0)
+
+        db.db_ticket_resolve_review(int(ticket["id"]), event_id, "99")
+
+        self.assertTrue(
+            asyncio.run(cog.auto_approve_if_completed(int(ticket["id"])))
+        )
+        self.assertEqual(db.db_get_progresso("1", "2026-06-15", "10")["aprovada"], 1)
+
+    def test_manual_approval_still_wins_over_automatic_flag(self):
+        db.db_set_meta("1", "2026-06-15", {"Borracha": 50}, "99")
+        ticket = self._create_ticket()
+        db.db_ticket_launch(
+            int(ticket["id"]), "10", {"Borracha": 20},
+            "100", "300", "https://cdn.example/proof.png", None,
+        )
+        db.db_aprovar("1", "2026-06-15", "10", "42", antecipada=True, nivel="parcial")
+        db.db_ticket_launch(
+            int(ticket["id"]), "10", {"Borracha": 30},
+            "100", "301", "https://cdn.example/proof.png", None,
+        )
+        cog, _ = self._create_auto_approval_cog()
+
+        self.assertFalse(
+            asyncio.run(cog.auto_approve_if_completed(int(ticket["id"])))
+        )
+        progress = db.db_get_progresso("1", "2026-06-15", "10")
+        self.assertEqual(progress["aprovada_por"], "42")
+        self.assertEqual(progress["aprovacao_nivel"], "parcial")
+
+    def test_goal_approval_records_the_meta_origin(self):
+        db.db_set_meta("1", "2026-06-15", {"Borracha": 50}, "99")
+        ticket = self._create_ticket()
+        db.db_ticket_launch(
+            int(ticket["id"]), "10", {"Borracha": 50},
+            "100", "300", "https://cdn.example/proof.png", None,
+        )
+        cog, _ = self._create_auto_approval_cog()
+
+        asyncio.run(cog.auto_approve_if_completed(int(ticket["id"])))
+
+        atualizado = db.db_ticket_get(int(ticket["id"]))
+        self.assertEqual(_approval_origin(atualizado), APROVACAO_ORIGEM_META)
+
+    def test_expired_ticket_approval_uses_the_same_automatic_key(self):
+        db.db_set_meta("1", "2026-06-15", {"Borracha": 100}, "99")
+        ticket = self._create_ticket()
+        db.db_ticket_launch(
+            int(ticket["id"]), "10", {"Borracha": 40},
+            "100", "300", "https://cdn.example/proof.png", None,
+        )
+
+        db.db_ticket_finalize_with_auto_approval(
+            int(ticket["id"]), "99",
+            "Ticket expirado - aprovação automática",
+            action="prazo_encerrado",
+        )
+
+        action = db.db_ticket_latest_action(int(ticket["id"]), "aprovacao")
+        payload = json.loads(action["payload_json"])
+        self.assertTrue(payload["aprovacao_automatica"])
+        self.assertEqual(payload["origem"], APROVACAO_ORIGEM_EXPIRACAO)
+        atualizado = db.db_ticket_get(int(ticket["id"]))
+        self.assertTrue(_approval_is_automatic(atualizado))
+        self.assertEqual(_approval_origin(atualizado), APROVACAO_ORIGEM_EXPIRACAO)
+
+    def test_legacy_automatic_key_is_read_as_expiration(self):
+        self.assertEqual(
+            _payload_approval_origin({"automatica": True}, "aprovacao"),
+            APROVACAO_ORIGEM_EXPIRACAO,
+        )
+        self.assertEqual(
+            _payload_approval_origin({"aprovacao_automatica": True}, "aprovacao"),
+            APROVACAO_ORIGEM_EXPIRACAO,
+        )
+        self.assertEqual(
+            _payload_approval_origin(
+                {"aprovacao_automatica": True, "origem": APROVACAO_ORIGEM_META},
+                "aprovacao",
+            ),
+            APROVACAO_ORIGEM_META,
+        )
+        self.assertIsNone(_payload_approval_origin({"automatica": True}, "finalizacao"))
+        self.assertIsNone(_payload_approval_origin({"aprovacao_manual": True}, "aprovacao"))
+
+    def test_manual_approval_has_no_automatic_origin(self):
+        db.db_set_meta("1", "2026-06-15", {"Borracha": 100}, "99")
+        ticket = self._create_ticket()
+        db.db_ticket_add_action(
+            int(ticket["id"]), "aprovacao", "42",
+            payload={"aprovacao_manual": True, "percentual_no_momento": 40.0},
+        )
+
+        atualizado = db.db_ticket_get(int(ticket["id"]))
+        self.assertIsNone(_approval_origin(atualizado))
+        self.assertFalse(_approval_is_automatic(atualizado))
 
     def test_manual_approval_also_works_with_zero_progress(self):
         db.db_set_meta("1", "2026-06-15", {"Borracha": 100}, "99")

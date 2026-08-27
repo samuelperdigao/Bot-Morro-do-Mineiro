@@ -16,6 +16,8 @@ from discord.ext import commands, tasks
 from core.date_utils import format_date_br, format_datetime_br
 from core.role_sync import find_role_by_names
 from services.db_service import (
+    APROVACAO_ORIGEM_EXPIRACAO,
+    APROVACAO_ORIGEM_META,
     DINHEIRO_ITEMS,
     current_week_id,
     db_aprovar,
@@ -78,6 +80,13 @@ GERENTE_PRODUCAO_NAMES = (
     "Gerente de Producao",
 )
 GERENTE_PRODUTOS_NAMES = ("| Gerente de Produtos", "Gerente de Produtos")
+
+
+class _SistemaActor:
+    """Ator usado nos logs quando a aprovação parte do próprio bot."""
+
+    id = 0
+    mention = "Sistema de Tickets"
 
 
 def _is_image(attachment: discord.Attachment) -> bool:
@@ -181,17 +190,51 @@ def _progress(ticket, meta) -> tuple[dict[str, float], dict[str, float], float, 
     return targets, delivered, percentage, completed, launches
 
 
+def _payload_approval_origin(payload: dict, action_name: str | None = None) -> str | None:
+    """Origem de uma aprovacao automatica, ou None quando foi manual.
+
+    Aceita a chave legada "automatica", usada nas acoes de aprovacao gravadas
+    antes de o campo "origem" existir (sempre finalizacao por prazo).
+    """
+    if payload.get("aprovacao_automatica"):
+        return payload.get("origem") or APROVACAO_ORIGEM_EXPIRACAO
+    if payload.get("automatica") and action_name in (None, "aprovacao"):
+        return APROVACAO_ORIGEM_EXPIRACAO
+    return None
+
+
+def _approval_origin(ticket) -> str | None:
+    """Origem da ultima aprovacao do ticket ("meta_atingida"/"ticket_expirado")."""
+    action = db_ticket_latest_action(int(ticket["id"]), "aprovacao")
+    if not action:
+        return None
+    try:
+        payload = json.loads(_row_get(action, "payload_json") or "{}")
+    except (TypeError, ValueError):
+        return None
+    return _payload_approval_origin(payload, "aprovacao")
+
+
+def _approval_is_automatic(ticket) -> bool:
+    """Indica se a meta do ticket foi aprovada pelo bot, e nao pela lideranca."""
+    return _approval_origin(ticket) is not None
+
+
 def build_ticket_embed(ticket, member: discord.Member, meta) -> discord.Embed:
     targets, delivered, percentage, completed, launches = _progress(ticket, meta)
     general_progress = db_get_progresso(
         ticket["guild_id"], ticket["week_id"], ticket["user_id"]
     )
     approved = bool(general_progress and general_progress["aprovada"])
+    approval_origin = _approval_origin(ticket) if approved else None
+    auto_approved = approval_origin is not None
     status = ticket["status"]
     if status == "finalizado":
         color, status_text = discord.Color.blue(), "🔒 Finalizado"
     elif status == "revisao":
         color, status_text = discord.Color.red(), "⚠️ Em revisão"
+    elif auto_approved:
+        color, status_text = discord.Color.green(), "✅ Meta aprovada automaticamente"
     elif approved:
         color, status_text = discord.Color.green(), "✅ Meta aprovada pela liderança"
     elif completed:
@@ -231,7 +274,11 @@ def build_ticket_embed(ticket, member: discord.Member, meta) -> discord.Embed:
     embed.add_field(name="📌 Status", value=status_text, inline=True)
     assigned = f"<@{ticket['assigned_to']}>" if ticket["assigned_to"] else "Não assumido"
     embed.add_field(name="👮 Responsável", value=assigned, inline=True)
-    if approved:
+    if approval_origin == APROVACAO_ORIGEM_META:
+        approval = "✅ Aprovada automaticamente ao atingir 100% da meta"
+    elif approval_origin == APROVACAO_ORIGEM_EXPIRACAO:
+        approval = "✅ Aprovada automaticamente ao encerrar o prazo do ticket"
+    elif approved:
         approval = f"✅ Aprovada por <@{general_progress['aprovada_por']}>"
     elif status == "revisao":
         approval = "⚠️ Resolva as revisões pendentes antes de decidir"
@@ -341,7 +388,6 @@ class FarmTicketLaunchModal(discord.ui.Modal):
             ticket["guild_id"], ticket["week_id"], ticket["user_id"]
         )
         await self.cog.log_launch(ticket, interaction.user, event_id, action_id, values, proof_message, attachment)
-        await self.cog.refresh_ticket(self.ticket_id)
         farm_cog = interaction.client.get_cog("FarmCog")
         if farm_cog:
             await farm_cog._atualizar_painel(ticket["guild_id"], ticket["week_id"], ticket["user_id"])
@@ -354,7 +400,14 @@ class FarmTicketLaunchModal(discord.ui.Modal):
                 await farm_cog._notificar_conclusao(
                     interaction.guild, ticket["user_id"], ticket["week_id"]
                 )
-        await interaction.followup.send("✅ Lançamento registrado e painel atualizado.", ephemeral=True)
+        auto_approved = await self.cog.auto_approve_if_completed(
+            self.ticket_id, guild=interaction.guild
+        )
+        await self.cog.refresh_ticket(self.ticket_id)
+        aviso = "✅ Lançamento registrado e painel atualizado."
+        if auto_approved:
+            aviso += "\n🏆 Meta batida: aprovação registrada automaticamente."
+        await interaction.followup.send(aviso, ephemeral=True)
 
 
 class FinalizeTicketModal(discord.ui.Modal, title="Finalizar ticket de farm"):
@@ -469,8 +522,14 @@ class CorrectLaunchModal(discord.ui.Modal):
         db_ticket_recalculate_completion(self.ticket_id)
         action_id = db_ticket_add_action(self.ticket_id, "correcao", str(interaction.user.id), event_id=self.event_id, payload={"valores": values, "motivo": reason})
         await self.cog.send_action_log(db_ticket_get(self.ticket_id), action_id, "Lançamento corrigido", interaction.user, reason)
+        auto_approved = await self.cog.auto_approve_if_completed(
+            self.ticket_id, guild=interaction.guild
+        )
         await self.cog.refresh_ticket(self.ticket_id)
-        await interaction.response.send_message("Lançamento corrigido.", ephemeral=True)
+        aviso = "Lançamento corrigido."
+        if auto_approved:
+            aviso += "\n🏆 Meta batida: aprovação registrada automaticamente."
+        await interaction.response.send_message(aviso, ephemeral=True)
 
 
 class ReviewActionsView(discord.ui.View):
@@ -495,8 +554,14 @@ class ReviewActionsView(discord.ui.View):
         db_ticket_resolve_review(self.ticket_id, int(self.launch["id"]), str(interaction.user.id))
         action_id = db_ticket_add_action(self.ticket_id, "revisao_resolvida", str(interaction.user.id), event_id=int(self.launch["id"]))
         await self.cog.send_action_log(db_ticket_get(self.ticket_id), action_id, "Revisão resolvida", interaction.user, "Lançamento liberado")
+        auto_approved = await self.cog.auto_approve_if_completed(
+            self.ticket_id, guild=interaction.guild
+        )
         await self.cog.refresh_ticket(self.ticket_id)
-        await interaction.response.send_message("Revisão resolvida.", ephemeral=True)
+        aviso = "Revisão resolvida."
+        if auto_approved:
+            aviso += "\n🏆 Meta batida: aprovação registrada automaticamente."
+        await interaction.response.send_message(aviso, ephemeral=True)
 
 
 class ReviewSelect(discord.ui.Select):
@@ -1231,6 +1296,58 @@ class FarmTicketsCog(commands.Cog):
             "Ticket excluído. Lançamentos, progresso e logs foram preservados.", ephemeral=True
         )
 
+    async def auto_approve_if_completed(
+        self, ticket_id: int, *, guild: discord.Guild | None = None
+    ) -> bool:
+        """Aprova a meta sozinha assim que o ticket chega a 100%.
+
+        A aprovação manual da liderança continua valendo para qualquer
+        percentual; esta rotina só cobre o caso da meta batida.
+        Retorna True apenas quando a aprovação foi registrada nesta chamada.
+        """
+        ticket = db_ticket_get(ticket_id)
+        if not ticket or ticket["status"] != "aberto":
+            return False
+        progress = db_get_progresso(ticket["guild_id"], ticket["week_id"], ticket["user_id"])
+        if progress and progress["aprovada"]:
+            return False
+        meta = db_get_meta(ticket["guild_id"], ticket["week_id"])
+        _, _, percentage, completed, _ = _progress(ticket, meta)
+        if not completed:
+            return False
+
+        guild = guild or self.bot.get_guild(int(ticket["guild_id"]))
+        actor = getattr(guild, "me", None) or getattr(self.bot, "user", None) or _SistemaActor()
+        actor_id = str(getattr(actor, "id", 0))
+        db_aprovar(ticket["guild_id"], ticket["week_id"], ticket["user_id"], actor_id)
+        action_id = db_ticket_add_action(
+            ticket_id, "aprovacao", actor_id,
+            payload={
+                "meta_atingida_no_ticket": True,
+                "aprovacao_manual": False,
+                "aprovacao_automatica": True,
+                "origem": APROVACAO_ORIGEM_META,
+                "motivo": f"Meta batida no ticket com {percentage:.1f}% de progresso.",
+                "percentual_no_momento": round(percentage, 1),
+            },
+        )
+        await self.send_action_log(
+            ticket, action_id, "Meta aprovada automaticamente", actor,
+            f"Meta batida no ticket com {percentage:.1f}% de progresso. Aprovacao automatica registrada.",
+        )
+        farm_cog = self.bot.get_cog("FarmCog")
+        if farm_cog and guild is not None:
+            try:
+                await farm_cog._notificar_aprovacao(
+                    guild, ticket["user_id"], actor, antecipada=False
+                )
+                await farm_cog._atualizar_ranking_fixo(ticket["guild_id"])
+            except Exception:
+                log.exception(
+                    "Falha ao notificar aprovação automática do ticket %s", ticket_id
+                )
+        return True
+
     async def refresh_ticket(self, ticket_id: int) -> None:
         ticket = db_ticket_get(ticket_id)
         if not ticket or not ticket["channel_id"] or not ticket["panel_message_id"]:
@@ -1823,9 +1940,7 @@ class FarmTicketsCog(commands.Cog):
                 continue
             actor = guild.get_member(int(action["actor_id"])) or discord.Object(id=int(action["actor_id"]))
             payload = json.loads(action["payload_json"] or "{}")
-            if payload.get("aprovacao_automatica") or (
-                action["action"] == "aprovacao" and payload.get("automatica")
-            ):
+            if _payload_approval_origin(payload, action["action"]) == APROVACAO_ORIGEM_EXPIRACAO:
                 final_action = None
                 for action_name in (
                     "exclusao_manual_finalizacao",
