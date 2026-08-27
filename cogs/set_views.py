@@ -10,7 +10,10 @@ import time
 
 import discord
 
+from cogs.apelidos import suppress as suppress_apelido
+from core.nickname import TAG_MEMBRO, build_nick_from_parts
 from core.permissions import has_approver_permission
+from core.role_sync import find_role_by_names
 from services.db_service import (
     db_get_guild_config,
     db_is_bot_configured,
@@ -54,16 +57,29 @@ def _clear_pending(user_id: int):
     _pending_sets.pop(user_id, None)
 
 
+PEDIR_SET_ROLE_ID = 1474869320659107853
+
+
+def _get_member_role(guild: discord.Guild, cfg) -> discord.Role | None:
+    if cfg and cfg["member_role_id"]:
+        role = guild.get_role(int(cfg["member_role_id"]))
+        if role is not None:
+            return role
+
+    return find_role_by_names(guild, ("| Membro", "Membro"))
+
+
 def _get_flanelinha_role(guild: discord.Guild, cfg) -> discord.Role | None:
     if cfg and cfg["flanelinha_role_id"]:
         role = guild.get_role(int(cfg["flanelinha_role_id"]))
         if role is not None:
             return role
 
-    return (
-        discord.utils.get(guild.roles, name="| Flanelinha")
-        or discord.utils.get(guild.roles, name="Flanelinha")
-    )
+    return find_role_by_names(guild, ("| Flanelinha", "Flanelinha"))
+
+
+def _get_pedir_set_role(guild: discord.Guild) -> discord.Role | None:
+    return find_role_by_names(guild, ("| Pedir Set", "Pedir Set")) or guild.get_role(PEDIR_SET_ROLE_ID)
 
 
 class SetModal(discord.ui.Modal, title="Solicitação de Set"):
@@ -225,50 +241,57 @@ class ApprovalView(discord.ui.View):
         private_cat_id    = int(cfg["private_category_id"]) if cfg and cfg["private_category_id"] else None
         approver_role_ids = db_get_approver_role_ids(guild_id)
 
-        flanelinha_role = _get_flanelinha_role(guild, cfg)
-        if flanelinha_role and flanelinha_role not in member.roles:
-            try:
-                await member.add_roles(flanelinha_role, reason=f"Set aprovado por {approver}")
-            except Exception as e:
-                log.error(f"Erro ao aplicar cargo: {e}")
-        elif flanelinha_role is None:
-            log.warning("Cargo Flanelinha nao encontrado na guild %s ao aprovar set", guild_id)
+        # O cog de apelidos fica suspenso aqui para não gravar um apelido
+        # intermediário (sem ID) entre a troca de cargos e o nick definitivo.
+        with suppress_apelido(member.id):
+            member_role = _get_member_role(guild, cfg)
+            if member_role and member_role not in member.roles:
+                try:
+                    await member.add_roles(member_role, reason=f"Set aprovado por {approver}")
+                except Exception as e:
+                    log.error(f"Erro ao aplicar cargo: {e}")
+            elif member_role is None:
+                log.warning("Cargo Membro nao encontrado na guild %s ao aprovar set", guild_id)
 
-        pedir_set_role = guild.get_role(1474869320659107853)
-        if pedir_set_role and pedir_set_role in member.roles:
-            try:
-                await member.remove_roles(pedir_set_role, reason=f"Set aprovado por {approver}")
-            except Exception as e:
-                log.error(f"Erro ao remover cargo 'Pedir Set': {e}")
+            remover = [
+                role
+                for role in (_get_pedir_set_role(guild), _get_flanelinha_role(guild, cfg))
+                if role and role in member.roles
+            ]
+            for role in remover:
+                try:
+                    await member.remove_roles(role, reason=f"Set aprovado por {approver}")
+                except Exception as e:
+                    log.error(f"Erro ao remover cargo '{role.name}': {e}")
 
-        # FIX: nome do canal duplicando ID do jogo
-        # Canal privado criado ANTES de definir o apelido para que
-        # member.display_name não contenha ainda o id_jogo ao montar o nome.
-        existing_ch_id = db_channel_map_get(guild_id, str(self.target_user_id))
-        pasta   = None
-        created = False
+            # FIX: nome do canal duplicando ID do jogo
+            # Canal privado criado ANTES de definir o apelido para que
+            # member.display_name não contenha ainda o id_jogo ao montar o nome.
+            existing_ch_id = db_channel_map_get(guild_id, str(self.target_user_id))
+            pasta   = None
+            created = False
 
-        if existing_ch_id:
-            pasta = guild.get_channel(existing_ch_id) or await safe_fetch_channel(guild, existing_ch_id)
-            if pasta is None:
+            if existing_ch_id:
+                pasta = guild.get_channel(existing_ch_id) or await safe_fetch_channel(guild, existing_ch_id)
+                if pasta is None:
+                    pasta   = await criar_pasta(guild, member, approver, private_cat_id, approver_role_ids, self.id_jogo, self.target_name)
+                    created = True
+                    if pasta:
+                        db_channel_map_set(guild_id, str(self.target_user_id), pasta.id)
+            else:
                 pasta   = await criar_pasta(guild, member, approver, private_cat_id, approver_role_ids, self.id_jogo, self.target_name)
                 created = True
                 if pasta:
                     db_channel_map_set(guild_id, str(self.target_user_id), pasta.id)
-        else:
-            pasta   = await criar_pasta(guild, member, approver, private_cat_id, approver_role_ids, self.id_jogo, self.target_name)
-            created = True
-            if pasta:
-                db_channel_map_set(guild_id, str(self.target_user_id), pasta.id)
 
-        if self.id_jogo:
-            novo_nick = f"{self.target_name} | {self.id_jogo}"[:32]
-            try:
-                await member.edit(nick=novo_nick, reason=f"Set aprovado por {approver}")
-            except discord.Forbidden:
-                log.warning(f"Sem permissão para alterar apelido de {member.id}")
-            except Exception as e:
-                log.error(f"Erro ao alterar apelido: {e}")
+            novo_nick = build_nick_from_parts(self.target_name, self.id_jogo, TAG_MEMBRO)
+            if novo_nick:
+                try:
+                    await member.edit(nick=novo_nick, reason=f"Set aprovado por {approver}")
+                except discord.Forbidden:
+                    log.warning(f"Sem permissão para alterar apelido de {member.id}")
+                except Exception as e:
+                    log.error(f"Erro ao alterar apelido: {e}")
 
         log_channel = None
         if log_ch_id:

@@ -22,14 +22,14 @@ def find_role_by_names(
 ) -> discord.Role | None:
     """Find a role ignoring case, whitespace, and an optional leading pipe."""
 
-    expected = {_normalize_role_name(name) for name in names}
+    expected = {normalize_role_name(name) for name in names}
     return next(
-        (role for role in guild.roles if _normalize_role_name(role.name) in expected),
+        (role for role in guild.roles if normalize_role_name(role.name) in expected),
         None,
     )
 
 
-def _normalize_role_name(name: str) -> str:
+def normalize_role_name(name: str) -> str:
     normalized = name.strip()
     while normalized and not normalized[0].isalnum():
         normalized = normalized[1:].lstrip()

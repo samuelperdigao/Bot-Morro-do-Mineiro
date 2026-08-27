@@ -4,6 +4,7 @@ COG_EXTENSIONS = (
     "cogs.setup",
     "cogs.sistema",
     "cogs.membros",
+    "cogs.apelidos",
     "cogs.setup_set",
     "cogs.farm",
     "cogs.ausencia",
