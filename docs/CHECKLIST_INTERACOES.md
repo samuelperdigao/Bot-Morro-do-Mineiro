@@ -73,6 +73,7 @@ Pontos de atencao no codigo:
 | [ ] | `/setup_flanelinha` | Salva cargo Flanelinha. |
 | [ ] | `/sincronizar_flanelinha` | Copia permissoes ou informa pre-requisito faltante. |
 | [ ] | `/sincronizar_gerente_produtos` | Cria/sincroniza cargo ou informa pre-requisito faltante. |
+| [ ] | `/sincronizar_apelidos` | Sem parametro mostra a previa; com `aplicar:True` corrige as tags dos apelidos. |
 
 ## Farm, metas, ranking e resultados
 

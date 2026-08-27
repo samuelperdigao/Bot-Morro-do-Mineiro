@@ -23,7 +23,7 @@ $excludedDirs  = @(
     "venv",
     ".codex-test-venv",
     "__pycache__",
-    "_old",
+    "docs",
     ".git",
     ".claude",
     ".codex-remote-attachments",
