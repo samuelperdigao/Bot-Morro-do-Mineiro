@@ -31,8 +31,20 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Requer um `.env` na raiz com `DISCORD_TOKEN` e `APPLICATION_ID`. O restante da configuracao
-(canais, cargos, metas) e por servidor, feita via slash commands e guardada na tabela `guild_config`.
+Requer um `.env` na raiz. O restante da configuracao (canais, cargos, metas) e por servidor,
+feita via slash commands e guardada na tabela `guild_config`.
+
+| Variavel | Obrigatoria | Padrao |
+|---|---|---|
+| `DISCORD_TOKEN` | sim | — |
+| `APPLICATION_ID` | sim | — |
+| `ARQUIVO_BANCO_FARM` | nao | `farm.db` (dentro de `data/`) |
+| `FUSO_HORARIO_FARM` | nao | `America/Sao_Paulo` |
+| `CANAL_LOG_ENTRADA_ID` | nao | canal legado fixo no codigo |
+| `CANAL_LOG_PD_ID` | nao | canal legado fixo no codigo |
+
+As duas ultimas sao canais globais legados; prefira a configuracao por servidor quando existir.
+Todas sao lidas em `core/config.py`.
 
 Os intents privilegiados **Server Members** e **Message Content** precisam estar ligados
 no Discord Developer Portal.
