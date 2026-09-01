@@ -2,6 +2,7 @@ import asyncio
 import json
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -13,8 +14,10 @@ from cogs.farm import FarmView
 from cogs.farm_painel import (
     FarmPainelView,
     FarmTicketMemberSelectView,
+    FarmTicketRoleSelectView,
     LegacyFarmLaunchView,
     fetch_ticket_target_members,
+    fetch_ticket_target_roles,
     lock_farm_panel_channel,
 )
 from cogs.farm_tickets import (
@@ -1021,6 +1024,7 @@ class FarmTicketDatabaseTests(unittest.TestCase):
             {
                 "🎫 Abrir Ticket Semanal",
                 "👥 Abrir para Membro",
+                "👥 Abrir Ticket por Cargo",
                 "🗑️ Excluir Ticket",
             },
         )
@@ -1069,6 +1073,75 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         self.assertEqual(set(values), {str(index) for index in range(1, 61)})
         self.assertEqual(labels[0], "Apelido 01")
         self.assertEqual(labels[-1], "Apelido 60")
+
+    def test_role_ticket_menu_lists_only_roles_with_human_members(self):
+        human = SimpleNamespace(id=1, display_name="Membro", bot=False)
+        bot_member = SimpleNamespace(id=2, display_name="Bot", bot=True)
+
+        everyone = SimpleNamespace(id=0, name="@everyone", managed=False, position=0, members=[human])
+        membro = SimpleNamespace(id=10, name="Membro", managed=False, position=3, members=[human])
+        vazio = SimpleNamespace(id=11, name="Cargo Vazio", managed=False, position=2, members=[])
+        so_bot = SimpleNamespace(id=12, name="Integração", managed=True, position=5, members=[bot_member])
+        topo = SimpleNamespace(id=13, name="Gerência", managed=False, position=9, members=[human, bot_member])
+        guild = SimpleNamespace(
+            default_role=everyone,
+            roles=[everyone, membro, vazio, so_bot, topo],
+        )
+
+        roles = fetch_ticket_target_roles(guild)
+        self.assertEqual([role.name for role in roles], ["Gerência", "Membro"])
+
+        async def option_values():
+            view = FarmTicketRoleSelectView(None, roles)
+            return {opt.value for opt in view.children[0].options}
+
+        self.assertEqual(asyncio.run(option_values()), {"13", "10"})
+
+    def test_bulk_role_open_tallies_results_and_stops_when_categories_full(self):
+        cog = FarmTicketsCog.__new__(FarmTicketsCog)
+        cog.bot = SimpleNamespace(user=SimpleNamespace(id=1))
+        cog.is_ticket_operator = lambda member: True
+
+        outcomes = iter([
+            SimpleNamespace(status="created", detail=None),
+            SimpleNamespace(status="already_exists", detail=None),
+            SimpleNamespace(status="folder_error", detail="pasta ausente"),
+            SimpleNamespace(status="category_full", detail=None),
+            SimpleNamespace(status="created", detail=None),
+        ])
+        cog._provision_ticket_for_owner = AsyncMock(side_effect=lambda *a, **k: next(outcomes))
+
+        members = [
+            SimpleNamespace(id=i, display_name=f"M{i}", bot=False) for i in range(1, 6)
+        ]
+        role = SimpleNamespace(id=10, name="Membro", mention="@Membro", members=members)
+        guild = SimpleNamespace(id=123)
+        executor = unittest.mock.MagicMock(spec=discord.Member)
+        executor.id = 99
+        executor.mention = "@op"
+
+        followups = []
+        interaction = SimpleNamespace(
+            guild=guild,
+            user=executor,
+            response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock(side_effect=lambda *a, **k: followups.append(a[0]))),
+        )
+
+        with unittest.mock.patch("cogs.farm_tickets.db_ticket_config_get", return_value={"x": 1}), \
+             unittest.mock.patch("cogs.farm_tickets.db_get_meta", return_value={}), \
+             unittest.mock.patch("cogs.farm_tickets._active_targets", return_value=("itens", {"Ferro": 1})), \
+             unittest.mock.patch("cogs.farm_tickets.db_get_guild_config", return_value={"private_category_id": "1"}), \
+             unittest.mock.patch("cogs.farm_tickets.send_log", new=AsyncMock()):
+            asyncio.run(cog.bulk_open_tickets_for_role(interaction, role))
+
+        resumo = followups[-1]
+        self.assertIn("✅ 1 ticket(s) criado(s)", resumo)
+        self.assertIn("♻️ 1", resumo)
+        self.assertIn("⚠️ 1", resumo)
+        self.assertIn("Processo interrompido", resumo)
+        self.assertIn("2 membro(s) não processado(s)", resumo)
+        self.assertEqual(cog._provision_ticket_for_owner.await_count, 4)
 
     def test_legacy_fixed_panel_ids_remain_registered_as_blockers(self):
         async def ids():

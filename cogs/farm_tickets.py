@@ -174,6 +174,23 @@ def _active_targets(meta) -> tuple[str, dict[str, float]]:
     return db_meta_alvos_ativos(meta)
 
 
+class TicketProvisionResult:
+    """Resultado da criação de um ticket, sem depender de uma ``interaction``.
+
+    Permite reaproveitar a mesma lógica tanto no fluxo individual quanto na
+    abertura em lote por cargo.
+    """
+
+    __slots__ = ("status", "channel", "jump_url", "detail", "exc")
+
+    def __init__(self, status: str, *, channel=None, jump_url=None, detail=None, exc=None):
+        self.status = status
+        self.channel = channel
+        self.jump_url = jump_url
+        self.detail = detail
+        self.exc = exc
+
+
 def _progress(ticket, meta) -> tuple[dict[str, float], dict[str, float], float, bool, list]:
     meta_type, targets = _active_targets(meta)
     launches = db_ticket_launches(int(ticket["id"]))
@@ -1504,85 +1521,53 @@ class FarmTicketsCog(commands.Cog):
         else:
             db_ticket_mark_log_attempt(action_id)
 
-    async def _open_ticket_for_owner(
+    async def _provision_ticket_for_owner(
         self,
-        interaction: discord.Interaction,
+        guild: discord.Guild,
         owner: discord.Member,
+        executor,
         *,
         administrative: bool = False,
-    ) -> None:
-        guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message(
-                "Nao consegui identificar o servidor desta interacao.",
-                ephemeral=True,
-            )
-            return
+        config=None,
+        meta=None,
+        guild_config=None,
+    ) -> TicketProvisionResult:
+        """Cria (ou localiza) o ticket semanal de ``owner`` sem tocar em ``interaction``.
 
-        executor = interaction.user
-        guild_id = str(interaction.guild_id)
+        Retorna um :class:`TicketProvisionResult`; quem chama traduz o status em
+        mensagens. ``config``/``meta``/``guild_config`` podem ser passados prontos
+        para evitar releitura do banco quando usado em lote.
+        """
+        guild_id = str(guild.id)
         week_id = current_week_id()
 
-        if administrative:
-            if not isinstance(executor, discord.Member) or not self.is_ticket_operator(executor):
-                await interaction.response.send_message(
-                    "Apenas Gerente de Farm, Gerente Geral ou Administrador podem abrir ticket para outro membro.",
-                    ephemeral=True,
-                )
-                return
-            if owner.id == executor.id:
-                await interaction.response.send_message(
-                    "Para abrir seu proprio ticket, use o botao Abrir Ticket Semanal.",
-                    ephemeral=True,
-                )
-                return
-
         if owner.bot:
-            await interaction.response.send_message(
-                "Nao e possivel abrir ticket de farm para bots.",
-                ephemeral=True,
-            )
-            return
+            return TicketProvisionResult("owner_bot")
 
-        config = db_ticket_config_get(guild_id)
+        if config is None:
+            config = db_ticket_config_get(guild_id)
         if not config:
-            await interaction.response.send_message(
-                "Tickets de farm ainda nao foram configurados no dashboard.",
-                ephemeral=True,
-            )
-            return
-        meta = db_get_meta(guild_id, week_id)
+            return TicketProvisionResult("no_config")
+        if meta is None:
+            meta = db_get_meta(guild_id, week_id)
         if not _active_targets(meta)[1]:
-            await interaction.response.send_message(
-                "A meta ativa da semana ainda nao foi definida.",
-                ephemeral=True,
-            )
-            return
+            return TicketProvisionResult("no_meta")
 
         existing = db_ticket_get_week(guild_id, week_id, str(owner.id))
-        existing_owner_text = f"{owner.mention} ja possui um ticket nesta semana." if administrative else "Voce ja possui um ticket nesta semana."
-        creating_text = f"O ticket de {owner.mention} esta sendo criado. Tente acessar novamente em alguns segundos." if administrative else "Seu ticket esta sendo criado. Tente acessar novamente em alguns segundos."
         if existing:
             if existing["channel_id"]:
                 channel = guild.get_channel(int(existing["channel_id"]))
                 if isinstance(channel, discord.TextChannel):
                     await self.ensure_ticket_admin_overwrites(guild, channel)
-                    await interaction.response.send_message(
-                        existing_owner_text,
-                        view=TicketLinkView(channel.jump_url),
-                        ephemeral=True,
+                    return TicketProvisionResult(
+                        "already_exists", channel=channel, jump_url=channel.jump_url
                     )
-                    return
-            await interaction.response.send_message(creating_text, ephemeral=True)
-            return
+            return TicketProvisionResult("creating")
 
-        guild_config = db_get_guild_config(guild_id)
+        if guild_config is None:
+            guild_config = db_get_guild_config(guild_id)
         if not guild_config or not guild_config["private_category_id"]:
-            await interaction.response.send_message(
-                "A categoria de pastas individuais nao esta configurada.",
-                ephemeral=True,
-            )
-            return
+            return TicketProvisionResult("no_private_category")
         try:
             folder = await resolve_member_folder(
                 guild,
@@ -1591,7 +1576,6 @@ class FarmTicketsCog(commands.Cog):
                 int(guild_config["private_category_id"]),
             )
         except MemberFolderError as exc:
-            target_text = "sua pasta individual" if not administrative else f"a pasta individual de {owner.mention}"
             log.warning(
                 "Ticket bloqueado por pasta invalida: guild=%s owner=%s executor=%s erro=%s",
                 guild_id,
@@ -1599,12 +1583,7 @@ class FarmTicketsCog(commands.Cog):
                 getattr(executor, "id", None),
                 exc,
             )
-            await interaction.response.send_message(
-                f"Nao foi possivel identificar {target_text}: {exc}\n"
-                "Procure a administracao para regularizar a pasta antes de abrir o ticket.",
-                ephemeral=True,
-            )
-            return
+            return TicketProvisionResult("folder_error", detail=str(exc))
 
         ticket, created = db_ticket_reserve(
             guild_id,
@@ -1621,16 +1600,11 @@ class FarmTicketsCog(commands.Cog):
                 channel = guild.get_channel(int(ticket["channel_id"]))
                 if isinstance(channel, discord.TextChannel):
                     await self.ensure_ticket_admin_overwrites(guild, channel)
-                    await interaction.response.send_message(
-                        existing_owner_text,
-                        view=TicketLinkView(channel.jump_url),
-                        ephemeral=True,
+                    return TicketProvisionResult(
+                        "already_exists", channel=channel, jump_url=channel.jump_url
                     )
-                    return
-            await interaction.response.send_message(creating_text, ephemeral=True)
-            return
+            return TicketProvisionResult("creating")
 
-        await interaction.response.defer(ephemeral=True)
         channel = None
         try:
             categories = []
@@ -1640,7 +1614,8 @@ class FarmTicketsCog(commands.Cog):
                     categories.append(category)
             category = next((item for item in categories if len(item.channels) < 50), None)
             if not category:
-                raise RuntimeError("Todas as categorias configuradas estao lotadas ou invalidas.")
+                db_ticket_release_failed(int(ticket["id"]))
+                return TicketProvisionResult("category_full")
 
             roles = _admin_roles_for_guild(guild, config["admin_role_ids"])
             roles.extend(self.ticket_operator_roles(guild))
@@ -1701,7 +1676,7 @@ class FarmTicketsCog(commands.Cog):
             action_id = db_ticket_add_action(
                 int(ticket["id"]),
                 "abertura",
-                str(executor.id),
+                str(getattr(executor, "id", "")),
                 payload=action_payload,
             )
             detail = f"Semana {format_date_br(ticket['week_id'])} | Pasta {slot_label} | ID {folder.game_id}"
@@ -1714,16 +1689,7 @@ class FarmTicketsCog(commands.Cog):
                 executor,
                 detail,
             )
-            success = (
-                f"Ticket criado para {owner.mention}."
-                if administrative
-                else "Ticket criado com sucesso."
-            )
-            await interaction.followup.send(
-                success,
-                view=TicketLinkView(channel.jump_url),
-                ephemeral=True,
-            )
+            return TicketProvisionResult("created", channel=channel, jump_url=channel.jump_url)
         except Exception as exc:
             if channel is not None:
                 try:
@@ -1732,7 +1698,240 @@ class FarmTicketsCog(commands.Cog):
                     log.exception("Falha ao remover canal orfao de ticket")
             db_ticket_release_failed(int(ticket["id"]))
             log.exception("Falha ao criar ticket de farm")
-            await interaction.followup.send(f"Nao foi possivel criar o ticket: {exc}", ephemeral=True)
+            return TicketProvisionResult("error", detail=str(exc), exc=exc)
+
+    async def _open_ticket_for_owner(
+        self,
+        interaction: discord.Interaction,
+        owner: discord.Member,
+        *,
+        administrative: bool = False,
+    ) -> None:
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(
+                "Nao consegui identificar o servidor desta interacao.",
+                ephemeral=True,
+            )
+            return
+
+        executor = interaction.user
+
+        if administrative:
+            if not isinstance(executor, discord.Member) or not self.is_ticket_operator(executor):
+                await interaction.response.send_message(
+                    "Apenas Gerente de Farm, Gerente Geral ou Administrador podem abrir ticket para outro membro.",
+                    ephemeral=True,
+                )
+                return
+            if owner.id == executor.id:
+                await interaction.response.send_message(
+                    "Para abrir seu proprio ticket, use o botao Abrir Ticket Semanal.",
+                    ephemeral=True,
+                )
+                return
+
+        if owner.bot:
+            await interaction.response.send_message(
+                "Nao e possivel abrir ticket de farm para bots.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        result = await self._provision_ticket_for_owner(
+            guild, owner, executor, administrative=administrative
+        )
+
+        existing_owner_text = (
+            f"{owner.mention} ja possui um ticket nesta semana."
+            if administrative
+            else "Voce ja possui um ticket nesta semana."
+        )
+        creating_text = (
+            f"O ticket de {owner.mention} esta sendo criado. Tente acessar novamente em alguns segundos."
+            if administrative
+            else "Seu ticket esta sendo criado. Tente acessar novamente em alguns segundos."
+        )
+
+        if result.status == "created":
+            success = (
+                f"Ticket criado para {owner.mention}."
+                if administrative
+                else "Ticket criado com sucesso."
+            )
+            await interaction.followup.send(
+                success, view=TicketLinkView(result.jump_url), ephemeral=True
+            )
+        elif result.status == "already_exists":
+            await interaction.followup.send(
+                existing_owner_text, view=TicketLinkView(result.jump_url), ephemeral=True
+            )
+        elif result.status == "creating":
+            await interaction.followup.send(creating_text, ephemeral=True)
+        elif result.status == "no_config":
+            await interaction.followup.send(
+                "Tickets de farm ainda nao foram configurados no dashboard.", ephemeral=True
+            )
+        elif result.status == "no_meta":
+            await interaction.followup.send(
+                "A meta ativa da semana ainda nao foi definida.", ephemeral=True
+            )
+        elif result.status == "no_private_category":
+            await interaction.followup.send(
+                "A categoria de pastas individuais nao esta configurada.", ephemeral=True
+            )
+        elif result.status == "folder_error":
+            target_text = (
+                "sua pasta individual"
+                if not administrative
+                else f"a pasta individual de {owner.mention}"
+            )
+            await interaction.followup.send(
+                f"Nao foi possivel identificar {target_text}: {result.detail}\n"
+                "Procure a administracao para regularizar a pasta antes de abrir o ticket.",
+                ephemeral=True,
+            )
+        elif result.status == "category_full":
+            await interaction.followup.send(
+                "Nao foi possivel criar o ticket: Todas as categorias configuradas estao lotadas ou invalidas.",
+                ephemeral=True,
+            )
+        elif result.status == "owner_bot":
+            await interaction.followup.send(
+                "Nao e possivel abrir ticket de farm para bots.", ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                f"Nao foi possivel criar o ticket: {result.detail}", ephemeral=True
+            )
+
+    async def bulk_open_tickets_for_role(
+        self, interaction: discord.Interaction, role: discord.Role
+    ) -> None:
+        """Abre um ticket individual para cada membro humano do cargo ``role``."""
+        guild = interaction.guild
+        executor = interaction.user
+        if guild is None:
+            await interaction.response.send_message(
+                "Nao consegui identificar o servidor desta interacao.", ephemeral=True
+            )
+            return
+        if not isinstance(executor, discord.Member) or not self.is_ticket_operator(executor):
+            await interaction.response.send_message(
+                "Apenas Gerente de Farm, Gerente Geral ou Administrador podem abrir ticket por cargo.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        guild_id = str(guild.id)
+        week_id = current_week_id()
+
+        config = db_ticket_config_get(guild_id)
+        if not config:
+            await interaction.followup.send(
+                "Tickets de farm ainda nao foram configurados no dashboard.", ephemeral=True
+            )
+            return
+        meta = db_get_meta(guild_id, week_id)
+        if not _active_targets(meta)[1]:
+            await interaction.followup.send(
+                "A meta ativa da semana ainda nao foi definida.", ephemeral=True
+            )
+            return
+        guild_config = db_get_guild_config(guild_id)
+        if not guild_config or not guild_config["private_category_id"]:
+            await interaction.followup.send(
+                "A categoria de pastas individuais nao esta configurada.", ephemeral=True
+            )
+            return
+
+        members = sorted(
+            [member for member in role.members if not member.bot],
+            key=lambda member: (member.display_name.casefold(), member.id),
+        )
+        if not members:
+            await interaction.followup.send(
+                f"Nenhum membro humano possui o cargo {role.mention}.", ephemeral=True
+            )
+            return
+
+        criados = 0
+        ja_tinham = 0
+        sem_pasta: list[str] = []
+        falhas: list[str] = []
+        interrompido = False
+        processados = 0
+        for member in members:
+            result = await self._provision_ticket_for_owner(
+                guild,
+                member,
+                executor,
+                administrative=True,
+                config=config,
+                meta=meta,
+                guild_config=guild_config,
+            )
+            if result.status == "category_full":
+                interrompido = True
+                break
+            processados += 1
+            if result.status == "created":
+                criados += 1
+            elif result.status in ("already_exists", "creating"):
+                ja_tinham += 1
+            elif result.status == "folder_error":
+                sem_pasta.append(f"{member.display_name} — {result.detail}")
+            else:
+                sem_pasta_detail = result.detail or result.status
+                falhas.append(f"{member.display_name} — {sem_pasta_detail}")
+
+        restantes = len(members) - processados
+        linhas = [
+            f"**Cargo:** {role.mention} ({len(members)} membro(s) humano(s))",
+            f"✅ {criados} ticket(s) criado(s)",
+            f"♻️ {ja_tinham} já tinham ticket nesta semana",
+        ]
+        if sem_pasta:
+            linhas.append(f"⚠️ {len(sem_pasta)} sem pasta individual regularizada")
+        if falhas:
+            linhas.append(f"❌ {len(falhas)} falha(s) na criação")
+        if interrompido:
+            linhas.append(
+                f"⛔ Processo interrompido: categorias de ticket lotadas. "
+                f"{restantes} membro(s) não processado(s)."
+            )
+
+        resumo = "\n".join(linhas)
+        detalhes = sem_pasta + falhas
+        if detalhes:
+            amostra = "\n".join(f"• {item}" for item in detalhes[:15])
+            if len(detalhes) > 15:
+                amostra += f"\n• … e mais {len(detalhes) - 15}."
+            resumo = f"{resumo}\n\n**Pendências:**\n{amostra}"
+
+        try:
+            await interaction.followup.send(resumo[:2000], ephemeral=True)
+        except discord.HTTPException:
+            log.exception("Falha ao enviar resumo de abertura de tickets por cargo")
+
+        try:
+            embed = discord.Embed(
+                title="🎫 Abertura de tickets por cargo",
+                color=discord.Color.blue(),
+                timestamp=discord.utils.utcnow(),
+            )
+            embed.add_field(name="Cargo", value=role.mention, inline=True)
+            embed.add_field(
+                name="Responsável",
+                value=getattr(executor, "mention", str(executor)),
+                inline=True,
+            )
+            embed.add_field(name="Resultado", value=resumo[:1024], inline=False)
+            await send_log(self.bot, guild, "farm", embed)
+        except Exception:
+            log.exception("Falha ao registrar log de abertura de tickets por cargo")
 
     @app_commands.command(
         name="abrir_ticket_farm",
