@@ -11,6 +11,7 @@ from cogs.bau import (
     BauPainelView,
     CategoryPageView,
     CategoryQuantityModal,
+    CategoryMovementView,
     CategorySession,
     CategorySelect,
     ClearConfirmView,
@@ -143,6 +144,115 @@ class BauViewTests(unittest.IsolatedAsyncioTestCase):
                 modal = CategoryQuantityModal(session)
                 self.assertLessEqual(len(modal.children), 5)
                 modal.stop()
+
+    async def test_all_category_products_are_reachable_through_pages(self):
+        for category, products in CATEGORIAS.items():
+            session = CategorySession(
+                category,
+                "entrada",
+                123,
+                tuple(products),
+            )
+            visible_products = []
+            for page in range(session.page_count):
+                modal = CategoryQuantityModal(session, page)
+                visible_products.extend(product for product, _ in modal.inputs)
+                modal.stop()
+
+            self.assertEqual(visible_products, products, category)
+
+    async def test_all_multi_page_categories_can_navigate_to_every_page(self):
+        for category, products in CATEGORIAS.items():
+            session = CategorySession(
+                category,
+                "entrada",
+                123,
+                tuple(products),
+            )
+            current_page = 0
+            visited_pages = [current_page]
+
+            while current_page < session.page_count - 1:
+                view = CategoryPageView(session, current_page)
+                self.assertFalse(view.next.disabled, category)
+                interaction = SimpleNamespace(
+                    response=SimpleNamespace(edit_message=AsyncMock())
+                )
+
+                await view.next.callback(interaction)
+
+                call_kwargs = interaction.response.edit_message.await_args.kwargs
+                next_view = call_kwargs["view"]
+                current_page = next_view.page
+                visited_pages.append(current_page)
+                view.stop()
+                next_view.stop()
+
+            self.assertEqual(
+                visited_pages,
+                list(range(session.page_count)),
+                category,
+            )
+
+    async def test_category_navigation_changes_page_without_opening_modal(self):
+        session = CategorySession(
+            "Teste",
+            "entrada",
+            123,
+            tuple(f"Produto {index}" for index in range(11)),
+        )
+        session.page = 2
+        view = CategoryPageView(session, page=0)
+        buttons = {
+            child.label: child
+            for child in view.children
+            if isinstance(child, discord.ui.Button)
+        }
+
+        self.assertTrue(buttons["Anterior"].disabled)
+        next_button = next(
+            child for child in view.children
+            if isinstance(child, discord.ui.Button)
+            and child.label.startswith("Proxima pagina")
+        )
+        self.assertEqual(next_button.label, "Proxima pagina (2/3)")
+
+        interaction = SimpleNamespace(
+            response=SimpleNamespace(edit_message=AsyncMock())
+        )
+        await next_button.callback(interaction)
+        call_kwargs = interaction.response.edit_message.await_args.kwargs
+        opened_view = call_kwargs["view"]
+        self.assertEqual(opened_view.page, 1)
+        self.assertIn("Produto 5", call_kwargs["embed"].description)
+        self.assertNotIn("Produto 0", call_kwargs["embed"].description)
+        opened_view.stop()
+        view.stop()
+
+    async def test_starting_category_shows_navigation_before_modal(self):
+        category = "\U0001f48a Drogas/Efeitos"
+        view = CategoryMovementView(category, 123)
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=123),
+            response=SimpleNamespace(edit_message=AsyncMock()),
+        )
+
+        await view._start(interaction, "entrada")
+
+        call_kwargs = interaction.response.edit_message.await_args.kwargs
+        page_view = call_kwargs["view"]
+        self.assertIsInstance(page_view, CategoryPageView)
+        self.assertEqual(page_view.page, 0)
+        self.assertIn("Balinha", call_kwargs["embed"].description)
+        self.assertNotIn("Meta", call_kwargs["embed"].description)
+        next_button = next(
+            child for child in page_view.children
+            if isinstance(child, discord.ui.Button)
+            and child.label.startswith("Proxima pagina")
+        )
+        self.assertFalse(next_button.disabled)
+        page_view.stop()
+        view.stop()
 
     async def test_opening_next_modal_does_not_advance_session_before_submit(self):
         session = CategorySession(

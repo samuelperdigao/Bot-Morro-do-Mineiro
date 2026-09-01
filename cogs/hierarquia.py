@@ -25,6 +25,7 @@ HIERARQUIA_CARGOS = [
     "| Gerente de Ação",
     "| Gerente de Farm",
     "| Gerente de Produção",
+    "| Gerente de Produtos",
     "| Gerente Geral",
     "| 03",
     "| 02",

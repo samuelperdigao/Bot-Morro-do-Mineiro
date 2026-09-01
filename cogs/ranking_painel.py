@@ -104,6 +104,8 @@ def build_ranking_publico_embeds(guild: discord.Guild, guild_id: str, week_id: s
         tipo_meta = "📦 Produtos + 💵 Dinheiro"
     elif tipo == "dinheiro":
         tipo_meta = "💵 Dinheiro"
+    elif tipo == "colete":
+        tipo_meta = "🦺 Materiais de Colete"
     else:
         tipo_meta = "📦 Itens de produção"
     total_membros = len(membros)

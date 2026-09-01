@@ -17,6 +17,7 @@ from discord.ext import commands
 
 from core.config import CHANNEL_MAP_FILE, AUSENCIAS_FILE
 from core.logger import get_logger
+from core.role_sync import find_role_by_names, sync_role_permissions
 from services.db_service import (
     db_set_guild_config,
     db_get_guild_config,
@@ -35,6 +36,10 @@ def _ids_para_str(ids: list[int]) -> str:
     return ",".join(str(i) for i in ids)
 
 
+GERENTE_PRODUCAO_NAMES = ("| Gerente de Produção", "Gerente de Produção")
+GERENTE_PRODUTOS_NAMES = ("| Gerente de Produtos", "Gerente de Produtos")
+
+
 class SetupCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -51,6 +56,7 @@ class SetupCog(commands.Cog):
         canal_log="Canal de log do sistema (registros de aprovação/reprovação)",
         categoria_privada="Categoria onde os canais privados dos membros serão criados",
         cargo_membro="Cargo atribuído automaticamente ao membro com set aprovado",
+        cargo_flanelinha="Cargo atribuído automaticamente ao aprovar set",
         cargos_aprovadores="IDs ou menções dos cargos que podem aprovar sets (separados por vírgula)",
     )
     async def setup_bot(
@@ -60,6 +66,7 @@ class SetupCog(commands.Cog):
         canal_log: discord.TextChannel,
         categoria_privada: discord.CategoryChannel,
         cargo_membro: discord.Role,
+        cargo_flanelinha: discord.Role = None,
         cargos_aprovadores: str = "",
     ):
         await interaction.response.defer(ephemeral=True)
@@ -67,14 +74,16 @@ class SetupCog(commands.Cog):
 
         aprovadores_ids = _parse_ids(cargos_aprovadores) if cargos_aprovadores else []
 
-        db_set_guild_config(
-            guild_id,
-            approval_channel_id=str(canal_aprovacao.id),
-            log_channel_id=str(canal_log.id),
-            private_category_id=str(categoria_privada.id),
-            member_role_id=str(cargo_membro.id),
-            approver_role_ids=_ids_para_str(aprovadores_ids),
-        )
+        guild_fields = {
+            "approval_channel_id": str(canal_aprovacao.id),
+            "log_channel_id": str(canal_log.id),
+            "private_category_id": str(categoria_privada.id),
+            "member_role_id": str(cargo_membro.id),
+            "approver_role_ids": _ids_para_str(aprovadores_ids),
+        }
+        if cargo_flanelinha:
+            guild_fields["flanelinha_role_id"] = str(cargo_flanelinha.id)
+        db_set_guild_config(guild_id, **guild_fields)
         log.info(f"setup_bot executado para guild {guild_id} por {interaction.user}")
 
         # Migração automática de dados legados (não-destrutiva)
@@ -93,6 +102,8 @@ class SetupCog(commands.Cog):
         embed.add_field(name="📋 Canal de Log",        value=canal_log.mention,       inline=True)
         embed.add_field(name="📁 Categoria Privada",   value=categoria_privada.mention, inline=True)
         embed.add_field(name="🎖️ Cargo Membro",        value=cargo_membro.mention,    inline=True)
+        if cargo_flanelinha:
+            embed.add_field(name="Cargo Flanelinha", value=cargo_flanelinha.mention, inline=True)
         embed.add_field(name="✅ Cargos Aprovadores",  value=aprovadores_txt,         inline=False)
 
         if migrados_cm or migrados_au:
@@ -123,7 +134,7 @@ class SetupCog(commands.Cog):
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(
         cargos_lideranca="IDs ou menções dos cargos de liderança do farm (separados por vírgula)",
-        cargos_permitidos="IDs ou menções dos cargos que podem usar /farm (separados por vírgula)",
+        cargos_permitidos="IDs ou menções dos cargos que participam do farm por ticket (separados por vírgula)",
         canal_avisos="Canal de avisos gerais do farm (ranking, aprovações)",
         canal_notificacao="Canal onde a notificação de meta concluída é enviada (opcional, usa canal_avisos se omitido)",
     )
@@ -301,6 +312,309 @@ class SetupCog(commands.Cog):
             if not interaction.response.is_done():
                 await interaction.response.send_message("❌ Erro inesperado.", ephemeral=True)
 
+    @app_commands.command(
+        name="setup_flanelinha",
+        description="Configura o cargo Flanelinha aplicado ao aprovar set.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.describe(
+        cargo_flanelinha="Cargo atribuído automaticamente ao aprovar set",
+    )
+    async def setup_flanelinha(
+        self,
+        interaction: discord.Interaction,
+        cargo_flanelinha: discord.Role,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        guild_id = str(interaction.guild_id)
+
+        db_set_guild_config(guild_id, flanelinha_role_id=str(cargo_flanelinha.id))
+        log.info("setup_flanelinha executado para guild %s por %s", guild_id, interaction.user)
+
+        await interaction.followup.send(
+            f"Cargo Flanelinha configurado: {cargo_flanelinha.mention}\n"
+            "Membros receberão esse cargo quando o set for aprovado.",
+            ephemeral=True,
+        )
+
+    @setup_flanelinha.error
+    async def setup_flanelinha_error(
+        self,
+        interaction: discord.Interaction,
+        error: app_commands.AppCommandError,
+    ):
+        if isinstance(error, app_commands.MissingPermissions):
+            message = "❌ Sem permissão para usar este comando."
+        else:
+            log.error("Erro em /setup_flanelinha: %s", error, exc_info=True)
+            message = "❌ Erro inesperado."
+
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+
+    @app_commands.command(
+        name="sincronizar_flanelinha",
+        description="Copia as permissoes do cargo Membro para o cargo Flanelinha.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def sincronizar_flanelinha(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        if guild is None:
+            await interaction.followup.send(
+                "Este comando so pode ser usado em um servidor.",
+                ephemeral=True,
+            )
+            return
+
+        cfg = db_get_guild_config(str(guild.id))
+        cargo_membro = None
+        if cfg and cfg["member_role_id"]:
+            cargo_membro = guild.get_role(int(cfg["member_role_id"]))
+        if cargo_membro is None:
+            cargo_membro = find_role_by_names(guild, ("| Membro", "Membro"))
+
+        cargo_flanelinha = find_role_by_names(
+            guild,
+            ("| Flanelinha", "Flanelinha"),
+        )
+
+        if cargo_membro is None:
+            await interaction.followup.send(
+                "Nao encontrei o cargo Membro. Configure-o em /setup_bot ou confira o nome.",
+                ephemeral=True,
+            )
+            return
+        if cargo_flanelinha is None:
+            await interaction.followup.send(
+                "Nao encontrei o cargo Flanelinha no servidor.",
+                ephemeral=True,
+            )
+            return
+        if cargo_membro.id == cargo_flanelinha.id:
+            await interaction.followup.send(
+                "Os cargos Membro e Flanelinha precisam ser diferentes.",
+                ephemeral=True,
+            )
+            return
+
+        bot_member = guild.me
+        if bot_member is None or not bot_member.guild_permissions.manage_roles:
+            await interaction.followup.send(
+                "O bot precisa da permissao Gerenciar Cargos.",
+                ephemeral=True,
+            )
+            return
+        if bot_member.top_role <= cargo_membro or bot_member.top_role <= cargo_flanelinha:
+            await interaction.followup.send(
+                "O cargo do bot precisa ficar acima de Membro e Flanelinha na hierarquia.",
+                ephemeral=True,
+            )
+            return
+
+        reason = f"Sincronizacao Flanelinha solicitada por {interaction.user}"
+        try:
+            result = await sync_role_permissions(
+                guild,
+                cargo_membro,
+                cargo_flanelinha,
+                reason=reason,
+                disable_invites=True,
+            )
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "O Discord recusou a alteracao. Confira a hierarquia e as permissoes do bot.",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException as exc:
+            log.error("Erro HTTP ao sincronizar Flanelinha: %s", exc, exc_info=True)
+            await interaction.followup.send(
+                "O Discord retornou um erro ao sincronizar os cargos.",
+                ephemeral=True,
+            )
+            return
+
+        detalhes = (
+            f"Permissoes gerais copiadas de {cargo_membro.mention}.\n"
+            "Criar convites: desativado nos dois cargos.\n"
+            f"Overrides copiados: `{result.copied_overwrites}`\n"
+            f"Overrides extras removidos: `{result.removed_overwrites}`\n"
+            f"Posicao: imediatamente abaixo de {cargo_membro.mention}."
+        )
+        if result.failed_channels:
+            detalhes += (
+                f"\n\nAtencao: `{len(result.failed_channels)}` canal(is) falharam. "
+                "Confira o log do bot."
+            )
+            log.warning(
+                "Falhas ao sincronizar Flanelinha na guild %s: %s",
+                guild.id,
+                result.failed_channels,
+            )
+
+        await interaction.followup.send(detalhes, ephemeral=True)
+        log.info(
+            "Flanelinha sincronizado na guild %s por %s: %s",
+            guild.id,
+            interaction.user,
+            result,
+        )
+
+    @app_commands.command(
+        name="sincronizar_gerente_produtos",
+        description="Cria e copia as permissoes do Gerente de Producao para Gerente de Produtos.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def sincronizar_gerente_produtos(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        if guild is None:
+            await interaction.followup.send(
+                "Este comando so pode ser usado em um servidor.",
+                ephemeral=True,
+            )
+            return
+
+        cargo_producao = find_role_by_names(guild, GERENTE_PRODUCAO_NAMES)
+        if cargo_producao is None:
+            await interaction.followup.send(
+                "Nao encontrei o cargo Gerente de Producao no servidor.",
+                ephemeral=True,
+            )
+            return
+
+        bot_member = guild.me
+        if bot_member is None or not bot_member.guild_permissions.manage_roles:
+            await interaction.followup.send(
+                "O bot precisa da permissao Gerenciar Cargos.",
+                ephemeral=True,
+            )
+            return
+        if bot_member.top_role <= cargo_producao:
+            await interaction.followup.send(
+                "O cargo do bot precisa ficar acima de Gerente de Producao na hierarquia.",
+                ephemeral=True,
+            )
+            return
+
+        cargo_produtos = find_role_by_names(guild, GERENTE_PRODUTOS_NAMES)
+        criado = False
+        reason = f"Sincronizacao Gerente de Produtos solicitada por {interaction.user}"
+
+        try:
+            if cargo_produtos is None:
+                cargo_produtos = await guild.create_role(
+                    name="| Gerente de Produtos",
+                    permissions=discord.Permissions(cargo_producao.permissions.value),
+                    colour=cargo_producao.colour,
+                    hoist=cargo_producao.hoist,
+                    mentionable=cargo_producao.mentionable,
+                    reason=reason,
+                )
+                criado = True
+
+            if cargo_producao.id == cargo_produtos.id:
+                await interaction.followup.send(
+                    "Os cargos Gerente de Producao e Gerente de Produtos precisam ser diferentes.",
+                    ephemeral=True,
+                )
+                return
+            if bot_member.top_role <= cargo_produtos:
+                await interaction.followup.send(
+                    "O cargo do bot precisa ficar acima de Gerente de Produtos na hierarquia.",
+                    ephemeral=True,
+                )
+                return
+
+            result = await sync_role_permissions(
+                guild,
+                cargo_producao,
+                cargo_produtos,
+                reason=reason,
+            )
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "O Discord recusou a alteracao. Confira a hierarquia e as permissoes do bot.",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException as exc:
+            log.error("Erro HTTP ao sincronizar Gerente de Produtos: %s", exc, exc_info=True)
+            await interaction.followup.send(
+                "O Discord retornou um erro ao sincronizar os cargos.",
+                ephemeral=True,
+            )
+            return
+
+        detalhes = (
+            f"Cargo {'criado e ' if criado else ''}sincronizado: {cargo_produtos.mention}\n"
+            f"Permissoes gerais copiadas de {cargo_producao.mention}.\n"
+            f"Overrides copiados: `{result.copied_overwrites}`\n"
+            f"Overrides extras removidos: `{result.removed_overwrites}`\n"
+            f"Posicao: imediatamente abaixo de {cargo_producao.mention}."
+        )
+        if result.failed_channels:
+            detalhes += (
+                f"\n\nAtencao: `{len(result.failed_channels)}` canal(is) falharam. "
+                "Confira o log do bot."
+            )
+            log.warning(
+                "Falhas ao sincronizar Gerente de Produtos na guild %s: %s",
+                guild.id,
+                result.failed_channels,
+            )
+
+        await interaction.followup.send(detalhes, ephemeral=True)
+        log.info(
+            "Gerente de Produtos sincronizado na guild %s por %s: %s",
+            guild.id,
+            interaction.user,
+            result,
+        )
+
+    @sincronizar_gerente_produtos.error
+    async def sincronizar_gerente_produtos_error(
+        self,
+        interaction: discord.Interaction,
+        error: app_commands.AppCommandError,
+    ):
+        if isinstance(error, app_commands.MissingPermissions):
+            message = "Voce precisa da permissao Gerenciar Servidor."
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+            return
+
+        log.error("Erro em /sincronizar_gerente_produtos: %s", error, exc_info=True)
+        if interaction.response.is_done():
+            await interaction.followup.send("Erro inesperado.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Erro inesperado.", ephemeral=True)
+
+    @sincronizar_flanelinha.error
+    async def sincronizar_flanelinha_error(
+        self,
+        interaction: discord.Interaction,
+        error: app_commands.AppCommandError,
+    ):
+        if isinstance(error, app_commands.MissingPermissions):
+            message = "Voce precisa da permissao Gerenciar Servidor."
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+            return
+
+        log.error("Erro em /sincronizar_flanelinha: %s", error, exc_info=True)
+        if interaction.response.is_done():
+            await interaction.followup.send("Erro inesperado.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Erro inesperado.", ephemeral=True)
+
     # ── /config_ver ───────────────────────────────────────────────────────────
 
     @app_commands.command(
@@ -337,6 +651,7 @@ class SetupCog(commands.Cog):
             embed.add_field(name="Canal de Log",        value=_ch(cfg["log_channel_id"]),          inline=True)
             embed.add_field(name="Categoria Privada",   value=_ch(cfg["private_category_id"]),     inline=True)
             embed.add_field(name="Cargo Membro",        value=_role(cfg["member_role_id"]),        inline=True)
+            embed.add_field(name="Cargo Flanelinha",    value=_role(cfg["flanelinha_role_id"]),    inline=True)
             embed.add_field(name="Cargos Aprovadores",  value=_roles(cfg["approver_role_ids"]),    inline=False)
 
             embed.add_field(name="**— Farm —**", value="\u200b", inline=False)

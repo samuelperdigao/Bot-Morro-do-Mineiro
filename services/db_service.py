@@ -5,6 +5,7 @@ services/db_service.py - Todas as funções de acesso ao banco SQLite do farm.
 import json
 import sqlite3
 import logging
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -21,6 +22,18 @@ PRODUTO_KEYS = ["folha", "opio", "seringa", "agulha"]
 DINHEIRO_SUJO_ITEM = "Dinheiro Sujo"
 DINHEIRO_LIMPO_ITEM = "Dinheiro Limpo"
 DINHEIRO_ITEMS = (DINHEIRO_SUJO_ITEM, DINHEIRO_LIMPO_ITEM)
+AUTO_FINALIZATION_REASON = "Ticket expirado - aprovação automática"
+APROVACAO_ORIGEM_META = "meta_atingida"
+APROVACAO_ORIGEM_EXPIRACAO = "ticket_expirado"
+AUTO_FINAL_STATUS_TOTAL = "APROVADA_TOTAL"
+AUTO_FINAL_STATUS_PARTIAL = "APROVADA_PARCIAL"
+AUTO_FINAL_STATUS_EMPTY = "SEM_ENTREGA"
+
+_AUTO_FINAL_STATUS_TO_RANKING = {
+    AUTO_FINAL_STATUS_TOTAL: "meta_batida",
+    AUTO_FINAL_STATUS_PARTIAL: "parcial",
+    AUTO_FINAL_STATUS_EMPTY: "zero",
+}
 
 _LEGACY_KEY_TO_NOME = {
     "folha": "Folha",
@@ -134,7 +147,7 @@ def db_meta_itens(meta) -> dict:
     }
 
 def db_meta_tipo(meta) -> str:
-    """Retorna 'itens', 'dinheiro' ou 'misto'. Rows legadas (meta_tipo=NULL) são tratadas como 'itens'."""
+    """Retorna o tipo salvo da meta. Rows legadas sem tipo são tratadas como itens."""
     if meta is None:
         return "itens"
     try:
@@ -151,7 +164,7 @@ def db_meta_tipo_efetivo(meta) -> str:
     itens quando ainda carregam metas de produto.
     """
     tipo = db_meta_tipo(meta)
-    if tipo in {"itens", "dinheiro"}:
+    if tipo in {"itens", "colete", "dinheiro"}:
         return tipo
     itens = db_meta_itens(meta)
     if itens and any((qtd or 0) > 0 for qtd in itens.values()):
@@ -160,7 +173,7 @@ def db_meta_tipo_efetivo(meta) -> str:
 
 def db_meta_itens_ativos(meta) -> dict:
     """Itens que contam para a meta ativa."""
-    if db_meta_tipo_efetivo(meta) != "itens":
+    if db_meta_tipo_efetivo(meta) not in {"itens", "colete"}:
         return {}
     return db_meta_itens(meta)
 
@@ -185,6 +198,21 @@ def db_meta_dinheiro_itens_ativos(meta) -> dict:
         nome: float(itens.get(nome, 0) or 0)
         for nome in DINHEIRO_ITEMS
         if float(itens.get(nome, 0) or 0) > 0
+    }
+
+def db_meta_alvos_ativos(meta) -> tuple[str, dict[str, float]]:
+    """Retorna o tipo efetivo e os alvos que contam para a meta ativa."""
+    meta_tipo = db_meta_tipo_efetivo(meta)
+    if meta_tipo == "dinheiro":
+        separados = db_meta_dinheiro_itens_ativos(meta)
+        if separados:
+            return meta_tipo, {nome: float(valor) for nome, valor in separados.items()}
+        total = float(db_meta_dinheiro_ativo(meta))
+        return meta_tipo, {"Dinheiro": total} if total > 0 else {}
+    return meta_tipo, {
+        nome: float(valor)
+        for nome, valor in db_meta_itens_ativos(meta).items()
+        if float(valor or 0) > 0
     }
 
 def db_prog_itens(prog) -> dict:
@@ -274,15 +302,67 @@ def db_get_lideranca_role_ids(guild_id: str) -> list[int]:
 
 def db_get_permitidos_role_ids(guild_id: str) -> list[int]:
     cfg = db_get_guild_config(guild_id)
-    if not cfg or not cfg["cargos_permitidos_farm"]:
+    if not cfg:
         return []
-    return [int(x.strip()) for x in cfg["cargos_permitidos_farm"].split(",") if x.strip()]
+    role_ids = [
+        int(x.strip())
+        for x in (cfg["cargos_permitidos_farm"] or "").split(",")
+        if x.strip()
+    ]
+    if cfg["flanelinha_auto_promote"] and cfg["flanelinha_role_id"]:
+        flanelinha_role_id = int(cfg["flanelinha_role_id"])
+        if flanelinha_role_id not in role_ids:
+            role_ids.append(flanelinha_role_id)
+    return role_ids
 
 def db_get_editores_farm_role_ids(guild_id: str) -> list[int]:
     cfg = db_get_guild_config(guild_id)
     if not cfg or not cfg["cargos_editar_farm"]:
         return []
     return [int(x.strip()) for x in cfg["cargos_editar_farm"].split(",") if x.strip()]
+
+def db_set_farm_adv_role_ids(
+    guild_id: str,
+    adv1_role_id: str,
+    adv2_role_id: str,
+    adv3_role_id: str,
+) -> None:
+    db_set_guild_config(
+        guild_id,
+        farm_adv1_role_id=adv1_role_id,
+        farm_adv2_role_id=adv2_role_id,
+        farm_adv3_role_id=adv3_role_id,
+    )
+
+def db_get_farm_adv_role_ids(guild_id: str) -> dict[int, str]:
+    cfg = db_get_guild_config(guild_id)
+    if not cfg:
+        return {}
+    result: dict[int, str] = {}
+    for nivel, key in (
+        (1, "farm_adv1_role_id"),
+        (2, "farm_adv2_role_id"),
+        (3, "farm_adv3_role_id"),
+    ):
+        value = cfg[key] if key in cfg.keys() else None
+        if value:
+            result[nivel] = str(value)
+    return result
+
+def db_set_farm_adv_panel(guild_id: str, channel_id: str, message_id: str) -> None:
+    db_set_guild_config(
+        guild_id,
+        farm_adv_panel_channel_id=channel_id,
+        farm_adv_panel_message_id=message_id,
+    )
+
+def db_get_farm_adv_panel(guild_id: str) -> tuple[str | None, str | None]:
+    cfg = db_get_guild_config(guild_id)
+    if not cfg:
+        return None, None
+    channel_id = cfg["farm_adv_panel_channel_id"] if "farm_adv_panel_channel_id" in cfg.keys() else None
+    message_id = cfg["farm_adv_panel_message_id"] if "farm_adv_panel_message_id" in cfg.keys() else None
+    return channel_id, message_id
 
 def db_all_configured_guilds() -> list[str]:
     """Retorna todos os guild_ids que têm ao menos uma configuração salva."""
@@ -440,15 +520,22 @@ def db_get_meta(guild_id: str, week_id: str) -> sqlite3.Row | None:
         (guild_id, week_id)
     ).fetchone()
 
-def db_set_meta(guild_id: str, week_id: str, valores: dict, definido_por: str):
+def db_set_meta(
+    guild_id: str,
+    week_id: str,
+    valores: dict,
+    definido_por: str,
+    meta_tipo: str = "itens",
+):
     """
     valores: dict {nome: quantidade}, ex: {"Folha": 500, "Ópio": 300}
     Armazena os itens como JSON. Mantém colunas legadas preenchidas quando
     os nomes coincidem com os itens padrão (para compatibilidade com dados antigos).
     """
     conn = get_conn()
+    if meta_tipo not in {"itens", "colete"}:
+        raise ValueError(f"Tipo de meta de itens invalido: {meta_tipo}")
     meta_dinheiro = 0
-    meta_tipo = "itens"
     itens_json = json.dumps(valores, ensure_ascii=False)
     # Popula colunas legadas se os nomes coincidirem (case-insensitive)
     nome_to_key = {v.lower(): k for k, v in _LEGACY_KEY_TO_NOME.items()}
@@ -532,13 +619,23 @@ def db_get_evento(guild_id: str, week_id: str, user_id: str, event_id: int) -> s
         WHERE id=? AND guild_id=? AND week_id=? AND user_id=?
     """, (event_id, guild_id, week_id, user_id)).fetchone()
 
-def db_lancar(guild_id: str, week_id: str, user_id: str, valores: dict):
-    """valores: dict {nome: quantidade}, ex: {"Folha": 50, "Ópio": 20}"""
-    db_ensure_progresso(guild_id, week_id, user_id)
+def _db_lancar_conn(
+    conn: sqlite3.Connection,
+    guild_id: str,
+    week_id: str,
+    user_id: str,
+    valores: dict,
+) -> tuple[int, str]:
+    """Acumula progresso e cria o evento sem realizar commit."""
     agora = now_tz().isoformat()
-    conn = get_conn()
-
-    prog = db_get_progresso(guild_id, week_id, user_id)
+    conn.execute(
+        "INSERT OR IGNORE INTO progresso (guild_id, week_id, user_id) VALUES (?,?,?)",
+        (guild_id, week_id, user_id),
+    )
+    prog = conn.execute(
+        "SELECT * FROM progresso WHERE guild_id=? AND week_id=? AND user_id=?",
+        (guild_id, week_id, user_id),
+    ).fetchone()
 
     # Inicializa itens do progresso: JSON existente, ou migra das colunas fixas
     if prog and prog["itens_prog_json"]:
@@ -559,12 +656,24 @@ def db_lancar(guild_id: str, week_id: str, user_id: str, valores: dict):
         WHERE guild_id=? AND week_id=? AND user_id=?
     """, (json.dumps(itens_atuais, ensure_ascii=False), agora, guild_id, week_id, user_id))
 
-    conn.execute("""
+    cursor = conn.execute("""
         INSERT INTO eventos (guild_id, week_id, user_id, criado_em, itens_json)
         VALUES (?,?,?,?,?)
     """, (guild_id, week_id, user_id, agora, json.dumps(valores, ensure_ascii=False)))
 
-    conn.commit()
+    return int(cursor.lastrowid), agora
+
+
+def db_lancar(guild_id: str, week_id: str, user_id: str, valores: dict) -> int:
+    """Registra um lançamento normal e retorna o ID do evento criado."""
+    conn = get_conn()
+    try:
+        event_id, _ = _db_lancar_conn(conn, guild_id, week_id, user_id, valores)
+        conn.commit()
+        return event_id
+    except Exception:
+        conn.rollback()
+        raise
 
 def db_editar_ultimo_evento(guild_id: str, week_id: str, user_id: str, valores: dict) -> bool:
     """valores: dict {nome: novo_total}, ex: {"Folha": 80}"""
@@ -675,6 +784,10 @@ def db_aprovar(
            Quando definido, o membro aparece no ranking/fechamento com esse nível.
     """
     conn = get_conn()
+    conn.execute(
+        "INSERT OR IGNORE INTO progresso (guild_id, week_id, user_id) VALUES (?,?,?)",
+        (guild_id, week_id, user_id),
+    )
     conn.execute("""
         UPDATE progresso SET aprovada=1, aprovada_por=?, aprovada_em=?,
             aprovacao_antecipada=?, aprovacao_nivel=?
@@ -792,6 +905,157 @@ def db_set_painel_ranking(guild_id: str, channel_id: str, message_id: str, week_
     )
 
 
+# ── Parcerias ─────────────────────────────────────────────────────────────────
+
+def db_get_parcerias_config(guild_id: str) -> tuple[str | None, str | None, str | None, str | None]:
+    row = get_conn().execute(
+        """SELECT parceria_category_id, parceria_registrar_channel_id,
+                  parceria_ativas_channel_id, parceria_panel_message_id
+           FROM guild_config WHERE guild_id=?""",
+        (guild_id,),
+    ).fetchone()
+    if not row:
+        return None, None, None, None
+    return (
+        row["parceria_category_id"],
+        row["parceria_registrar_channel_id"],
+        row["parceria_ativas_channel_id"],
+        row["parceria_panel_message_id"],
+    )
+
+
+def db_set_parcerias_config(
+    guild_id: str,
+    *,
+    category_id: str | None = None,
+    registrar_channel_id: str | None = None,
+    ativas_channel_id: str | None = None,
+    panel_message_id: str | None = None,
+) -> None:
+    fields = {}
+    if category_id is not None:
+        fields["parceria_category_id"] = category_id
+    if registrar_channel_id is not None:
+        fields["parceria_registrar_channel_id"] = registrar_channel_id
+    if ativas_channel_id is not None:
+        fields["parceria_ativas_channel_id"] = ativas_channel_id
+    if panel_message_id is not None:
+        fields["parceria_panel_message_id"] = panel_message_id
+    if fields:
+        db_set_guild_config(guild_id, **fields)
+
+
+def db_parceria_nome_existe(
+    guild_id: str,
+    nome_familia: str,
+    *,
+    exclude_id: int | None = None,
+) -> bool:
+    params: list[object] = [guild_id, nome_familia.strip()]
+    sql = "SELECT 1 FROM parcerias WHERE guild_id=? AND nome_familia=?"
+    if exclude_id is not None:
+        sql += " AND id<>?"
+        params.append(exclude_id)
+    return get_conn().execute(sql + " LIMIT 1", params).fetchone() is not None
+
+
+def db_parceria_criar(
+    guild_id: str,
+    nome_familia: str,
+    produto: str,
+    cor_carro: str | None,
+    contato_01: str | None,
+    contato_02: str | None,
+    mensagem_lista_id: int,
+    nome_arquivo_imagem: str,
+    registrado_por: int,
+) -> int:
+    conn = get_conn()
+    cursor = conn.execute(
+        """INSERT INTO parcerias
+           (guild_id, nome_familia, produto, cor_carro, contato_01, contato_02,
+            mensagem_lista_id, nome_arquivo_imagem, registrado_por)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            guild_id,
+            nome_familia.strip(),
+            produto.strip(),
+            cor_carro.strip() if cor_carro else None,
+            contato_01 or None,
+            contato_02 or None,
+            mensagem_lista_id,
+            nome_arquivo_imagem,
+            registrado_por,
+        ),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def db_parcerias_ativas(guild_id: str) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT * FROM parcerias
+           WHERE guild_id=? AND ativo=1
+           ORDER BY nome_familia COLLATE NOCASE
+           LIMIT 25""",
+        (guild_id,),
+    ).fetchall()
+
+
+def db_parceria_get(guild_id: str, parceria_id: int) -> sqlite3.Row | None:
+    return get_conn().execute(
+        "SELECT * FROM parcerias WHERE guild_id=? AND id=?",
+        (guild_id, parceria_id),
+    ).fetchone()
+
+
+def db_parceria_atualizar_texto(
+    parceria_id: int,
+    nome_familia: str,
+    produto: str,
+    cor_carro: str | None,
+    contato_01: str | None,
+    contato_02: str | None,
+) -> None:
+    conn = get_conn()
+    conn.execute(
+        """UPDATE parcerias
+           SET nome_familia=?, produto=?, cor_carro=?, contato_01=?, contato_02=?,
+               atualizado_em=?
+           WHERE id=?""",
+        (
+            nome_familia.strip(),
+            produto.strip(),
+            cor_carro.strip() if cor_carro else None,
+            contato_01 or None,
+            contato_02 or None,
+            now_tz().isoformat(),
+            parceria_id,
+        ),
+    )
+    conn.commit()
+
+
+def db_parceria_atualizar_imagem(parceria_id: int, nome_arquivo_imagem: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        """UPDATE parcerias
+           SET nome_arquivo_imagem=?, atualizado_em=?
+           WHERE id=?""",
+        (nome_arquivo_imagem, now_tz().isoformat(), parceria_id),
+    )
+    conn.commit()
+
+
+def db_parceria_desativar(parceria_id: int) -> None:
+    conn = get_conn()
+    conn.execute(
+        "UPDATE parcerias SET ativo=0, atualizado_em=? WHERE id=?",
+        (now_tz().isoformat(), parceria_id),
+    )
+    conn.commit()
+
+
 # ── Coletes ───────────────────────────────────────────────────────────────────
 
 def db_get_painel_colete(guild_id: str) -> tuple[str | None, str | None]:
@@ -817,13 +1081,15 @@ def db_registrar_fabricacao_colete(
     aluminio: int,
     borracha: int,
     custo: int,
-):
+) -> dict:
     conn = get_conn()
-    conn.execute(
+    bau_operation_id = f"fabricacao-colete-{uuid.uuid4().hex}"
+    cursor = conn.execute(
         """INSERT INTO fabricacoes_colete
            (guild_id, user_id, user_name, quantidade, ferro, plastico,
-            tecido, aluminio, borracha, custo, timestamp)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            tecido, aluminio, borracha, custo, timestamp, bau_operation_id,
+            bau_sincronizado)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
         (
             guild_id,
             user_id,
@@ -836,7 +1102,39 @@ def db_registrar_fabricacao_colete(
             borracha,
             custo,
             now_tz().isoformat(),
+            bau_operation_id,
         ),
+    )
+    conn.commit()
+    return {
+        "id": cursor.lastrowid,
+        "guild_id": guild_id,
+        "user_id": user_id,
+        "user_name": user_name,
+        "quantidade": quantidade,
+        "bau_operation_id": bau_operation_id,
+    }
+
+
+def db_get_fabricacoes_colete_pendentes(limit: int = 100) -> list[dict]:
+    rows = get_conn().execute(
+        """SELECT id, guild_id, user_id, user_name, quantidade, bau_operation_id
+           FROM fabricacoes_colete
+           WHERE bau_operation_id IS NOT NULL AND bau_sincronizado=0
+           ORDER BY id
+           LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def db_marcar_fabricacao_colete_sincronizada(fabricacao_id: int) -> None:
+    conn = get_conn()
+    conn.execute(
+        """UPDATE fabricacoes_colete
+           SET bau_sincronizado=1, bau_sincronizado_em=?
+           WHERE id=?""",
+        (now_tz().isoformat(), fabricacao_id),
     )
     conn.commit()
 
@@ -872,6 +1170,138 @@ def db_get_all_system_configs(guild_id: str):
     return get_conn().execute(
         "SELECT * FROM system_config WHERE guild_id=?", (guild_id,),
     ).fetchall()
+
+
+# ── Ações ─────────────────────────────────────────────────────────────────────
+
+def db_acao_criar(
+    guild_id: str,
+    acao_key: str,
+    tipo: str,
+    data: str,
+    horario: str,
+    criado_por: str,
+    channel_id: str,
+    message_id: str,
+) -> int:
+    conn = get_conn()
+    agora = now_tz().isoformat()
+    cur = conn.execute(
+        """INSERT INTO acoes
+           (guild_id, acao_key, tipo, data, horario, criado_por, status,
+            channel_id, message_id, criado_em, atualizado_em)
+           VALUES (?, ?, ?, ?, ?, ?, 'aberta', ?, ?, ?, ?)""",
+        (
+            guild_id,
+            acao_key,
+            tipo,
+            data,
+            horario,
+            criado_por,
+            channel_id,
+            message_id,
+            agora,
+            agora,
+        ),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def db_acao_get(acao_id: int):
+    return get_conn().execute("SELECT * FROM acoes WHERE id=?", (acao_id,)).fetchone()
+
+
+def db_acao_get_by_message(guild_id: str, message_id: str):
+    return get_conn().execute(
+        "SELECT * FROM acoes WHERE guild_id=? AND message_id=?",
+        (guild_id, message_id),
+    ).fetchone()
+
+
+def db_acao_participantes(acao_id: int) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT * FROM acao_participantes
+           WHERE acao_id=?
+           ORDER BY criado_em ASC""",
+        (acao_id,),
+    ).fetchall()
+
+
+def db_acao_participante_add(
+    acao_id: int,
+    user_id: str,
+    user_name: str,
+    origem: str,
+    adicionado_por: str | None = None,
+) -> bool:
+    conn = get_conn()
+    try:
+        conn.execute(
+            """INSERT INTO acao_participantes
+               (acao_id, user_id, user_name, origem, adicionado_por, criado_em)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (acao_id, user_id, user_name, origem, adicionado_por, now_tz().isoformat()),
+        )
+        conn.execute(
+            "UPDATE acoes SET atualizado_em=? WHERE id=?",
+            (now_tz().isoformat(), acao_id),
+        )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def db_acao_participante_remove(acao_id: int, user_id: str) -> bool:
+    conn = get_conn()
+    cur = conn.execute(
+        "DELETE FROM acao_participantes WHERE acao_id=? AND user_id=?",
+        (acao_id, user_id),
+    )
+    if cur.rowcount:
+        conn.execute(
+            "UPDATE acoes SET atualizado_em=? WHERE id=?",
+            (now_tz().isoformat(), acao_id),
+        )
+    conn.commit()
+    return bool(cur.rowcount)
+
+
+def db_acao_finalizar(
+    acao_id: int,
+    resultado: str,
+    finalizado_por: str,
+    observacao: str | None = None,
+    valor_total_centavos: int | None = None,
+    valor_faccao_centavos: int | None = None,
+    valor_participantes_centavos: int | None = None,
+    valor_por_participante_centavos: int | None = None,
+) -> None:
+    conn = get_conn()
+    agora = now_tz().isoformat()
+    conn.execute(
+        """UPDATE acoes
+           SET status=?, resultado=?, finalizado_por=?, observacao=?,
+               valor_total_centavos=?, valor_faccao_centavos=?,
+               valor_participantes_centavos=?, valor_por_participante_centavos=?,
+               finalizado_em=?, atualizado_em=?
+           WHERE id=?""",
+        (
+            resultado,
+            resultado,
+            finalizado_por,
+            observacao,
+            valor_total_centavos,
+            valor_faccao_centavos,
+            valor_participantes_centavos,
+            valor_por_participante_centavos,
+            agora,
+            agora,
+            acao_id,
+        ),
+    )
+    conn.commit()
 
 
 # ── Recolhimento — Ciclos ─────────────────────────────────────────────────────
@@ -1004,6 +1434,51 @@ def db_recolhimento_add_entrega_farm(
     )
     conn.commit()
     return cur.lastrowid
+
+
+def db_recolhimento_add_entrega_itens(
+    ciclo_id: int,
+    registrado_por: str,
+    itens: dict[str, int | float],
+    alvo_user_id: str | None = None,
+    alvo_nome: str | None = None,
+    alvo_pasta_id: str | None = None,
+) -> int:
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO recolhimento_entregas "
+        "(ciclo_id, data, registrado_por, alvo_user_id, alvo_nome, alvo_pasta_id, itens_json) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (
+            ciclo_id,
+            now_tz().isoformat(),
+            registrado_por,
+            alvo_user_id,
+            alvo_nome,
+            alvo_pasta_id,
+            json.dumps(itens, ensure_ascii=False),
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def db_recolhimento_entrega_itens(entrega) -> dict:
+    itens_json = entrega["itens_json"] if "itens_json" in entrega.keys() else None
+    if itens_json:
+        return json.loads(itens_json)
+    if entrega["valor"]:
+        return {"Dinheiro": entrega["valor"]}
+    return {
+        nome: entrega[key] or 0
+        for key, nome in {
+            "folha": "Borracha",
+            "opio": "Aluminio",
+            "seringa": "Cobre",
+            "agulha": "Plastico",
+        }.items()
+        if entrega[key]
+    }
 
 
 def db_recolhimento_get_entregas(ciclo_id: int) -> list:
@@ -1147,3 +1622,946 @@ def db_lideranca_resumo(guild_id: str) -> dict:
         elif status == "concluida":
             resumo["concluidas"] += total
     return resumo
+
+
+# ── Tickets semanais de farm ─────────────────────────────────────────────────
+
+def db_ticket_config_get(guild_id: str) -> dict | None:
+    row = get_conn().execute(
+        "SELECT * FROM farm_ticket_config WHERE guild_id=?", (guild_id,)
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "guild_id": guild_id,
+        "category_ids": json.loads(row["category_ids_json"]),
+        "admin_role_ids": json.loads(row["admin_role_ids_json"]),
+        "atualizado_em": row["atualizado_em"],
+    }
+
+
+def db_ticket_config_set(guild_id: str, category_ids: list[int], admin_role_ids: list[int]) -> None:
+    get_conn().execute(
+        """INSERT INTO farm_ticket_config
+           (guild_id, category_ids_json, admin_role_ids_json, atualizado_em)
+           VALUES (?,?,?,?)
+           ON CONFLICT(guild_id) DO UPDATE SET
+             category_ids_json=excluded.category_ids_json,
+             admin_role_ids_json=excluded.admin_role_ids_json,
+             atualizado_em=excluded.atualizado_em""",
+        (
+            guild_id,
+            json.dumps([str(x) for x in category_ids]),
+            json.dumps([str(x) for x in admin_role_ids]),
+            now_tz().isoformat(),
+        ),
+    )
+    get_conn().commit()
+
+
+def db_farm_report_get(guild_id: str) -> dict | None:
+    row = get_conn().execute(
+        "SELECT * FROM farm_pending_report WHERE guild_id=?", (guild_id,)
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        members = json.loads(row["snapshot_members_json"] or "[]")
+    except (TypeError, json.JSONDecodeError):
+        members = []
+    return {
+        "guild_id": guild_id,
+        "channel_id": row["channel_id"],
+        "panel_message_id": row["panel_message_id"],
+        "report_message_id": row["report_message_id"],
+        "snapshot_week_id": row["snapshot_week_id"],
+        "snapshot_members": members,
+        "snapshot_created_at": row["snapshot_created_at"],
+        "atualizado_em": row["atualizado_em"],
+    }
+
+
+def db_farm_report_set_panel(
+    guild_id: str,
+    channel_id: str,
+    panel_message_id: str,
+    report_message_id: str | None = None,
+) -> None:
+    agora = now_tz().isoformat()
+    conn = get_conn()
+    conn.execute(
+        """INSERT INTO farm_pending_report
+           (guild_id, channel_id, panel_message_id, report_message_id, atualizado_em)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(guild_id) DO UPDATE SET
+             channel_id=excluded.channel_id,
+             panel_message_id=excluded.panel_message_id,
+             report_message_id=excluded.report_message_id,
+             atualizado_em=excluded.atualizado_em""",
+        (guild_id, channel_id, panel_message_id, report_message_id, agora),
+    )
+    conn.commit()
+
+
+def db_farm_report_set_report_message(guild_id: str, message_id: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        "UPDATE farm_pending_report SET report_message_id=?, atualizado_em=? WHERE guild_id=?",
+        (message_id, now_tz().isoformat(), guild_id),
+    )
+    conn.commit()
+
+
+def db_farm_report_set_snapshot(
+    guild_id: str, week_id: str, members: list[dict[str, str]]
+) -> None:
+    agora = now_tz().isoformat()
+    conn = get_conn()
+    conn.execute(
+        """INSERT INTO farm_pending_report
+           (guild_id, snapshot_week_id, snapshot_members_json,
+            snapshot_created_at, atualizado_em)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(guild_id) DO UPDATE SET
+             snapshot_week_id=excluded.snapshot_week_id,
+             snapshot_members_json=excluded.snapshot_members_json,
+             snapshot_created_at=excluded.snapshot_created_at,
+             atualizado_em=excluded.atualizado_em""",
+        (
+            guild_id,
+            week_id,
+            json.dumps(members, ensure_ascii=False),
+            agora,
+            agora,
+        ),
+    )
+    conn.commit()
+
+
+def db_ticket_approved_user_ids(guild_id: str, week_id: str) -> set[str]:
+    rows = get_conn().execute(
+        """SELECT DISTINCT t.user_id
+           FROM farm_tickets t
+           JOIN farm_ticket_actions a ON a.ticket_id=t.id
+           WHERE t.guild_id=? AND t.week_id=? AND a.action='aprovacao'""",
+        (guild_id, week_id),
+    ).fetchall()
+    return {str(row["user_id"]) for row in rows}
+
+
+# ── Advertencias de farm ─────────────────────────────────────────────────────
+
+def db_farm_ausencia_registrar(
+    guild_id: str,
+    week_id: str,
+    user_id: str,
+    motivo: str,
+) -> tuple[bool, sqlite3.Row | None]:
+    conn = get_conn()
+    try:
+        conn.execute(
+            """INSERT INTO farm_ausencias
+               (guild_id, week_id, user_id, motivo, status, criado_em)
+               VALUES (?,?,?,?, 'registrada', ?)""",
+            (guild_id, week_id, user_id, motivo, now_tz().isoformat()),
+        )
+        conn.commit()
+        return True, db_farm_ausencia_get(guild_id, week_id, user_id)
+    except sqlite3.IntegrityError:
+        return False, db_farm_ausencia_get(guild_id, week_id, user_id)
+
+
+def db_farm_ausencia_get(
+    guild_id: str,
+    week_id: str,
+    user_id: str,
+) -> sqlite3.Row | None:
+    return get_conn().execute(
+        """SELECT * FROM farm_ausencias
+           WHERE guild_id=? AND week_id=? AND user_id=?""",
+        (guild_id, week_id, user_id),
+    ).fetchone()
+
+
+def db_farm_ausencias_semana(guild_id: str, week_id: str) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT * FROM farm_ausencias
+           WHERE guild_id=? AND week_id=? AND status='registrada'
+           ORDER BY criado_em ASC""",
+        (guild_id, week_id),
+    ).fetchall()
+
+
+def db_farm_ausencia_user_ids(guild_id: str, week_id: str) -> set[str]:
+    return {
+        str(row["user_id"])
+        for row in db_farm_ausencias_semana(guild_id, week_id)
+    }
+
+
+def db_farm_advertencia_criar(
+    guild_id: str,
+    week_id: str,
+    user_id: str,
+    nivel: int,
+    motivo: str,
+    multa: int,
+    dias_sem_desmanche: int,
+    aplicado_por: str,
+) -> tuple[bool, sqlite3.Row | None]:
+    conn = get_conn()
+    try:
+        cursor = conn.execute(
+            """INSERT INTO farm_advertencias
+               (guild_id, week_id, user_id, nivel, motivo, multa,
+                dias_sem_desmanche, aplicado_por, status, criado_em)
+               VALUES (?,?,?,?,?,?,?,?, 'ativa', ?)""",
+            (
+                guild_id,
+                week_id,
+                user_id,
+                nivel,
+                motivo,
+                multa,
+                dias_sem_desmanche,
+                aplicado_por,
+                now_tz().isoformat(),
+            ),
+        )
+        conn.commit()
+        return True, db_farm_advertencia_get(int(cursor.lastrowid))
+    except sqlite3.IntegrityError:
+        row = conn.execute(
+            """SELECT * FROM farm_advertencias
+               WHERE guild_id=? AND week_id=? AND user_id=? AND status='ativa'
+               ORDER BY id DESC LIMIT 1""",
+            (guild_id, week_id, user_id),
+        ).fetchone()
+        return False, row
+
+
+def db_farm_advertencia_get(advertencia_id: int) -> sqlite3.Row | None:
+    return get_conn().execute(
+        "SELECT * FROM farm_advertencias WHERE id=?",
+        (advertencia_id,),
+    ).fetchone()
+
+
+def db_farm_advertencia_status(advertencia_id: int, status: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        "UPDATE farm_advertencias SET status=? WHERE id=?",
+        (status, advertencia_id),
+    )
+    conn.commit()
+
+
+def db_farm_advertencias_usuario(guild_id: str, user_id: str) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT * FROM farm_advertencias
+           WHERE guild_id=? AND user_id=?
+           ORDER BY criado_em DESC, id DESC""",
+        (guild_id, user_id),
+    ).fetchall()
+
+
+def db_farm_advertencia_remover(
+    guild_id: str,
+    user_id: str,
+    nivel: int,
+    removido_por: str,
+    motivo_remocao: str,
+) -> sqlite3.Row | None:
+    conn = get_conn()
+    row = conn.execute(
+        """SELECT * FROM farm_advertencias
+           WHERE guild_id=? AND user_id=? AND nivel=? AND status='ativa'
+           ORDER BY criado_em DESC, id DESC LIMIT 1""",
+        (guild_id, user_id, nivel),
+    ).fetchone()
+    if not row:
+        return None
+    conn.execute(
+        """UPDATE farm_advertencias
+           SET status='removida', removido_por=?, removido_em=?, motivo_remocao=?
+           WHERE id=?""",
+        (removido_por, now_tz().isoformat(), motivo_remocao, int(row["id"])),
+    )
+    conn.commit()
+    return db_farm_advertencia_get(int(row["id"]))
+
+
+def db_farm_adv_fechamento_criar(
+    guild_id: str,
+    week_id: str,
+    snapshot: dict,
+    responsavel: str,
+) -> sqlite3.Row:
+    conn = get_conn()
+    cursor = conn.execute(
+        """INSERT INTO farm_advertencia_fechamentos
+           (guild_id, week_id, snapshot_json, status, responsavel, criado_em)
+           VALUES (?,?,?,?,?,?)""",
+        (
+            guild_id,
+            week_id,
+            json.dumps(snapshot, ensure_ascii=False),
+            "previa",
+            responsavel,
+            now_tz().isoformat(),
+        ),
+    )
+    conn.commit()
+    return db_farm_adv_fechamento_get(int(cursor.lastrowid))
+
+
+def db_farm_adv_fechamento_get(fechamento_id: int) -> sqlite3.Row | None:
+    return get_conn().execute(
+        "SELECT * FROM farm_advertencia_fechamentos WHERE id=?",
+        (fechamento_id,),
+    ).fetchone()
+
+
+def db_farm_adv_fechamento_claim(fechamento_id: int, aplicado_por: str) -> bool:
+    conn = get_conn()
+    cursor = conn.execute(
+        """UPDATE farm_advertencia_fechamentos
+           SET status='aplicando', aplicado_por=?, aplicado_em=?
+           WHERE id=? AND status IN ('previa', 'erro')""",
+        (aplicado_por, now_tz().isoformat(), fechamento_id),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def db_farm_adv_fechamento_finalizar(
+    fechamento_id: int,
+    snapshot: dict,
+    status: str = "aplicada",
+) -> None:
+    conn = get_conn()
+    conn.execute(
+        """UPDATE farm_advertencia_fechamentos
+           SET status=?, snapshot_json=?
+           WHERE id=?""",
+        (status, json.dumps(snapshot, ensure_ascii=False), fechamento_id),
+    )
+    conn.commit()
+
+
+def db_ticket_get(ticket_id: int):
+    return get_conn().execute(
+        "SELECT * FROM farm_tickets WHERE id=?", (ticket_id,)
+    ).fetchone()
+
+
+def db_ticket_get_week(guild_id: str, week_id: str, user_id: str):
+    return get_conn().execute(
+        """SELECT * FROM farm_tickets
+           WHERE guild_id=? AND week_id=? AND user_id=?
+             AND status IN ('criando','aberto','revisao')
+           ORDER BY id DESC LIMIT 1""",
+        (guild_id, week_id, user_id),
+    ).fetchone()
+
+
+def db_ticket_get_channel(guild_id: str, channel_id: str):
+    return get_conn().execute(
+        "SELECT * FROM farm_tickets WHERE guild_id=? AND channel_id=?",
+        (guild_id, channel_id),
+    ).fetchone()
+
+
+def db_ticket_list_week(guild_id: str, week_id: str) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        "SELECT * FROM farm_tickets WHERE guild_id=? AND week_id=? AND excluido_em IS NULL",
+        (guild_id, week_id),
+    ).fetchall()
+
+
+def db_ticket_active() -> list[sqlite3.Row]:
+    return get_conn().execute(
+        "SELECT * FROM farm_tickets WHERE status IN ('aberto','revisao') AND excluido_em IS NULL"
+    ).fetchall()
+
+
+def db_ticket_list_existing(guild_id: str) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT * FROM farm_tickets
+           WHERE guild_id=? AND channel_id IS NOT NULL AND excluido_em IS NULL
+           ORDER BY week_id DESC, id DESC""",
+        (guild_id,),
+    ).fetchall()
+
+
+def db_ticket_expired(current_week: str) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT * FROM farm_tickets
+           WHERE week_id < ? AND status IN ('aberto','revisao') AND excluido_em IS NULL""",
+        (current_week,),
+    ).fetchall()
+
+
+def db_ticket_has_pending_logs(ticket_id: int) -> bool:
+    return get_conn().execute(
+        "SELECT 1 FROM farm_ticket_actions WHERE ticket_id=? AND log_enviado_em IS NULL LIMIT 1",
+        (ticket_id,),
+    ).fetchone() is not None
+
+
+def db_ticket_reserve(
+    guild_id: str,
+    week_id: str,
+    user_id: str,
+    member_name: str,
+    *,
+    folder_channel_id: str | None = None,
+    folder_slot: int | None = None,
+    game_id: str | None = None,
+    folder_nickname: str | None = None,
+):
+    """Reserva um ticket se o membro ainda não tiver outro ativo na semana."""
+    conn = get_conn()
+    agora = now_tz().isoformat()
+    cursor = conn.execute(
+        """INSERT OR IGNORE INTO farm_tickets
+           (guild_id, week_id, user_id, member_name, folder_channel_id,
+            folder_slot, game_id, folder_nickname, status, criado_em, atualizado_em)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            guild_id, week_id, user_id, member_name, folder_channel_id,
+            folder_slot, game_id, folder_nickname, "criando", agora, agora,
+        ),
+    )
+    conn.commit()
+    return db_ticket_get_week(guild_id, week_id, user_id), cursor.rowcount == 1
+
+
+def db_ticket_activate(ticket_id: int, channel_id: str, message_id: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        """UPDATE farm_tickets SET channel_id=?, panel_message_id=?, status='aberto',
+           atualizado_em=? WHERE id=?""",
+        (channel_id, message_id, now_tz().isoformat(), ticket_id),
+    )
+    conn.commit()
+
+
+def db_ticket_set_log_anchor(
+    ticket_id: int,
+    *,
+    message_id: str | None = None,
+    thread_id: str | None = None,
+) -> None:
+    fields = []
+    params = []
+    if message_id is not None:
+        fields.append("log_message_id=?")
+        params.append(message_id)
+    if thread_id is not None:
+        fields.append("log_thread_id=?")
+        params.append(thread_id)
+    if not fields:
+        return
+    fields.append("atualizado_em=?")
+    params.append(now_tz().isoformat())
+    params.append(ticket_id)
+    conn = get_conn()
+    conn.execute(f"UPDATE farm_tickets SET {', '.join(fields)} WHERE id=?", tuple(params))
+    conn.commit()
+
+
+def db_ticket_release_failed(ticket_id: int) -> None:
+    """Remove somente uma reserva que nunca chegou a criar canal ou lançamentos."""
+    conn = get_conn()
+    conn.execute(
+        """DELETE FROM farm_tickets WHERE id=? AND status='criando' AND channel_id IS NULL
+           AND NOT EXISTS (SELECT 1 FROM farm_ticket_lancamentos WHERE ticket_id=?)""",
+        (ticket_id, ticket_id),
+    )
+    conn.commit()
+
+
+def db_ticket_add_action(
+    ticket_id: int,
+    action: str,
+    actor_id: str,
+    *,
+    event_id: int | None = None,
+    payload: dict | None = None,
+) -> int:
+    conn = get_conn()
+    cursor = conn.execute(
+        """INSERT INTO farm_ticket_actions
+           (ticket_id, action, actor_id, event_id, payload_json, criado_em)
+           VALUES (?,?,?,?,?,?)""",
+        (
+            ticket_id, action, actor_id, event_id,
+            json.dumps(payload or {}, ensure_ascii=False), now_tz().isoformat(),
+        ),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def db_ticket_launch(
+    ticket_id: int,
+    actor_id: str,
+    valores: dict,
+    proof_channel_id: str,
+    proof_message_id: str,
+    proof_url: str,
+    observacao: str | None,
+) -> tuple[int, int]:
+    """Cria evento, vínculo e auditoria na mesma transação."""
+    conn = get_conn()
+    ticket = db_ticket_get(ticket_id)
+    if not ticket or ticket["status"] not in {"aberto", "revisao"}:
+        raise ValueError("Ticket não está aberto para lançamentos.")
+    try:
+        event_id, agora = _db_lancar_conn(
+            conn, ticket["guild_id"], ticket["week_id"], ticket["user_id"], valores
+        )
+        conn.execute(
+            """INSERT INTO farm_ticket_lancamentos
+               (event_id, ticket_id, proof_channel_id, proof_message_id, proof_url,
+                observacao, status, criado_em)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                event_id, ticket_id, proof_channel_id, proof_message_id, proof_url,
+                observacao, "registrado", agora,
+            ),
+        )
+        action = conn.execute(
+            """INSERT INTO farm_ticket_actions
+               (ticket_id, action, actor_id, event_id, payload_json, criado_em)
+               VALUES (?,?,?,?,?,?)""",
+            (
+                ticket_id, "lancamento", actor_id, event_id,
+                json.dumps({"valores": valores, "observacao": observacao}, ensure_ascii=False),
+                agora,
+            ),
+        )
+        conn.execute(
+            "UPDATE farm_tickets SET atualizado_em=? WHERE id=?", (agora, ticket_id)
+        )
+        conn.commit()
+        return event_id, int(action.lastrowid)
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def db_ticket_launches(ticket_id: int) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT e.*, l.ticket_id, l.proof_channel_id, l.proof_message_id,
+                  l.proof_url, l.log_proof_url, l.observacao,
+                  l.status AS ticket_status, l.revisado_por, l.revisado_em,
+                  l.revisao_motivo
+           FROM farm_ticket_lancamentos l
+           JOIN eventos e ON e.id=l.event_id
+           WHERE l.ticket_id=? ORDER BY e.id ASC""",
+        (ticket_id,),
+    ).fetchall()
+
+
+def db_ticket_set_log_result(
+    action_id: int,
+    *,
+    message_id: str | None = None,
+    event_id: int | None = None,
+    proof_url: str | None = None,
+) -> None:
+    conn = get_conn()
+    conn.execute(
+        """UPDATE farm_ticket_actions SET log_enviado_em=?, log_message_id=?,
+           tentativas_log=tentativas_log+1 WHERE id=?""",
+        (now_tz().isoformat(), message_id, action_id),
+    )
+    if event_id and proof_url:
+        conn.execute(
+            "UPDATE farm_ticket_lancamentos SET log_proof_url=? WHERE event_id=?",
+            (proof_url, event_id),
+        )
+    conn.commit()
+
+
+def db_ticket_mark_log_attempt(action_id: int) -> None:
+    conn = get_conn()
+    conn.execute(
+        "UPDATE farm_ticket_actions SET tentativas_log=tentativas_log+1 WHERE id=?",
+        (action_id,),
+    )
+    conn.commit()
+
+
+def db_ticket_pending_actions(limit: int = 50) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT a.*, t.guild_id, t.channel_id, t.user_id, t.week_id
+           FROM farm_ticket_actions a JOIN farm_tickets t ON t.id=a.ticket_id
+           WHERE a.log_enviado_em IS NULL ORDER BY a.id ASC LIMIT ?""",
+        (limit,),
+    ).fetchall()
+
+
+def db_ticket_latest_action(ticket_id: int, action: str):
+    return get_conn().execute(
+        """SELECT * FROM farm_ticket_actions
+           WHERE ticket_id=? AND action=? ORDER BY id DESC LIMIT 1""",
+        (ticket_id, action),
+    ).fetchone()
+
+
+def db_ticket_claim(ticket_id: int, admin_id: str) -> bool:
+    conn = get_conn()
+    agora = now_tz().isoformat()
+    cursor = conn.execute(
+        """UPDATE farm_tickets SET assigned_to=?, atualizado_em=?
+           WHERE id=? AND assigned_to IS NULL AND status IN ('aberto','revisao')""",
+        (admin_id, agora, ticket_id),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def db_ticket_set_review(ticket_id: int, event_id: int, admin_id: str, motivo: str) -> None:
+    conn = get_conn()
+    agora = now_tz().isoformat()
+    conn.execute(
+        """UPDATE farm_ticket_lancamentos SET status='revisao', revisado_por=?,
+           revisado_em=?, revisao_motivo=? WHERE ticket_id=? AND event_id=?""",
+        (admin_id, agora, motivo, ticket_id, event_id),
+    )
+    conn.execute(
+        "UPDATE farm_tickets SET status='revisao', atualizado_em=? WHERE id=?",
+        (agora, ticket_id),
+    )
+    conn.commit()
+
+
+def db_ticket_resolve_review(ticket_id: int, event_id: int, admin_id: str) -> None:
+    conn = get_conn()
+    agora = now_tz().isoformat()
+    conn.execute(
+        """UPDATE farm_ticket_lancamentos SET status='revisado', revisado_por=?,
+           revisado_em=? WHERE ticket_id=? AND event_id=?""",
+        (admin_id, agora, ticket_id, event_id),
+    )
+    pending = conn.execute(
+        "SELECT 1 FROM farm_ticket_lancamentos WHERE ticket_id=? AND status='revisao'",
+        (ticket_id,),
+    ).fetchone()
+    if not pending:
+        conn.execute(
+            "UPDATE farm_tickets SET status='aberto', atualizado_em=? WHERE id=?",
+            (agora, ticket_id),
+        )
+    conn.commit()
+
+
+def db_ticket_mark_corrected(ticket_id: int, event_id: int, admin_id: str, motivo: str) -> None:
+    conn = get_conn()
+    agora = now_tz().isoformat()
+    conn.execute(
+        """UPDATE farm_ticket_lancamentos SET status='corrigido', revisado_por=?,
+           revisado_em=?, revisao_motivo=? WHERE ticket_id=? AND event_id=?""",
+        (admin_id, agora, motivo, ticket_id, event_id),
+    )
+    pending = conn.execute(
+        "SELECT 1 FROM farm_ticket_lancamentos WHERE ticket_id=? AND status='revisao'",
+        (ticket_id,),
+    ).fetchone()
+    if not pending:
+        conn.execute(
+            "UPDATE farm_tickets SET status='aberto', atualizado_em=? WHERE id=?",
+            (agora, ticket_id),
+        )
+    conn.commit()
+
+
+def db_ticket_recalculate_completion(ticket_id: int) -> None:
+    """Reabre somente o progresso ligado ao ticket antes de recalcular a meta."""
+    ticket = db_ticket_get(ticket_id)
+    if not ticket:
+        return
+    conn = get_conn()
+    conn.execute(
+        """UPDATE progresso SET status='em_andamento', concluida_em=NULL
+           WHERE guild_id=? AND week_id=? AND user_id=?""",
+        (ticket["guild_id"], ticket["week_id"], ticket["user_id"]),
+    )
+    conn.commit()
+    db_verificar_conclusao(ticket["guild_id"], ticket["week_id"], ticket["user_id"])
+
+
+def _auto_final_status(delivered: float, target: float) -> str:
+    if delivered >= target:
+        return AUTO_FINAL_STATUS_TOTAL
+    if delivered > 0:
+        return AUTO_FINAL_STATUS_PARTIAL
+    return AUTO_FINAL_STATUS_EMPTY
+
+
+def _overall_auto_final_status(rows: list[dict]) -> str:
+    if rows and all(row["status_final"] == AUTO_FINAL_STATUS_TOTAL for row in rows):
+        return AUTO_FINAL_STATUS_TOTAL
+    if any(row["quantidade_entregue"] > 0 for row in rows):
+        return AUTO_FINAL_STATUS_PARTIAL
+    return AUTO_FINAL_STATUS_EMPTY
+
+
+def db_ticket_finalization_logs(ticket_id: int) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT * FROM farm_ticket_finalization_logs
+           WHERE ticket_id=? ORDER BY id ASC""",
+        (ticket_id,),
+    ).fetchall()
+
+
+def db_ticket_finalize_with_auto_approval(
+    ticket_id: int,
+    actor_id: str,
+    motivo: str | None,
+    *,
+    action: str = "finalizacao",
+    auto_reason: str = AUTO_FINALIZATION_REASON,
+) -> dict:
+    """Finaliza o ticket e aprova a entrega atual em uma unica transacao."""
+    conn = get_conn()
+    try:
+        ticket = conn.execute(
+            "SELECT * FROM farm_tickets WHERE id=?", (ticket_id,)
+        ).fetchone()
+        if not ticket:
+            raise ValueError("Ticket nao encontrado.")
+        if ticket["status"] == "finalizado" or ticket["finalizado_em"]:
+            return {
+                "processed": False,
+                "ticket": ticket,
+                "logs": db_ticket_finalization_logs(ticket_id),
+                "action_id": None,
+                "approval_action_id": None,
+                "status_final": None,
+            }
+        if ticket["status"] not in {"aberto", "revisao", "criando"}:
+            raise ValueError("Ticket nao esta aberto para finalizacao.")
+
+        agora = now_tz().isoformat()
+        guild_id = ticket["guild_id"]
+        week_id = ticket["week_id"]
+        user_id = ticket["user_id"]
+
+        meta = db_get_meta(guild_id, week_id)
+        meta_tipo, targets = db_meta_alvos_ativos(meta)
+        meta_id = (
+            f"{guild_id}:{week_id}:{meta_tipo}"
+            if meta is not None
+            else f"{guild_id}:{week_id}:sem_meta"
+        )
+
+        conn.execute(
+            "INSERT OR IGNORE INTO progresso (guild_id, week_id, user_id) VALUES (?,?,?)",
+            (guild_id, week_id, user_id),
+        )
+        progress = conn.execute(
+            "SELECT * FROM progresso WHERE guild_id=? AND week_id=? AND user_id=?",
+            (guild_id, week_id, user_id),
+        ).fetchone()
+        prog_itens = db_prog_itens(progress)
+
+        rows: list[dict] = []
+        for item, target in targets.items():
+            if meta_tipo == "dinheiro" and item == "Dinheiro":
+                delivered = float(sum(prog_itens.get(nome, 0) for nome in DINHEIRO_ITEMS))
+            else:
+                delivered = float(prog_itens.get(item, 0) or 0)
+            target_value = float(target or 0)
+            rows.append(
+                {
+                    "user_id": user_id,
+                    "ticket_id": ticket_id,
+                    "meta_id": meta_id,
+                    "item": item,
+                    "quantidade_meta": target_value,
+                    "quantidade_entregue": delivered,
+                    "status_final": _auto_final_status(delivered, target_value),
+                    "motivo": auto_reason,
+                    "criado_em": agora,
+                }
+            )
+
+        overall_status = _overall_auto_final_status(rows)
+        ranking_level = _AUTO_FINAL_STATUS_TO_RANKING[overall_status]
+        antecipada = overall_status != AUTO_FINAL_STATUS_TOTAL
+        concluida = overall_status == AUTO_FINAL_STATUS_TOTAL
+        conn.execute(
+            """UPDATE progresso SET aprovada=1,
+                   aprovada_por=COALESCE(aprovada_por, ?),
+                   aprovada_em=COALESCE(aprovada_em, ?),
+                   aprovacao_antecipada=CASE
+                       WHEN aprovada=1 THEN aprovacao_antecipada ELSE ?
+                   END,
+                   aprovacao_nivel=CASE
+                       WHEN aprovada=1 THEN aprovacao_nivel ELSE ?
+                   END,
+                   status=CASE WHEN ? THEN 'concluida' ELSE status END,
+                   concluida_em=CASE
+                       WHEN ? THEN COALESCE(concluida_em, ?) ELSE concluida_em
+                   END,
+                   ultimo_lancamento_em=COALESCE(ultimo_lancamento_em, ?)
+               WHERE guild_id=? AND week_id=? AND user_id=?""",
+            (
+                actor_id,
+                agora,
+                1 if antecipada else 0,
+                ranking_level,
+                1 if concluida else 0,
+                1 if concluida else 0,
+                agora,
+                agora,
+                guild_id,
+                week_id,
+                user_id,
+            ),
+        )
+
+        for row in rows:
+            conn.execute(
+                """INSERT OR IGNORE INTO farm_ticket_finalization_logs
+                   (ticket_id, user_id, meta_id, item, quantidade_meta,
+                    quantidade_entregue, status_final, motivo, criado_em)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (
+                    row["ticket_id"],
+                    row["user_id"],
+                    row["meta_id"],
+                    row["item"],
+                    row["quantidade_meta"],
+                    row["quantidade_entregue"],
+                    row["status_final"],
+                    row["motivo"],
+                    row["criado_em"],
+                ),
+            )
+
+        approval_action_id = None
+        existing_approval = conn.execute(
+            """SELECT id FROM farm_ticket_actions
+               WHERE ticket_id=? AND action='aprovacao' LIMIT 1""",
+            (ticket_id,),
+        ).fetchone()
+        if existing_approval:
+            approval_action_id = int(existing_approval["id"])
+        else:
+            approval_action = conn.execute(
+                """INSERT INTO farm_ticket_actions
+                   (ticket_id, action, actor_id, payload_json, criado_em)
+                   VALUES (?,?,?,?,?)""",
+                (
+                    ticket_id,
+                    "aprovacao",
+                    actor_id,
+                    json.dumps(
+                        {
+                            "aprovacao_automatica": True,
+                            "origem": APROVACAO_ORIGEM_EXPIRACAO,
+                            "motivo": auto_reason,
+                            "status_final": overall_status,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    agora,
+                ),
+            )
+            approval_action_id = int(approval_action.lastrowid)
+
+        final_action = conn.execute(
+            """INSERT INTO farm_ticket_actions
+               (ticket_id, action, actor_id, payload_json, criado_em)
+               VALUES (?,?,?,?,?)""",
+            (
+                ticket_id,
+                action,
+                actor_id,
+                json.dumps(
+                    {
+                        "motivo": motivo or auto_reason,
+                        "aprovacao_automatica": True,
+                        "status_final": overall_status,
+                    },
+                    ensure_ascii=False,
+                ),
+                agora,
+            ),
+        )
+        action_id = int(final_action.lastrowid)
+
+        cursor = conn.execute(
+            """UPDATE farm_tickets SET status='finalizado', finalizado_em=?,
+               finalizado_por=?, finalizacao_motivo=?, atualizado_em=?
+               WHERE id=? AND status IN ('aberto','revisao','criando')
+                 AND finalizado_em IS NULL""",
+            (agora, actor_id, motivo or auto_reason, agora, ticket_id),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("Ticket ja foi finalizado.")
+
+        conn.commit()
+        return {
+            "processed": True,
+            "ticket": db_ticket_get(ticket_id),
+            "logs": db_ticket_finalization_logs(ticket_id),
+            "action_id": action_id,
+            "approval_action_id": approval_action_id,
+            "status_final": overall_status,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def db_ticket_finalize(ticket_id: int, admin_id: str, motivo: str | None) -> bool:
+    conn = get_conn()
+    agora = now_tz().isoformat()
+    cursor = conn.execute(
+        """UPDATE farm_tickets SET status='finalizado', finalizado_em=?,
+           finalizado_por=?, finalizacao_motivo=?, atualizado_em=?
+           WHERE id=? AND status IN ('aberto','revisao')""",
+        (agora, admin_id, motivo, agora, ticket_id),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def db_ticket_deletion_candidates(current_week: str) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT t.* FROM farm_tickets t
+           WHERE t.status='finalizado' AND t.excluido_em IS NULL AND t.week_id < ?
+             AND NOT EXISTS (
+               SELECT 1 FROM farm_ticket_actions a
+               WHERE a.ticket_id=t.id AND a.log_enviado_em IS NULL
+             )""",
+        (current_week,),
+    ).fetchall()
+
+
+def db_ticket_mark_deleted(ticket_id: int) -> None:
+    conn = get_conn()
+    conn.execute(
+        "UPDATE farm_tickets SET excluido_em=?, channel_id=NULL WHERE id=?",
+        (now_tz().isoformat(), ticket_id),
+    )
+    conn.commit()
+
+
+def db_ticket_mark_manual_deleted(ticket_id: int, admin_id: str, reason: str) -> None:
+    conn = get_conn()
+    agora = now_tz().isoformat()
+    conn.execute(
+        """UPDATE farm_tickets SET status='finalizado', finalizado_em=COALESCE(finalizado_em, ?),
+           finalizado_por=COALESCE(finalizado_por, ?),
+           finalizacao_motivo=COALESCE(finalizacao_motivo, ?),
+           excluido_em=?, channel_id=NULL, atualizado_em=? WHERE id=?""",
+        (agora, admin_id, reason, agora, agora, ticket_id),
+    )
+    conn.commit()
