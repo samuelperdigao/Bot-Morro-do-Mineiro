@@ -68,6 +68,24 @@ def _row_value(row, key: str):
         return None
 
 
+def _split_contacts(value: str | None) -> tuple[str | None, str | None]:
+    lines = [line.strip() for line in (value or "").splitlines() if line.strip()]
+    if not lines:
+        return None, None
+    if len(lines) == 1:
+        return lines[0], None
+    return lines[0], "\n".join(lines[1:])
+
+
+def _contacts_default(parceria) -> str:
+    contatos = [
+        value
+        for value in (parceria["contato_01"] or "", parceria["contato_02"] or "")
+        if value
+    ]
+    return "\n".join(contatos)
+
+
 def _has_staff_permission(member: discord.Member, guild_id: str) -> bool:
     if member.guild_permissions.administrator or member.guild_permissions.manage_guild:
         return True
@@ -104,6 +122,9 @@ def build_partner_embed(parceria) -> discord.Embed:
     cor_carro = _row_value(parceria, "cor_carro")
     if cor_carro:
         embed.add_field(name="\U0001f697 Cor do carro", value=cor_carro, inline=True)
+    area_risco = _row_value(parceria, "area_risco")
+    if area_risco:
+        embed.add_field(name="\U0001f4cd Area de risco", value=area_risco, inline=True)
     if parceria["contato_01"]:
         embed.add_field(name="\U0001f4de Contato Principal", value=parceria["contato_01"], inline=True)
     if parceria["contato_02"]:
@@ -176,17 +197,18 @@ class RegistroParceriaModal(discord.ui.Modal, title="Registro de Parceria - Morr
         placeholder="Ex: Preto com dourado",
         max_length=80,
     )
-    contato_01 = discord.ui.TextInput(
-        label="Contato Principal",
-        placeholder="Ex: Joao: (31) 99999-9999",
+    area_risco = discord.ui.TextInput(
+        label="Area de risco",
+        placeholder="Ex: 47",
         required=False,
-        max_length=150,
+        max_length=40,
     )
-    contato_02 = discord.ui.TextInput(
-        label="Contato Secundario",
-        placeholder="Ex: Pedro: (31) 98888-8888",
+    contatos = discord.ui.TextInput(
+        label="Contatos",
+        placeholder="Um contato por linha. Ex: Joao: (31) 99999-9999",
         required=False,
-        max_length=150,
+        style=discord.TextStyle.paragraph,
+        max_length=300,
     )
 
     def __init__(self, cog: "ParceriasCog"):
@@ -218,12 +240,14 @@ class RegistroParceriaModal(discord.ui.Modal, title="Registro de Parceria - Morr
 
         image_bytes, filename = upload
         file = discord.File(io.BytesIO(image_bytes), filename=filename)
+        contato_01, contato_02 = _split_contacts(self.contatos.value)
         provisional = {
             "nome_familia": nome,
             "produto": self.produto.value.strip(),
             "cor_carro": self.cor_carro.value.strip(),
-            "contato_01": _clean(self.contato_01.value),
-            "contato_02": _clean(self.contato_02.value),
+            "area_risco": _clean(self.area_risco.value),
+            "contato_01": contato_01,
+            "contato_02": contato_02,
             "nome_arquivo_imagem": filename,
             "criado_em": discord.utils.utcnow().isoformat(),
         }
@@ -236,8 +260,9 @@ class RegistroParceriaModal(discord.ui.Modal, title="Registro de Parceria - Morr
                     nome_familia=nome,
                     produto=self.produto.value,
                     cor_carro=self.cor_carro.value,
-                    contato_01=_clean(self.contato_01.value),
-                    contato_02=_clean(self.contato_02.value),
+                    area_risco=_clean(self.area_risco.value),
+                    contato_01=contato_01,
+                    contato_02=contato_02,
                     mensagem_lista_id=message.id,
                     nome_arquivo_imagem=filename,
                     registrado_por=interaction.user.id,
@@ -268,19 +293,20 @@ class EdicaoParceriaModal(discord.ui.Modal):
             default=_row_value(parceria, "cor_carro") or "",
             max_length=80,
         )
-        self.contato_01 = discord.ui.TextInput(
-            label="Contato Principal",
-            default=parceria["contato_01"] or "",
+        self.area_risco = discord.ui.TextInput(
+            label="Area de risco",
+            default=_row_value(parceria, "area_risco") or "",
             required=False,
-            max_length=150,
+            max_length=40,
         )
-        self.contato_02 = discord.ui.TextInput(
-            label="Contato Secundario",
-            default=parceria["contato_02"] or "",
+        self.contatos = discord.ui.TextInput(
+            label="Contatos",
+            default=_contacts_default(parceria),
             required=False,
-            max_length=150,
+            style=discord.TextStyle.paragraph,
+            max_length=300,
         )
-        for item in (self.nome_familia, self.produto, self.cor_carro, self.contato_01, self.contato_02):
+        for item in (self.nome_familia, self.produto, self.cor_carro, self.area_risco, self.contatos):
             self.add_item(item)
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -298,13 +324,15 @@ class EdicaoParceriaModal(discord.ui.Modal):
             )
             return
 
+        contato_01, contato_02 = _split_contacts(self.contatos.value)
         db_parceria_atualizar_texto(
             self.parceria_id,
             nome,
             self.produto.value,
             self.cor_carro.value,
-            _clean(self.contato_01.value),
-            _clean(self.contato_02.value),
+            _clean(self.area_risco.value),
+            contato_01,
+            contato_02,
         )
         parceria = db_parceria_get(guild_id, self.parceria_id)
         await self.cog.refresh_partner_message(interaction.guild, parceria)

@@ -964,6 +964,7 @@ def db_parceria_criar(
     nome_familia: str,
     produto: str,
     cor_carro: str | None,
+    area_risco: str | None,
     contato_01: str | None,
     contato_02: str | None,
     mensagem_lista_id: int,
@@ -973,14 +974,15 @@ def db_parceria_criar(
     conn = get_conn()
     cursor = conn.execute(
         """INSERT INTO parcerias
-           (guild_id, nome_familia, produto, cor_carro, contato_01, contato_02,
+           (guild_id, nome_familia, produto, cor_carro, area_risco, contato_01, contato_02,
             mensagem_lista_id, nome_arquivo_imagem, registrado_por)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             guild_id,
             nome_familia.strip(),
             produto.strip(),
             cor_carro.strip() if cor_carro else None,
+            area_risco.strip() if area_risco else None,
             contato_01 or None,
             contato_02 or None,
             mensagem_lista_id,
@@ -1014,19 +1016,21 @@ def db_parceria_atualizar_texto(
     nome_familia: str,
     produto: str,
     cor_carro: str | None,
+    area_risco: str | None,
     contato_01: str | None,
     contato_02: str | None,
 ) -> None:
     conn = get_conn()
     conn.execute(
         """UPDATE parcerias
-           SET nome_familia=?, produto=?, cor_carro=?, contato_01=?, contato_02=?,
+           SET nome_familia=?, produto=?, cor_carro=?, area_risco=?, contato_01=?, contato_02=?,
                atualizado_em=?
            WHERE id=?""",
         (
             nome_familia.strip(),
             produto.strip(),
             cor_carro.strip() if cor_carro else None,
+            area_risco.strip() if area_risco else None,
             contato_01 or None,
             contato_02 or None,
             now_tz().isoformat(),
