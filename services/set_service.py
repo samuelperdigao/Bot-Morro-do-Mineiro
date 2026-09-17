@@ -35,6 +35,9 @@ MEMBER_FOLDER_MANAGER_ROLE_NAMES = frozenset(
         "gerente de farm",
     }
 )
+# Cargo do Gerente de Recrutamento: acesso a todas as pastas individuais,
+# mesmo que o cargo não esteja entre os cargos aprovadores configurados.
+MEMBER_FOLDER_MANAGER_ROLE_IDS = frozenset({1474869320684146841})
 
 
 @dataclass(frozen=True)
@@ -90,7 +93,10 @@ def normalize_role_name(name: str) -> str:
 
 
 def is_allowed_member_folder_manager_role(role) -> bool:
-    return normalize_role_name(getattr(role, "name", "")) in MEMBER_FOLDER_MANAGER_ROLE_NAMES
+    return (
+        getattr(role, "id", None) in MEMBER_FOLDER_MANAGER_ROLE_IDS
+        or normalize_role_name(getattr(role, "name", "")) in MEMBER_FOLDER_MANAGER_ROLE_NAMES
+    )
 
 
 def is_manager_role(role) -> bool:

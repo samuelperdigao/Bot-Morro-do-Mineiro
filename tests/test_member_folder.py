@@ -90,17 +90,18 @@ class MemberFolderParsingTests(unittest.TestCase):
 
 
 class MemberFolderPermissionTests(unittest.IsolatedAsyncioTestCase):
-    def test_filtra_apenas_gerentes_nao_permitidos(self):
+    def test_inclui_gerentes_de_pasta_por_nome_e_id(self):
         geral = FakeRole(1, "| Gerente Geral")
         farm = FakeRole(2, "| Gerente de Farm")
         producao = FakeRole(3, "| Gerente de Producao")
         acao = FakeRole(4, "| Gerente de Acao")
         lider = FakeRole(5, "| Lider")
-        guild = FakeGuild([geral, farm, producao, acao, lider], None)
+        recrutamento = FakeRole(1474869320684146841, "| Gerente de Recrutamento")
+        guild = FakeGuild([geral, farm, producao, acao, lider, recrutamento], None)
 
         roles = member_folder_access_roles(guild, [1, 2, 3, 4, 5])
 
-        self.assertEqual([role.id for role in roles], [1, 2, 5])
+        self.assertEqual([role.id for role in roles], [1, 2, 5, 1474869320684146841])
 
     async def test_sincroniza_pastas_mantendo_so_gerentes_permitidos(self):
         geral = FakeRole(1, "| Gerente Geral")
@@ -108,6 +109,7 @@ class MemberFolderPermissionTests(unittest.IsolatedAsyncioTestCase):
         producao = FakeRole(3, "| Gerente de Producao")
         acao = FakeRole(4, "| Gerente de Acao")
         lider = FakeRole(5, "| Lider")
+        recrutamento = FakeRole(1474869320684146841, "| Gerente de Recrutamento")
         member = FakeRole(99, "Membro")
         channel = FakePermissionChannel(
             "pasta",
@@ -120,7 +122,7 @@ class MemberFolderPermissionTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         guild = FakeGuild(
-            [geral, farm, producao, acao, lider],
+            [geral, farm, producao, acao, lider, recrutamento],
             FakeCategory([channel]),
         )
 
@@ -132,6 +134,7 @@ class MemberFolderPermissionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn(geral, channel.overwrites)
         self.assertIn(farm, channel.overwrites)
+        self.assertIn(recrutamento, channel.overwrites)
         self.assertIn(lider, channel.overwrites)
         self.assertIn(member, channel.overwrites)
         self.assertNotIn(producao, channel.overwrites)
@@ -139,10 +142,13 @@ class MemberFolderPermissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(channel.overwrites[geral].view_channel)
         self.assertTrue(channel.overwrites[geral].send_messages)
         self.assertTrue(channel.overwrites[geral].read_message_history)
+        self.assertTrue(channel.overwrites[recrutamento].view_channel)
+        self.assertTrue(channel.overwrites[recrutamento].send_messages)
+        self.assertTrue(channel.overwrites[recrutamento].read_message_history)
         self.assertEqual(result.checked_channels, 1)
         self.assertEqual(result.updated_channels, 1)
         self.assertEqual(result.removed_overwrites, 2)
-        self.assertEqual(result.ensured_overwrites, 2)
+        self.assertEqual(result.ensured_overwrites, 3)
 
 
 class MemberFolderResolutionTests(unittest.IsolatedAsyncioTestCase):
