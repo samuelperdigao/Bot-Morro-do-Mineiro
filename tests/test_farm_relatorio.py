@@ -19,6 +19,7 @@ from cogs.farm_relatorio import (
     report_member_control,
     snapshot_eligible_members,
 )
+from core.farm_policy import FARM_EXEMPT_ROLE_IDS
 
 
 class FarmReportDatabaseTests(unittest.TestCase):
@@ -258,6 +259,38 @@ class FarmReportPermissionTests(unittest.TestCase):
         self.assertEqual(
             snapshot_eligible_members(guild, "1", "2026-06-15"),
             [{"user_id": "10", "display_name": "Veterano"}],
+        )
+
+    def test_snapshot_excludes_members_with_exempt_roles(self):
+        db.db_set_guild_config("1", cargos_permitidos_farm="50")
+        farm_role = SimpleNamespace(id=50)
+        guild = SimpleNamespace(
+            members=[
+                SimpleNamespace(
+                    id=10,
+                    display_name="Membro",
+                    roles=[farm_role],
+                    bot=False,
+                    joined_at=None,
+                    guild_permissions=SimpleNamespace(administrator=False),
+                ),
+                *[
+                    SimpleNamespace(
+                        id=index,
+                        display_name=f"Lider {index}",
+                        roles=[farm_role, SimpleNamespace(id=role_id)],
+                        bot=False,
+                        joined_at=None,
+                        guild_permissions=SimpleNamespace(administrator=False),
+                    )
+                    for index, role_id in enumerate(FARM_EXEMPT_ROLE_IDS, start=20)
+                ],
+            ]
+        )
+
+        self.assertEqual(
+            snapshot_eligible_members(guild, "1", "2026-06-15"),
+            [{"user_id": "10", "display_name": "Membro"}],
         )
 
     def test_report_removes_departed_and_identifies_new_member_exemption(self):

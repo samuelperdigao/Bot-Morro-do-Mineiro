@@ -11,7 +11,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from core.date_utils import format_date_br, format_week_range_br, week_id_from_date_br
-from core.farm_policy import FARM_TICKET_ONLY_MESSAGE
+from core.farm_policy import FARM_TICKET_ONLY_MESSAGE, farm_week_membership
 from core.logger import get_logger
 from core.permissions import is_lideranca, is_permitido_farm
 from core.role_promotion import promote_role
@@ -1429,7 +1429,10 @@ class FarmCog(commands.Cog):
             for member in guild.members:
                 if member.bot:
                     continue
-                if not is_permitido_farm(member, permitidos_ids):
+                if (
+                    not is_permitido_farm(member, permitidos_ids)
+                    or farm_week_membership(member, week_id) != "obrigado"
+                ):
                     continue
                 row = prog_por_uid.get(str(member.id))
                 # Aprovados não recebem aviso
@@ -1480,7 +1483,10 @@ class FarmCog(commands.Cog):
             for member in guild.members:
                 if member.bot:
                     continue
-                if not is_permitido_farm(member, permitidos_ids):
+                if (
+                    not is_permitido_farm(member, permitidos_ids)
+                    or farm_week_membership(member, week_id) != "obrigado"
+                ):
                     continue
                 row = prog_por_uid.get(str(member.id))
                 # Aprovados não recebem aviso
@@ -1540,7 +1546,10 @@ class FarmCog(commands.Cog):
             for member in guild.members:
                 if member.bot:
                     continue
-                if not is_permitido_farm(member, permitidos_ids):
+                if (
+                    not is_permitido_farm(member, permitidos_ids)
+                    or farm_week_membership(member, week_id) != "obrigado"
+                ):
                     continue
                 total_permitidos += 1
                 row_rank = ranking_by_uid.get(str(member.id), {})

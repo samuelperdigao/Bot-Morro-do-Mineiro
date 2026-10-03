@@ -7,7 +7,17 @@ from typing import Literal
 
 from core.date_utils import BRAZIL_TZ
 
-FarmWeekMembership = Literal["obrigado", "isento_entrada", "fora_da_semana"]
+FarmWeekMembership = Literal[
+    "obrigado",
+    "isento_cargo",
+    "isento_entrada",
+    "fora_da_semana",
+]
+
+# Liderança e cargo 02 não têm obrigação semanal de Farm. Mantemos os IDs
+# aqui, em vez de depender do nome/posição do cargo, para a regra continuar
+# correta mesmo se a hierarquia visual for renomeada.
+FARM_EXEMPT_ROLE_IDS = frozenset({1474869320684146847, 1474869320684146846})
 
 FARM_TICKET_ONLY_MESSAGE = """⚠️ **Sistema atualizado**
 
@@ -28,14 +38,26 @@ def member_joined_date(member) -> date | None:
     return joined_at.date()
 
 
+def member_has_farm_exempt_role(member) -> bool:
+    """Indica se o membro ocupa um cargo isento da obrigação semanal."""
+    return bool(
+        FARM_EXEMPT_ROLE_IDS.intersection(
+            getattr(role, "id", None) for role in getattr(member, "roles", ())
+        )
+    )
+
+
 def farm_week_membership(member, week_id: str) -> FarmWeekMembership:
     """Classifica se o membro devia participar da semana informada.
 
-    Quem entrou entre segunda e domingo fica isento. Quem entrou depois do fim
-    da semana sequer fazia parte dela e tambem nao pode entrar na contagem.
-    Quando o Discord nao fornece ``joined_at``, preservamos a obrigacao para
-    nao criar uma isencao sem evidencia.
+    Liderança e cargo 02 são isentos por cargo. Quem entrou entre segunda e
+    domingo fica isento por entrada recente. Quem entrou depois do fim da
+    semana sequer fazia parte dela e também não pode entrar na contagem.
+    Quando o Discord não fornece ``joined_at``, preservamos a obrigação para
+    não criar uma isenção sem evidência.
     """
+    if member_has_farm_exempt_role(member):
+        return "isento_cargo"
     week_start = date.fromisoformat(week_id)
     week_end = week_start + timedelta(days=6)
     joined_date = member_joined_date(member)
@@ -47,8 +69,8 @@ def farm_week_membership(member, week_id: str) -> FarmWeekMembership:
 
 
 def member_is_exempt_from_farm(member, week_id: str) -> bool:
-    """Indica se a entrada do membro ocorreu dentro da semana de Farm."""
-    return farm_week_membership(member, week_id) == "isento_entrada"
+    """Indica se o membro não tem obrigação de Farm na semana."""
+    return farm_week_membership(member, week_id) in {"isento_cargo", "isento_entrada"}
 
 
 def previous_farm_week_id(week_id: str) -> str:

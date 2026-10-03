@@ -14,6 +14,7 @@ from cogs.farm_advertencias import (
     build_panel_embed,
     is_farm_warning_eligible,
 )
+from core.farm_policy import FARM_EXEMPT_ROLE_IDS
 
 
 class FakeRole:
@@ -169,6 +170,29 @@ class FarmAdvertenciasTests(unittest.TestCase):
 
         self.assertEqual(snapshot["pendentes"], [])
         self.assertEqual([item["user_id"] for item in snapshot["isentos"]], ["10"])
+
+    def test_exempt_roles_are_not_included_in_weekly_warning(self):
+        guild_id = "1"
+        week_id = "2026-06-15"
+        farm_role = FakeRole(50)
+        leaders = [
+            FakeMember(index, f"Lider {index}", [farm_role, FakeRole(role_id)])
+            for index, role_id in enumerate(FARM_EXEMPT_ROLE_IDS, start=10)
+        ]
+
+        db.db_set_guild_config(
+            guild_id,
+            cargos_permitidos_farm="50",
+            farm_adv1_role_id="101",
+            farm_adv2_role_id="102",
+            farm_adv3_role_id="103",
+        )
+        db.db_set_meta(guild_id, week_id, {"Borracha": 100}, "99")
+
+        snapshot = build_farm_warning_preview(FakeGuild(leaders), guild_id, week_id)
+
+        self.assertTrue(all(not is_farm_warning_eligible(member, [50]) for member in leaders))
+        self.assertEqual(snapshot["pendentes"], [])
 
     def test_panel_uses_stable_title_for_message_recovery(self):
         embed = build_panel_embed(SimpleNamespace(), "1")

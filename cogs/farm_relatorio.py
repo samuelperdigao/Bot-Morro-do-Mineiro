@@ -80,7 +80,7 @@ def report_member_control(
     week_id: str,
     snapshot_members: list[dict[str, str]],
 ) -> tuple[list[dict[str, str]], list[dict[str, str]], list[dict[str, str]]]:
-    """Separa obrigados atuais, novos isentos e membros que sairam.
+    """Separa obrigados atuais, isentos e membros que saíram.
 
     O snapshot preserva quem tinha obrigacao no fechamento. A intersecao com
     os membros atuais garante que quem saiu do servidor nunca apareca como
@@ -103,12 +103,17 @@ def report_member_control(
         membership = farm_week_membership(member, week_id)
         if membership == "obrigado":
             present.append(item)
-        elif membership == "isento_entrada":
+        elif membership in {"isento_cargo", "isento_entrada"}:
             joined_date = member_joined_date(member)
             exempt_by_id[user_id] = {
                 "user_id": user_id,
                 "display_name": member.display_name,
                 "joined_date": joined_date.isoformat() if joined_date else "",
+                "motivo": (
+                    "Cargo isento da meta semanal"
+                    if membership == "isento_cargo"
+                    else "Entrou no servidor durante a semana"
+                ),
             }
 
     permitted_role_ids = db_get_permitidos_role_ids(guild_id)
@@ -116,7 +121,8 @@ def report_member_control(
         if (
             getattr(member, "bot", False)
             or not is_permitido_farm(member, permitted_role_ids)
-            or farm_week_membership(member, week_id) != "isento_entrada"
+            or farm_week_membership(member, week_id)
+            not in {"isento_cargo", "isento_entrada"}
         ):
             continue
         joined_date = member_joined_date(member)
@@ -124,6 +130,11 @@ def report_member_control(
             "user_id": str(member.id),
             "display_name": member.display_name,
             "joined_date": joined_date.isoformat() if joined_date else "",
+            "motivo": (
+                "Cargo isento da meta semanal"
+                if farm_week_membership(member, week_id) == "isento_cargo"
+                else "Entrou no servidor durante a semana"
+            ),
         }
 
     key = lambda member: member.get("display_name", "").casefold()

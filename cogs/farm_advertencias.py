@@ -12,6 +12,7 @@ from core.config import BASE_DIR
 from core.date_utils import format_week_range_br
 from core.farm_policy import (
     farm_week_membership,
+    member_has_farm_exempt_role,
     member_is_exempt_from_farm,
     member_joined_date,
     previous_farm_week_id,
@@ -126,6 +127,8 @@ def _highest_hierarchy_index(member: discord.Member) -> int | None:
 def is_farm_warning_eligible(member: discord.Member, permitted_role_ids: list[int]) -> bool:
     if member.bot:
         return False
+    if member_has_farm_exempt_role(member):
+        return False
     if {role.id for role in member.roles} & set(permitted_role_ids):
         return True
     cutoff = HIERARQUIA_CARGOS.index(HIERARQUIA_CORTE_ADVERTENCIA)
@@ -203,14 +206,18 @@ def build_farm_warning_preview(
         membership = farm_week_membership(member, week_id)
         if membership == "obrigado":
             members.append(member)
-        elif membership == "isento_entrada":
+        elif membership in {"isento_cargo", "isento_entrada"}:
             joined_date = member_joined_date(member)
             isentos.append(
                 {
                     "user_id": str(member.id),
                     "display_name": member.display_name,
                     "joined_date": joined_date.isoformat() if joined_date else "",
-                    "motivo": "Entrou no servidor durante a semana",
+                    "motivo": (
+                        "Cargo isento da meta semanal"
+                        if membership == "isento_cargo"
+                        else "Entrou no servidor durante a semana"
+                    ),
                 }
             )
     ranking = {
@@ -897,15 +904,26 @@ class FarmAdvertenciasCog(commands.Cog):
     async def aplicar_individual(self, interaction: discord.Interaction, member: discord.Member):
         guild_id = str(interaction.guild_id)
         week_id = previous_farm_week_id(current_week_id())
+        if member_has_farm_exempt_role(member):
+            await interaction.response.send_message(
+                "Esse membro possui um cargo isento da meta semanal de Farm.",
+                ephemeral=True,
+            )
+            return
         if not is_farm_warning_eligible(member, db_get_permitidos_role_ids(guild_id)):
             await interaction.response.send_message(
                 "Esse membro nao esta abaixo do cargo 02 nem nos cargos configurados de farm.",
                 ephemeral=True,
             )
             return
+        membership = farm_week_membership(member, week_id)
         if member_is_exempt_from_farm(member, week_id):
             await interaction.response.send_message(
-                "Esse membro entrou no servidor nesta semana e esta isento do Farm.",
+                (
+                    "Esse membro possui um cargo isento da meta semanal de Farm."
+                    if membership == "isento_cargo"
+                    else "Esse membro entrou no servidor nesta semana e esta isento do Farm."
+                ),
                 ephemeral=True,
             )
             return
@@ -1130,8 +1148,14 @@ class FarmAdvertenciasCog(commands.Cog):
         week_id = snapshot["week_id"]
         if not is_farm_warning_eligible(member, db_get_permitidos_role_ids(guild_id)):
             return {**result, "status": "nao_participa_mais_do_farm"}
+        membership = farm_week_membership(member, week_id)
         if member_is_exempt_from_farm(member, week_id):
-            return {**result, "status": "isento_entrada_na_semana"}
+            status = (
+                "isento_cargo_meta_semanal"
+                if membership == "isento_cargo"
+                else "isento_entrada_na_semana"
+            )
+            return {**result, "status": status}
         if user_id in db_farm_ausencia_user_ids(guild_id, week_id):
             return {**result, "status": "ausencia_registrada"}
 
@@ -1201,6 +1225,7 @@ class FarmAdvertenciasCog(commands.Cog):
             "ja_pd": "ja esta em PD",
             "saiu_do_servidor": "ignorado: saiu do servidor",
             "nao_participa_mais_do_farm": "ignorado: nao participa mais do Farm",
+            "isento_cargo_meta_semanal": "isento: cargo sem meta semanal",
             "isento_entrada_na_semana": "isento: entrou nesta semana",
             "ausencia_registrada": "isento: ausencia registrada",
             "entrega_completa": "ignorado: entrega concluida apos a previa",
