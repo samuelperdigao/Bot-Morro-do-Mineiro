@@ -18,6 +18,12 @@ BROADCAST_CATEGORY_ID = 1474869322387292362
 BROADCAST_CHANNEL_PATTERN = re.compile(r"^(?:┃📁-)?┃?\d+-.+-\d+$")
 BROADCAST_HISTORY_FILE = Path(__file__).resolve().parent.parent / "data" / "broadcast_messages.json"
 MAX_STORED_BATCHES = 10
+EVERYONE_ALLOWED_MENTIONS = discord.AllowedMentions(
+    everyone=True,
+    users=False,
+    roles=False,
+    replied_user=False,
+)
 
 BLOCKED_CHANNEL_NAMES = {
     "tutorial-de-farm",
@@ -234,7 +240,7 @@ class BroadcastModal(discord.ui.Modal, title="Disparo de Mensagem Global"):
 
         sent_count = 0
         sent_messages: list[dict[str, int]] = []
-        message_text = str(self.mensagem.value)
+        message_text = f"@everyone\n{self.mensagem.value}"
 
         for channel in valid_channels:
             try:
@@ -254,7 +260,7 @@ class BroadcastModal(discord.ui.Modal, title="Disparo de Mensagem Global"):
 
                 message = await channel.send(
                     message_text,
-                    allowed_mentions=discord.AllowedMentions.none(),
+                    allowed_mentions=EVERYONE_ALLOWED_MENTIONS,
                 )
                 sent_count += 1
                 sent_messages.append(

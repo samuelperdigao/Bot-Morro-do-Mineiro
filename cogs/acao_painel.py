@@ -13,8 +13,8 @@ from discord.ext import commands
 
 from core.date_utils import DATE_BR_EXAMPLE, normalize_date_br
 from core.logger import get_logger
-from services.db_service import db_get_system_config
-from services.log_service import send_log
+from core.permissions import is_lideranca
+from services.db_service import db_get_lideranca_role_ids, db_get_system_config
 
 log = get_logger("acao_painel", "acao.log")
 
@@ -91,33 +91,17 @@ class PreAcaoModal(discord.ui.Modal, title="⚡ Configurar Ação"):
         if canal:
             await canal.send(
                 embed=acao_embed,
-                view=AcaoSelectView(horario=horario_val, tipo=tipo_val, data=data_val),
+                view=AcaoSelectView(horario=horario_val, tipo=tipo_val, data=data_val, criador_id=str(interaction.user.id)),
             )
             await interaction.followup.send(
                 f"✅ Seletor de ação aberto em {canal.mention}!",
                 ephemeral=True,
             )
-            log_embed = discord.Embed(
-                title="⚡ Ação Iniciada",
-                color=COR_ACAO,
-                timestamp=discord.utils.utcnow(),
-            )
-            log_embed.add_field(
-                name="👤 Iniciado por",
-                value=f"{interaction.user.mention}\n`{interaction.user.id}`",
-                inline=True,
-            )
-            log_embed.add_field(name="📍 Canal",   value=canal.mention, inline=True)
-            log_embed.add_field(name="📅 Data",    value=data_val,      inline=True)
-            log_embed.add_field(name="🕐 Horário", value=horario_val,   inline=True)
-            log_embed.add_field(name="⚔️ Tipo",    value=tipo_display,  inline=True)
-            log_embed.set_footer(text=FOOTER_ACAO)
-            await send_log(interaction.client, interaction.guild, "acao", log_embed)
         else:
             # Fallback: posta no canal atual se o canal não estiver configurado
             await interaction.followup.send(
                 embed=acao_embed,
-                view=AcaoSelectView(horario=horario_val, tipo=tipo_val, data=data_val),
+                view=AcaoSelectView(horario=horario_val, tipo=tipo_val, data=data_val, criador_id=str(interaction.user.id)),
             )
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
@@ -141,9 +125,22 @@ class AcaoPainelView(discord.ui.View):
     )
     async def iniciar(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild_id = str(interaction.guild_id)
+        lideranca_ids = db_get_lideranca_role_ids(guild_id)
+        if not is_lideranca(interaction.user, lideranca_ids):
+            await interaction.response.send_message(
+                "❌ Apenas liderança pode iniciar ação.",
+                ephemeral=True,
+            )
+            return
         row      = db_get_system_config(guild_id, "acao")
         canal_id = row["canal_interacao_id"] if row else None
-        await interaction.response.send_modal(PreAcaoModal(canal_id=canal_id))
+        from cogs.acao import AcaoTipoView
+
+        await interaction.response.send_message(
+            "Escolha o tipo da ação:",
+            view=AcaoTipoView(canal_id=canal_id),
+            ephemeral=True,
+        )
 
 
 # ── Embed fixo do painel ──────────────────────────────────────────────────────

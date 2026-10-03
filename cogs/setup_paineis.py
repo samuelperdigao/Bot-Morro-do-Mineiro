@@ -11,6 +11,7 @@ from services.paineis_service import (
     PainelSetView,
     criar_embed_painel_operacoes,
     criar_embed_painel_set,
+    painel_set_logo_file,
 )
 import logging
 
@@ -85,9 +86,11 @@ class SetupPaineisCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         try:
+            logo = painel_set_logo_file()
             msg = await interaction.channel.send(
                 embed=criar_embed_painel_set(),
                 view=PainelSetView(),
+                **({"file": logo} if logo else {}),
             )
 
             db_set_guild_config(

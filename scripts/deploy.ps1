@@ -1,7 +1,7 @@
 # deploy.ps1 - Envia arquivos e reinicia o bot no servidor Oracle
 # Uso: .\deploy.ps1
 
-$SSH_KEY    = "$PSScriptRoot\oracle.key"
+$SSH_KEY    = "$(Split-Path $PSScriptRoot -Parent)\oracle.key"
 $REMOTE     = "ubuntu@163.176.143.142"
 $REMOTE_DIR = "/home/ubuntu/farmbot"
 $LOCAL_DIR  = Split-Path $PSScriptRoot -Parent
@@ -19,8 +19,20 @@ Write-Host "[1/3] Enviando arquivos para o servidor..." -ForegroundColor Yellow
 # rsync nao esta disponivel no Windows por padrao, entao usamos scp com exclusoes manuais.
 # Copiamos arquivo por arquivo/pasta por pasta, excluindo o que nao deve ir.
 
-$excludedDirs  = @("venv", "__pycache__", "_old", ".git")
-$excludedExts  = @("*.db", "*.db-shm", "*.db-wal", "*.log", "*.pyc")
+$excludedDirs  = @(
+    "venv",
+    ".codex-test-venv",
+    "__pycache__",
+    "docs",
+    ".git",
+    ".claude",
+    ".codex-remote-attachments",
+    ".pytest_cache",
+    "data",
+    "logs"
+)
+$excludedFiles = @(".env", ".env.example", "oracle.key")
+$excludedExts  = @("*.db", "*.db-shm", "*.db-wal", "*.log", "*.pyc", "*.key")
 
 # Coleta todos os itens a enviar (exclui pastas e extensoes indesejadas)
 $items = Get-ChildItem -Path $LOCAL_DIR -Recurse |
@@ -40,6 +52,9 @@ $items = Get-ChildItem -Path $LOCAL_DIR -Recurse |
         # Exclui arquivos com extensoes indesejadas
         $hasExcludedExt = $false
         if (-not $_.PSIsContainer) {
+            if ($excludedFiles -contains $_.Name) {
+                return $false
+            }
             foreach ($ext in $excludedExts) {
                 if ($_.Name -like $ext) {
                     $hasExcludedExt = $true
