@@ -447,6 +447,7 @@ class RecolhimentoMetaModal(discord.ui.Modal):
                 placeholder="Digite a quantidade a recolher",
                 required=False,
                 max_length=20,
+                default=saldo,
             )
             self.add_item(field)
             self.inputs.append(field)
