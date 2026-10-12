@@ -16,7 +16,9 @@ async def send_log(
     embed: discord.Embed,
     files: list[discord.File] | None = None,
     fallback_channel_id: int | str | None = None,
-) -> bool:
+    content: str | None = None,
+    return_message: bool = False,
+) -> bool | discord.Message:
     """Envia embed de log no canal configurado para o sistema."""
     from services.db_service import db_get_system_config
 
@@ -41,8 +43,17 @@ async def send_log(
                 continue
 
         try:
-            await channel.send(embed=embed, files=files or [])
-            return True
+            message = await channel.send(
+                content=content,
+                embed=embed,
+                files=files or [],
+                allowed_mentions=discord.AllowedMentions(
+                    users=True,
+                    roles=False,
+                    everyone=False,
+                ),
+            )
+            return message if return_message else True
         except Exception as e:
             log.error("Erro ao enviar log (sistema=%s, canal=%s): %s", sistema, channel_id, e)
 

@@ -16,6 +16,31 @@ log = get_logger("mod", "mod.log")
 SEPARADOR_CANAIS = "┃"
 ICONE_PASTA = "📁"
 MAX_CHANNEL_NAME_LENGTH = 100
+VISUAL_CATEGORY_NAME = "▬▬▬▬▬▬▬▬▬▬"
+
+
+def eh_categoria_visual(name: str) -> bool:
+    normalized_name = name.strip()
+    return len(normalized_name) >= 3 and set(normalized_name) == {"▬"}
+
+
+async def proteger_categoria_visual(category: discord.CategoryChannel) -> bool:
+    """Torna o divisor visivel e impede @everyone de gerencia-lo."""
+    if not eh_categoria_visual(category.name):
+        return False
+
+    overwrite = category.overwrites_for(category.guild.default_role)
+    if overwrite.view_channel is True and overwrite.manage_channels is False:
+        return False
+
+    overwrite.view_channel = True
+    overwrite.manage_channels = False
+    await category.set_permissions(
+        category.guild.default_role,
+        overwrite=overwrite,
+        reason="Protecao da categoria visual do servidor",
+    )
+    return True
 
 
 def _nome_com_separador(nome: str) -> str | None:
@@ -32,6 +57,40 @@ def _nome_com_separador(nome: str) -> str | None:
 class ModCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        for guild in self.bot.guilds:
+            for category in guild.categories:
+                try:
+                    if await proteger_categoria_visual(category):
+                        log.info(
+                            "Categoria visual protegida: %s (%s), guild %s",
+                            category.name,
+                            category.id,
+                            guild.id,
+                        )
+                except (discord.Forbidden, discord.HTTPException) as exc:
+                    log.warning(
+                        "Nao foi possivel proteger a categoria visual %s na guild %s: %s",
+                        category.id,
+                        guild.id,
+                        exc,
+                    )
+
+    @commands.Cog.listener()
+    async def on_guild_channel_create(self, channel: discord.abc.GuildChannel) -> None:
+        if not isinstance(channel, discord.CategoryChannel):
+            return
+
+        try:
+            await proteger_categoria_visual(channel)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            log.warning(
+                "Nao foi possivel proteger a nova categoria visual %s: %s",
+                channel.id,
+                exc,
+            )
 
     @app_commands.command(name="clear", description="Apaga mensagens do canal atual.")
     @app_commands.checks.has_permissions(manage_messages=True)

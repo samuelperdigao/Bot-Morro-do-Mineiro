@@ -13,6 +13,12 @@ from services.log_service import send_log
 from services.db_service import get_conn, db_get_guild_config, db_set_guild_config
 
 log = get_logger("anuncio", "anuncio.log")
+EVERYONE_ALLOWED_MENTIONS = discord.AllowedMentions(
+    everyone=True,
+    users=False,
+    roles=False,
+    replied_user=False,
+)
 
 
 # ── Migração de colunas ────────────────────────────────────────────────────────
@@ -72,12 +78,6 @@ class AnuncioModal(discord.ui.Modal, title="Novo Anúncio"):
         placeholder="Escreva o conteúdo do anúncio aqui...",
         max_length=2000,
     )
-    mencionar_todos = discord.ui.TextInput(
-        label="Mencionar @everyone? (sim/não)",
-        placeholder="sim ou não",
-        max_length=3,
-        required=False,
-    )
     adicionar_arquivo = discord.ui.TextInput(
         label="Adicionar arquivo? (sim/não)",
         placeholder="sim ou não — se sim, você enviará o arquivo após confirmar",
@@ -90,7 +90,7 @@ class AnuncioModal(discord.ui.Modal, title="Novo Anúncio"):
         self.canal_anuncio = canal_anuncio
 
     async def on_submit(self, interaction: discord.Interaction):
-        mencionar    = self.mencionar_todos.value.strip().lower()  in ("sim", "s", "yes", "y", "1")
+        mencionar    = True
         com_arquivo  = self.adicionar_arquivo.value.strip().lower() in ("sim", "s", "yes", "y", "1")
 
         embed = discord.Embed(
@@ -100,10 +100,14 @@ class AnuncioModal(discord.ui.Modal, title="Novo Anúncio"):
             timestamp=discord.utils.utcnow(),
         )
         embed.set_footer(text=f"Anunciado por {interaction.user.display_name}")
-        content = "@everyone" if mencionar else None
+        content = "@everyone"
 
         if not com_arquivo:
-            await self.canal_anuncio.send(content=content, embed=embed)
+            await self.canal_anuncio.send(
+                content=content,
+                embed=embed,
+                allowed_mentions=EVERYONE_ALLOWED_MENTIONS,
+            )
             log.info(
                 f"{interaction.user} publicou anúncio '{self.titulo.value.strip()}' "
                 f"no canal {self.canal_anuncio.id} (everyone={mencionar})"
@@ -143,7 +147,11 @@ class AnuncioModal(discord.ui.Modal, title="Novo Anúncio"):
             await interaction.followup.send(
                 "⏱️ Tempo esgotado. O anúncio foi publicado sem arquivo.", ephemeral=True
             )
-            await self.canal_anuncio.send(content=content, embed=embed)
+            await self.canal_anuncio.send(
+                content=content,
+                embed=embed,
+                allowed_mentions=EVERYONE_ALLOWED_MENTIONS,
+            )
             log.info(
                 f"{interaction.user} publicou anúncio '{self.titulo.value.strip()}' "
                 f"sem arquivo (timeout) no canal {self.canal_anuncio.id}"
@@ -163,7 +171,12 @@ class AnuncioModal(discord.ui.Modal, title="Novo Anúncio"):
                 msg.attachments[0].content_type.startswith("image/"):
             embed.set_image(url=f"attachment://{msg.attachments[0].filename}")
 
-        await self.canal_anuncio.send(content=content, embed=embed, files=files)
+        await self.canal_anuncio.send(
+            content=content,
+            embed=embed,
+            files=files,
+            allowed_mentions=EVERYONE_ALLOWED_MENTIONS,
+        )
         log.info(
             f"{interaction.user} publicou anúncio '{self.titulo.value.strip()}' "
             f"com {len(files)} arquivo(s) no canal {self.canal_anuncio.id} (everyone={mencionar})"

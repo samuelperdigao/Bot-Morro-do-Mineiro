@@ -26,6 +26,8 @@ from services.db_service import (
     db_get_system_config,
     db_set_guild_config,
     db_set_system_config,
+    db_ticket_config_get,
+    db_ticket_config_set,
 )
 
 log = get_logger("dashboard", "dashboard.log")
@@ -49,6 +51,7 @@ DASHBOARD_CHANNEL_ID = 1494692392052461588
 SISTEMAS = [
     {"key": "set",        "icon": "🎮", "nome": "Sistema de Set",        "desc": "Configure canais, categoria e cargos do sistema de set."},
     {"key": "farm",       "icon": "🌾", "nome": "Sistema de Farm",       "desc": "Configure canal, log e cargos do sistema de farm."},
+    {"key": "farm_tickets", "icon": "🎫", "nome": "Tickets de Farm", "desc": "Configure categorias e cargos administrativos dos tickets."},
     {"key": "meta",       "icon": "🎯", "nome": "Sistema de Meta",       "desc": "Configure o sistema de metas semanais."},
     {"key": "ausencia",   "icon": "🏖️", "nome": "Sistema de Ausência",   "desc": "Configure o canal de ausências."},
     {"key": "encomenda",  "icon": "📦", "nome": "Sistema de Encomenda",  "desc": "Configure o canal de encomendas."},
@@ -461,6 +464,147 @@ class AnuncioConfigModal(discord.ui.Modal):
             pass
 
 
+class FarmTicketsConfigModal(discord.ui.Modal, title="Configurar Tickets de Farm"):
+    def __init__(self, current: dict | None = None):
+        super().__init__()
+        current = current or {}
+        self.categories = discord.ui.TextInput(
+            label="IDs das categorias de tickets",
+            placeholder="Separe múltiplas categorias por vírgula",
+            default=",".join(current.get("category_ids", [])) or None,
+            required=True,
+            max_length=500,
+        )
+        self.admin_roles = discord.ui.TextInput(
+            label="IDs dos cargos administradores",
+            placeholder="Separe múltiplos cargos por vírgula",
+            default=",".join(current.get("admin_role_ids", [])) or None,
+            required=True,
+            max_length=500,
+        )
+        self.add_item(self.categories)
+        self.add_item(self.admin_roles)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        category_ids = [int(value) for value in _parse_ids(self.categories.value)]
+        role_ids = [int(value) for value in _parse_ids(self.admin_roles.value)]
+        if not category_ids or not role_ids:
+            await interaction.response.send_message(
+                "Informe ao menos uma categoria e um cargo administrativo válidos.", ephemeral=True
+            )
+            return
+        invalid_categories = [value for value in category_ids if not isinstance(interaction.guild.get_channel(value), discord.CategoryChannel)]
+        invalid_roles = [value for value in role_ids if interaction.guild.get_role(value) is None]
+        if invalid_categories or invalid_roles:
+            await interaction.response.send_message(
+                "Há IDs que não correspondem a categorias ou cargos deste servidor.", ephemeral=True
+            )
+            return
+        farm_log = db_get_system_config(str(interaction.guild_id), "farm")
+        if not farm_log or not farm_log["canal_log_id"]:
+            await interaction.response.send_message(
+                "Configure primeiro o canal de log do Sistema de Farm.", ephemeral=True
+            )
+            return
+        db_ticket_config_set(str(interaction.guild_id), category_ids, role_ids)
+        await interaction.response.send_message(
+            "✅ Tickets de farm configurados. O canal de log existente do Farm será reutilizado.",
+            ephemeral=True,
+        )
+
+
+class AcaoConfigModal(discord.ui.Modal):
+    """Modal com canais específicos do sistema de ações."""
+
+    def __init__(self, current: dict):
+        super().__init__(title="Configurar Sistema de Ação")
+        self.canal_interacao = discord.ui.TextInput(
+            label="Canal de Marcação (ID)",
+            placeholder="Canal de marcação de ação",
+            required=False,
+            max_length=20,
+            default=current.get("interacao", ""),
+        )
+        self.canal_ganhas = discord.ui.TextInput(
+            label="Canal de Ações Ganhas (ID)",
+            placeholder="Canal para embeds de vitória",
+            required=False,
+            max_length=20,
+            default=current.get("ganhas", ""),
+        )
+        self.canal_perdidas = discord.ui.TextInput(
+            label="Canal de Ações Perdidas (ID)",
+            placeholder="Canal para embeds de derrota",
+            required=False,
+            max_length=20,
+            default=current.get("perdidas", ""),
+        )
+        self.canal_pagamento = discord.ui.TextInput(
+            label="Canal de Pagamento (ID)",
+            placeholder="Canal para resumo de pagamento",
+            required=False,
+            max_length=20,
+            default=current.get("pagamento", ""),
+        )
+        self.add_item(self.canal_interacao)
+        self.add_item(self.canal_ganhas)
+        self.add_item(self.canal_perdidas)
+        self.add_item(self.canal_pagamento)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild_id = str(interaction.guild_id)
+        values = {
+            "interacao": self.canal_interacao.value.strip() or None,
+            "ganhas": self.canal_ganhas.value.strip() or None,
+            "perdidas": self.canal_perdidas.value.strip() or None,
+            "pagamento": self.canal_pagamento.value.strip() or None,
+        }
+        labels = {
+            "interacao": "Canal de Marcação",
+            "ganhas": "Canal de Ações Ganhas",
+            "perdidas": "Canal de Ações Perdidas",
+            "pagamento": "Canal de Pagamento",
+        }
+        for key, val in values.items():
+            if val and not val.isdigit():
+                await interaction.response.send_message(
+                    f"❌ **{labels[key]}** deve conter apenas números.",
+                    ephemeral=True,
+                )
+                return
+            if val:
+                ch = interaction.guild.get_channel(int(val))
+                if ch is None:
+                    try:
+                        ch = await interaction.guild.fetch_channel(int(val))
+                    except Exception:
+                        await interaction.response.send_message(
+                            f"❌ Canal `{val}` (**{labels[key]}**) não encontrado neste servidor.",
+                            ephemeral=True,
+                        )
+                        return
+
+        db_set_system_config(guild_id, "acao", values["interacao"], None)
+        db_set_system_config(guild_id, "acao_ganhas", values["ganhas"], None)
+        db_set_system_config(guild_id, "acao_perdidas", values["perdidas"], None)
+        db_set_system_config(guild_id, "acao_pagamento", values["pagamento"], None)
+
+        linhas = ["✅ **Sistema de Ação** configurado com sucesso!\n"]
+        for key in ("interacao", "ganhas", "perdidas", "pagamento"):
+            canal = f"<#{values[key]}>" if values[key] else "_não definido_"
+            linhas.append(f"**{labels[key]}:** {canal}")
+        embed = discord.Embed(description="\n".join(linhas), color=0x2ECC71)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        log.info("Ação configurada por %s (guild %s)", interaction.user, guild_id)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        log.error("Erro no AcaoConfigModal: %s", error, exc_info=True)
+        try:
+            await interaction.response.send_message("❌ Erro ao salvar configuração.", ephemeral=True)
+        except discord.InteractionResponded:
+            pass
+
+
 class SystemConfigModal(discord.ui.Modal):
     """Modal genérico: canal_interacao + canal_log, com sync opcional para guild_config."""
 
@@ -579,6 +723,20 @@ async def _handle_config_button(interaction: discord.Interaction, sistema_key: s
             "lideranca":  _cfg("cargos_lideranca_farm"),
             "permitidos": _cfg("cargos_permitidos_farm"),
             "editores":   _cfg("cargos_editar_farm"),
+        })
+
+    elif sistema_key == "farm_tickets":
+        modal = FarmTicketsConfigModal(current=db_ticket_config_get(guild_id))
+
+    elif sistema_key == "acao":
+        ganhas = db_get_system_config(guild_id, "acao_ganhas")
+        perdidas = db_get_system_config(guild_id, "acao_perdidas")
+        pagamento = db_get_system_config(guild_id, "acao_pagamento")
+        modal = AcaoConfigModal(current={
+            "interacao": current_interacao,
+            "ganhas": (ganhas["canal_interacao_id"] or "") if ganhas else "",
+            "perdidas": (perdidas["canal_interacao_id"] or "") if perdidas else "",
+            "pagamento": (pagamento["canal_interacao_id"] or "") if pagamento else "",
         })
 
     elif sistema_key == "anuncio":

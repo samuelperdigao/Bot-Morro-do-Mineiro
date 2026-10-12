@@ -2,6 +2,8 @@
 Serviços auxiliares para renderizar e gerenciar painéis.
 """
 
+from pathlib import Path
+
 import discord
 from discord import Embed
 from config.paineis import (
@@ -9,6 +11,10 @@ from config.paineis import (
     BOTOES_MEMBRO, BOTOES_LIDERANCA, BOTOES_SET,
     GRID_LAYOUT, NIVEIS_LIDERANCA,
 )
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+PAINEL_SET_LOGO_PATH = BASE_DIR / "assets" / "paineis" / "mdm-logo.png"
+PAINEL_SET_LOGO_FILENAME = "mdm-logo.png"
 
 _STYLE_MAP = {
     "primary":   discord.ButtonStyle.primary,
@@ -93,5 +99,14 @@ def criar_embed_painel_set() -> Embed:
         description=PAINEL_SET_CONFIG["descricao"],
         color=PAINEL_SET_CONFIG["cor"],
     )
+    if PAINEL_SET_LOGO_PATH.exists():
+        embed.set_image(url=f"attachment://{PAINEL_SET_LOGO_FILENAME}")
     embed.set_footer(text="Clique no botão abaixo para iniciar seu SET")
     return embed
+
+
+def painel_set_logo_file() -> discord.File | None:
+    """Anexo com a logo exibida no painel de set (None se o arquivo sumir)."""
+    if not PAINEL_SET_LOGO_PATH.exists():
+        return None
+    return discord.File(PAINEL_SET_LOGO_PATH, filename=PAINEL_SET_LOGO_FILENAME)

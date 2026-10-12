@@ -639,7 +639,7 @@ class BauRepository:
                 """
                 SELECT operation_id, tipo, origem, criado_em, MAX(id) AS last_id
                 FROM bau_historico
-                WHERE user_id=? AND revertido=0
+                WHERE user_id=? AND revertido=0 AND origem!='fabricacao_colete'
                 GROUP BY operation_id, tipo, origem, criado_em
                 ORDER BY last_id DESC
                 LIMIT 1
@@ -684,6 +684,7 @@ class BauRepository:
                 SELECT id, produto, categoria, tipo, quantidade
                 FROM bau_historico
                 WHERE operation_id=? AND user_id=? AND revertido=0
+                  AND origem!='fabricacao_colete'
                 ORDER BY id
                 """,
                 (operation_id, user_id),

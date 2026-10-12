@@ -21,12 +21,17 @@ from services.db_service import (
     current_week_id,
     now_tz,
     db_channel_map_get,
+    db_evento_itens,
     db_get_lideranca_role_ids,
     db_get_meta,
     db_meta_tipo_efetivo,
     db_meta_itens,
+    db_meta_itens_ativos,
+    db_meta_dinheiro_ativo,
+    db_meta_dinheiro_itens_ativos,
     db_prog_itens,
     db_lista_progresso,
+    db_recolhimento_ciclo_aberto,
     db_recolhimento_ciclo_aberto_por_mensagem,
     db_recolhimento_criar_ciclo,
     db_recolhimento_salvar_message_id,
@@ -36,7 +41,10 @@ from services.db_service import (
     db_recolhimento_ciclos_para_encerrar,
     db_recolhimento_add_entrega_dinheiro,
     db_recolhimento_add_entrega_farm,
+    db_recolhimento_add_entrega_itens,
+    db_recolhimento_entrega_itens,
     db_recolhimento_get_entregas,
+    db_ticket_launches,
 )
 
 log = get_logger("recolhimento", "recolhimento.log")
@@ -347,6 +355,196 @@ class RecolhimentoFarmModal(discord.ui.Modal, title="Kit Desmanche"):
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         log.error("Erro em RecolhimentoFarmModal: %s", error, exc_info=True)
+        if not interaction.response.is_done():
+            await interaction.response.send_message("❌ Erro ao registrar.", ephemeral=True)
+
+
+def _itens_meta_recolhimento(meta) -> tuple[str, dict[str, float]]:
+    meta_tipo = db_meta_tipo_efetivo(meta)
+    if meta_tipo == "dinheiro":
+        itens = db_meta_dinheiro_itens_ativos(meta)
+        if itens:
+            return meta_tipo, {nome: float(valor) for nome, valor in itens.items()}
+        total = float(db_meta_dinheiro_ativo(meta))
+        return meta_tipo, {"Dinheiro": total} if total > 0 else {}
+    return meta_tipo, {
+        nome: float(valor)
+        for nome, valor in db_meta_itens_ativos(meta).items()
+        if float(valor or 0) > 0
+    }
+
+
+def _saldo_recolhimento_ticket(
+    ticket_id: int,
+    ciclo_id: int,
+    item_names: list[str],
+) -> dict[str, float]:
+    movimentos: dict[str, list[tuple[int, dict]]] = {}
+    for lancamento in db_ticket_launches(ticket_id):
+        movimentos.setdefault(lancamento["criado_em"], []).append(
+            (0, db_evento_itens(lancamento))
+        )
+    for entrega in db_recolhimento_get_entregas(ciclo_id):
+        movimentos.setdefault(entrega["data"], []).append(
+            (1, db_recolhimento_entrega_itens(entrega))
+        )
+
+    saldos = {nome: 0.0 for nome in item_names}
+    for timestamp in sorted(movimentos):
+        adicionados = {nome: 0.0 for nome in item_names}
+        retirados = {nome: 0.0 for nome in item_names}
+        for tipo_movimento, valores in movimentos[timestamp]:
+            destino = adicionados if tipo_movimento == 0 else retirados
+            for nome, valor in valores.items():
+                if nome in destino:
+                    destino[nome] += float(valor or 0)
+        for nome in item_names:
+            disponivel_no_instante = saldos[nome] + adicionados[nome]
+            if retirados[nome] > disponivel_no_instante:
+                saldos[nome] = max(saldos[nome] - retirados[nome], 0) + adicionados[nome]
+            else:
+                saldos[nome] = disponivel_no_instante - retirados[nome]
+    return saldos
+
+
+class RecolhimentoMetaModal(discord.ui.Modal):
+    def __init__(
+        self,
+        ciclo_id: int,
+        ticket_id: int,
+        guild_id: str,
+        week_id: str,
+        meta_tipo: str,
+        disponiveis: dict[str, float],
+        alvo_user_id: str,
+        alvo_nome: str,
+        alvo_pasta_id: str | None = None,
+        alvo_slot: int | None = None,
+    ):
+        titulo = {
+            "colete": "Recolher Materiais de Colete",
+            "dinheiro": "Recolher Dinheiro",
+            "itens": "Recolher Kit Desmanche",
+        }.get(meta_tipo, "Registrar Recolhimento")
+        super().__init__(title=titulo)
+        self.ciclo_id = ciclo_id
+        self.ticket_id = ticket_id
+        self.guild_id = guild_id
+        self.week_id = week_id
+        self.meta_tipo = meta_tipo
+        self.item_names = list(disponiveis)[:5]
+        self.alvo_user_id = alvo_user_id
+        self.alvo_nome = alvo_nome
+        self.alvo_pasta_id = alvo_pasta_id
+        self.alvo_slot = alvo_slot
+        self.disponiveis = dict(disponiveis)
+        self.inputs: list[discord.ui.TextInput] = []
+        for nome in self.item_names:
+            disponivel = disponiveis[nome]
+            saldo = _fmt_valor(disponivel) if meta_tipo == "dinheiro" else str(int(disponivel))
+            field = discord.ui.TextInput(
+                label=f"{nome} | disponível: {saldo}"[:45],
+                placeholder="Digite a quantidade a recolher",
+                required=False,
+                max_length=20,
+            )
+            self.add_item(field)
+            self.inputs.append(field)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        meta_tipo, itens_atuais = _itens_meta_recolhimento(
+            db_get_meta(self.guild_id, self.week_id)
+        )
+        if meta_tipo != self.meta_tipo or list(itens_atuais)[:5] != self.item_names:
+            await interaction.response.send_message(
+                "A meta da semana mudou. Abra o recolhimento novamente.", ephemeral=True
+            )
+            return
+
+        disponiveis = _saldo_recolhimento_ticket(
+            self.ticket_id,
+            self.ciclo_id,
+            self.item_names,
+        )
+
+        valores = {}
+        try:
+            for nome, field in zip(self.item_names, self.inputs):
+                raw = (field.value or "0").replace("R$", "").replace(".", "").replace(",", ".").strip()
+                valor = float(raw or 0) if self.meta_tipo == "dinheiro" else int(raw or 0)
+                if valor < 0:
+                    raise ValueError
+                if valor > 0:
+                    valores[nome] = valor
+        except ValueError:
+            await interaction.response.send_message(
+                "Informe apenas valores positivos válidos.", ephemeral=True
+            )
+            return
+        if not valores:
+            await interaction.response.send_message(
+                "Informe pelo menos um valor acima de zero.", ephemeral=True
+            )
+            return
+        excedidos = {
+            nome: (valor, disponiveis.get(nome, 0))
+            for nome, valor in valores.items()
+            if float(valor) > disponiveis.get(nome, 0)
+        }
+        if excedidos:
+            detalhes = " | ".join(
+                f"{nome}: solicitado {valor:g}, disponível {saldo:g}"
+                for nome, (valor, saldo) in excedidos.items()
+            )
+            await interaction.response.send_message(
+                f"Não é possível recolher acima do saldo lançado. {detalhes}",
+                ephemeral=True,
+            )
+            return
+
+        db_recolhimento_add_entrega_itens(
+            self.ciclo_id,
+            str(interaction.user.id),
+            valores,
+            self.alvo_user_id,
+            self.alvo_nome,
+            self.alvo_pasta_id,
+        )
+        resumo = " | ".join(
+            f"{nome}: {_fmt_valor(valor) if self.meta_tipo == 'dinheiro' else int(valor)}"
+            for nome, valor in valores.items()
+        )
+        linhas_quantidades = "\n".join(
+            f"• **{nome}:** {_fmt_valor(valor) if self.meta_tipo == 'dinheiro' else int(valor)}"
+            for nome, valor in valores.items()
+        )
+        await interaction.response.send_message(
+            f"✅ Recolhimento registrado para **{self.alvo_nome}**! {resumo}",
+            ephemeral=True,
+        )
+        slot = f"{int(self.alvo_slot):02d}" if self.alvo_slot is not None else "Não informado"
+        embed = discord.Embed(
+            title="📦 Recolhimento confirmado",
+            description=f"O farm de <@{self.alvo_user_id}> foi recolhido com sucesso.",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(
+            name="📋 Quantidades recolhidas",
+            value=linhas_quantidades,
+            inline=False,
+        )
+        embed.add_field(
+            name="👮 Recolhido por",
+            value=f"<@{interaction.user.id}>",
+            inline=True,
+        )
+        embed.add_field(name="📁 Slot da pasta", value=f"`{slot}`", inline=True)
+        embed.set_footer(text="O saldo disponível foi atualizado automaticamente.")
+        await interaction.channel.send(embed=embed)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        log.error("Erro em RecolhimentoMetaModal: %s", error, exc_info=True)
         if not interaction.response.is_done():
             await interaction.response.send_message("❌ Erro ao registrar.", ephemeral=True)
 
@@ -697,6 +895,51 @@ class RecolhimentoCog(commands.Cog):
     def cog_unload(self):
         self._fechamento_ciclos.cancel()
 
+    def _modal_recolhimento_ticket(self, ticket, registrado_por: str):
+        meta_tipo, itens = _itens_meta_recolhimento(
+            db_get_meta(ticket["guild_id"], ticket["week_id"])
+        )
+        if not itens:
+            return None
+        ciclo = db_recolhimento_ciclo_aberto(
+            ticket["guild_id"],
+            ticket["channel_id"],
+            meta_tipo,
+            ticket["week_id"],
+        )
+        if not ciclo:
+            ciclo_id = db_recolhimento_criar_ciclo(
+                guild_id=ticket["guild_id"],
+                member_id=registrado_por,
+                channel_id=ticket["channel_id"],
+                tipo=meta_tipo,
+                semana_inicio=ticket["week_id"],
+                semana_fim=_semana_fim_from_inicio(ticket["week_id"]),
+            )
+        else:
+            ciclo_id = int(ciclo["id"])
+
+        alvo_nome = _row_get(ticket, "folder_nickname") or ticket["member_name"]
+        alvo_pasta_id = _row_get(ticket, "folder_channel_id")
+        alvo_slot = _row_get(ticket, "folder_slot")
+        disponiveis = _saldo_recolhimento_ticket(
+            int(ticket["id"]),
+            ciclo_id,
+            list(itens)[:5],
+        )
+        return RecolhimentoMetaModal(
+            ciclo_id,
+            int(ticket["id"]),
+            ticket["guild_id"],
+            ticket["week_id"],
+            meta_tipo,
+            disponiveis,
+            ticket["user_id"],
+            alvo_nome,
+            alvo_pasta_id,
+            alvo_slot,
+        )
+
     async def _atualizar_embed_ciclo(
         self,
         guild: discord.Guild,
@@ -814,7 +1057,7 @@ class RecolhimentoCog(commands.Cog):
             meta         = db_get_meta(ciclo["guild_id"], ciclo["semana_inicio"])
             meta_atingida = _verificar_meta_atingida(ciclo, meta, entregas)
 
-            if meta_atingida and not ciclo["pago"]:
+            if ciclo["message_id"] and meta_atingida and not ciclo["pago"]:
                 try:
                     canal = guild.get_channel(int(ciclo["channel_id"])) or \
                             await guild.fetch_channel(int(ciclo["channel_id"]))

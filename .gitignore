@@ -8,10 +8,12 @@ logs/
 bau_painel.json
 bau_gerentes_painel.json
 venv/
+.codex-test-venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .claude/
+.codex-remote-attachments/
 *.db.bak
