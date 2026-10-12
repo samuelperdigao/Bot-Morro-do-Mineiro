@@ -447,6 +447,7 @@ class RecolhimentoMetaModal(discord.ui.Modal):
                 placeholder="Digite a quantidade a recolher",
                 required=False,
                 max_length=20,
+                default=saldo,
             )
             self.add_item(field)
             self.inputs.append(field)
@@ -1088,3 +1089,4 @@ class RecolhimentoCog(commands.Cog):
 async def setup(bot: commands.Bot):
     await bot.add_cog(RecolhimentoCog(bot))
     log.info("RecolhimentoCog adicionado ao bot.")
+

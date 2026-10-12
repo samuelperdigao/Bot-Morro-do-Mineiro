@@ -866,7 +866,7 @@ class FarmTicketDatabaseTests(unittest.TestCase):
 
         async def submit():
             modal = cog._modal_recolhimento_ticket(ticket, "99")
-            modal.inputs[0]._value = "12"
+            modal.inputs[0]._value = modal.inputs[0].default
             response = SimpleNamespace(send_message=AsyncMock())
             channel = SimpleNamespace(send=AsyncMock())
             interaction = SimpleNamespace(
@@ -906,7 +906,8 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         async def collect_first_launch():
             modal = cog._modal_recolhimento_ticket(ticket, "99")
             self.assertEqual(modal.inputs[0].label, "Ferro | disponível: 300")
-            modal.inputs[0]._value = "300"
+            self.assertEqual(modal.inputs[0].default, "300")
+            modal.inputs[0]._value = modal.inputs[0].default
             interaction = SimpleNamespace(
                 user=SimpleNamespace(id=99),
                 response=SimpleNamespace(send_message=AsyncMock()),
@@ -916,6 +917,7 @@ class FarmTicketDatabaseTests(unittest.TestCase):
 
             empty_modal = cog._modal_recolhimento_ticket(ticket, "99")
             self.assertEqual(empty_modal.inputs[0].label, "Ferro | disponível: 0")
+            self.assertEqual(empty_modal.inputs[0].default, "0")
 
             db.db_ticket_launch(
                 int(ticket["id"]), "10", {"Ferro": 300},
@@ -926,8 +928,71 @@ class FarmTicketDatabaseTests(unittest.TestCase):
                 replenished_modal.inputs[0].label,
                 "Ferro | disponível: 300",
             )
+            self.assertEqual(replenished_modal.inputs[0].default, "300")
 
         asyncio.run(collect_first_launch())
+
+    def test_collection_modal_aggregates_all_launches_and_prefills_every_item(self):
+        ticket = self._create_ticket()
+        db.db_set_meta(
+            "1", "2026-06-15",
+            {"Ferro": 600, "Plastico": 100},
+            "99",
+            meta_tipo="colete",
+        )
+        db.db_ticket_launch(
+            int(ticket["id"]), "10", {"Ferro": 300, "Plastico": 20},
+            "100", "300", "https://cdn.example/first.png", None,
+        )
+        db.db_ticket_launch(
+            int(ticket["id"]), "10", {"Ferro": 125, "Plastico": 30},
+            "100", "301", "https://cdn.example/second.png", None,
+        )
+        cog = RecolhimentoCog.__new__(RecolhimentoCog)
+
+        async def open_modal():
+            return cog._modal_recolhimento_ticket(
+                db.db_ticket_get(int(ticket["id"])), "99"
+            )
+
+        modal = asyncio.run(open_modal())
+
+        self.assertEqual(modal.item_names, ["Ferro", "Plastico"])
+        self.assertEqual([field.default for field in modal.inputs], ["425", "50"])
+
+    def test_collection_submit_without_editing_defaults_recollects_all_available(self):
+        ticket = self._create_ticket()
+        db.db_set_meta(
+            "1", "2026-06-15", {"Ferro": 100, "Plastico": 80}, "99", meta_tipo="colete"
+        )
+        db.db_ticket_launch(
+            int(ticket["id"]), "10", {"Ferro": 60, "Plastico": 25},
+            "100", "300", "https://cdn.example/proof.png", None,
+        )
+        cog = RecolhimentoCog.__new__(RecolhimentoCog)
+
+        async def submit():
+            modal = cog._modal_recolhimento_ticket(db.db_ticket_get(int(ticket["id"])), "99")
+            for field in modal.inputs:
+                field._value = field.default
+            interaction = SimpleNamespace(
+                user=SimpleNamespace(id=99),
+                response=SimpleNamespace(send_message=AsyncMock()),
+                channel=SimpleNamespace(send=AsyncMock()),
+            )
+            await modal.on_submit(interaction)
+            return modal, interaction
+
+        modal, interaction = asyncio.run(submit())
+
+        entregas = db.db_recolhimento_get_entregas(modal.ciclo_id)
+        self.assertEqual(len(entregas), 1)
+        self.assertEqual(
+            db.db_recolhimento_entrega_itens(entregas[0]),
+            {"Ferro": 60, "Plastico": 25},
+        )
+        interaction.response.send_message.assert_awaited_once()
+        interaction.channel.send.assert_awaited_once()
 
     def test_collection_rejects_value_above_available_balance(self):
         ticket = self._create_ticket()
@@ -1156,3 +1221,4 @@ class FarmTicketDatabaseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
