@@ -4,7 +4,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from ui.views.set import SetContainerPanelView, SetPanelView
+from ui.views.set import SET_CONTAINER_TEST_CUSTOM_ID, SetContainerPanelView
 from core.logger import get_logger
 from services.db_service import db_is_bot_configured
 
@@ -25,18 +25,21 @@ class SetupSetCog(commands.Cog):
             )
             return
 
-        embed = discord.Embed(
-            title="Sistema de Set",
-            description=(
-                "Clique no botao abaixo para solicitar seu set.\n"
-                "Preencha o **ID do Jogo** e o **nome** do membro.\n\n"
-                "Sua solicitacao sera enviada para aprovacao da lideranca."
-            ),
-            color=discord.Color.blue(),
-            timestamp=discord.utils.utcnow(),
+        await interaction.channel.send(
+            view=SetContainerPanelView(
+                title="Sistema de Set",
+                description=(
+                    "Clique no botao abaixo para solicitar seu set.\n"
+                    "Preencha o **ID do Jogo** e o **nome** do membro.\n\n"
+                    "Sua solicitacao sera enviada para aprovacao da lideranca."
+                ),
+                footer=(
+                    "Use o botao abaixo para iniciar\n"
+                    f"<t:{int(discord.utils.utcnow().timestamp())}:F>"
+                ),
+                accent_color=discord.Color.blue(),
+            )
         )
-        embed.set_footer(text="Use o botao abaixo para iniciar")
-        await interaction.channel.send(embed=embed, view=SetPanelView())
         await interaction.response.send_message("Painel postado!", ephemeral=True)
 
     @app_commands.command(
@@ -52,7 +55,9 @@ class SetupSetCog(commands.Cog):
             )
             return
 
-        await interaction.channel.send(view=SetContainerPanelView())
+        await interaction.channel.send(
+            view=SetContainerPanelView(custom_id=SET_CONTAINER_TEST_CUSTOM_ID)
+        )
         await interaction.response.send_message(
             "Painel Container de teste postado!",
             ephemeral=True,

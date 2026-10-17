@@ -28,6 +28,7 @@ $excludedDirs  = @(
     ".claude",
     ".codex-remote-attachments",
     ".pytest_cache",
+    ".vscode",
     "data",
     "logs"
 )

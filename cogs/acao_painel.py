@@ -165,9 +165,10 @@ class AcaoPainelCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         bot.add_view(AcaoPainelView())
-        from ui.views.acao import AcaoContainerPanelView
+        from ui.views.acao import ACAO_CONTAINER_TEST_CUSTOM_ID, AcaoContainerPanelView
 
         bot.add_view(AcaoContainerPanelView())
+        bot.add_view(AcaoContainerPanelView(custom_id=ACAO_CONTAINER_TEST_CUSTOM_ID))
 
     @app_commands.command(
         name="setup_acao_painel",
@@ -196,7 +197,9 @@ class AcaoPainelCog(commands.Cog):
                 )
                 return
 
-        await channel.send(embed=_build_painel_embed(), view=AcaoPainelView())
+        from ui.views.acao import AcaoContainerPanelView
+
+        await channel.send(view=AcaoContainerPanelView())
         await interaction.followup.send(
             f"✅ Painel de ação postado em {channel.mention}!", ephemeral=True
         )
@@ -208,9 +211,11 @@ class AcaoPainelCog(commands.Cog):
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def setup_acao_container_teste(self, interaction: discord.Interaction):
-        from ui.views.acao import AcaoContainerPanelView
+        from ui.views.acao import ACAO_CONTAINER_TEST_CUSTOM_ID, AcaoContainerPanelView
 
-        await interaction.channel.send(view=AcaoContainerPanelView())
+        await interaction.channel.send(
+            view=AcaoContainerPanelView(custom_id=ACAO_CONTAINER_TEST_CUSTOM_ID)
+        )
         await interaction.response.send_message(
             "Painel Container de Ação postado para teste.",
             ephemeral=True,

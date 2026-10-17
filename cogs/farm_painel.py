@@ -101,7 +101,20 @@ async def lock_farm_panel_channel(
 
 
 PAINEL_EMBED_TITLE = "🎫 Central de Tickets | Farm Semanal"
-_PAINEL_CUSTOM_ID_PREFIXES = ("farm_painel:",)
+_PAINEL_CUSTOM_ID_PREFIXES = (
+    "farm_painel:",
+    "farm_container:",
+    "farm_container_test:",
+)
+
+
+def _component_custom_ids(components):
+    """Itera IDs em componentes comuns e nos aninhados dos Containers V2."""
+    for component in components:
+        custom_id = getattr(component, "custom_id", "") or ""
+        if custom_id:
+            yield custom_id
+        yield from _component_custom_ids(getattr(component, "children", ()) or ())
 
 
 def _is_farm_panel_message(message: discord.Message, bot_user) -> bool:
@@ -111,11 +124,11 @@ def _is_farm_panel_message(message: discord.Message, bot_user) -> bool:
     for embed in message.embeds:
         if (embed.title or "").strip() == PAINEL_EMBED_TITLE:
             return True
-    for row in message.components:
-        for child in getattr(row, "children", []):
-            cid = getattr(child, "custom_id", "") or ""
-            if cid.startswith(_PAINEL_CUSTOM_ID_PREFIXES):
-                return True
+    if any(
+        custom_id.startswith(_PAINEL_CUSTOM_ID_PREFIXES)
+        for custom_id in _component_custom_ids(message.components)
+    ):
+        return True
     return False
 
 
@@ -139,7 +152,9 @@ async def repost_farm_panel(
                     )
     except (discord.Forbidden, discord.HTTPException):
         log.exception("Falha ao varrer o historico do canal de painel (guild %s)", guild.id)
-    return await channel.send(embed=_build_painel_embed(), view=FarmPainelView())
+    from ui.views.farm import FarmContainerPanelView
+
+    return await channel.send(view=FarmContainerPanelView())
 
 
 class FarmPainelView(discord.ui.View):
@@ -599,9 +614,10 @@ class FarmPainelCog(commands.Cog):
         self._panel_reposted = False
         bot.add_view(FarmPainelView())
         bot.add_view(LegacyFarmLaunchView())
-        from ui.views.farm import FarmContainerPanelView
+        from ui.views.farm import FARM_CONTAINER_TEST_CUSTOM_IDS, FarmContainerPanelView
 
         bot.add_view(FarmContainerPanelView())
+        bot.add_view(FarmContainerPanelView(custom_ids=FARM_CONTAINER_TEST_CUSTOM_IDS))
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -864,9 +880,11 @@ class FarmPainelCog(commands.Cog):
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def setup_farm_container_teste(self, interaction: discord.Interaction):
-        from ui.views.farm import FarmContainerPanelView
+        from ui.views.farm import FARM_CONTAINER_TEST_CUSTOM_IDS, FarmContainerPanelView
 
-        await interaction.channel.send(view=FarmContainerPanelView())
+        await interaction.channel.send(
+            view=FarmContainerPanelView(custom_ids=FARM_CONTAINER_TEST_CUSTOM_IDS)
+        )
         await interaction.response.send_message(
             "Painel Container de Farm postado para teste.",
             ephemeral=True,

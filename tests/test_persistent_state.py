@@ -100,7 +100,7 @@ class PersistentViewRegistrationTests(unittest.IsolatedAsyncioTestCase):
 
         register_persistent_views(bot)
 
-        self.assertEqual(len(bot.persistent_views), 4)
+        self.assertEqual(len(bot.persistent_views), 5)
         await bot.close()
 
 

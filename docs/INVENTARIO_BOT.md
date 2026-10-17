@@ -57,11 +57,11 @@ Views persistentes (`timeout=None`) encontradas:
   (`approval:aprovar`, `approval:reprovar`).
 - Painéis: `PainelOperacoesView`, `PainelSetView`
   (`painel_set:pedir`) e painel legado de Farm.
-- Containers V2 de teste: `SetContainerPanelView`
-  (`set_container_test:pedir`), `FarmContainerPanelView`
-  (`farm_container_test:*`) e `AcaoContainerPanelView`
-  (`acao_container_test:iniciar`). Todos usam namespace próprio e delegam aos
-  callbacks das views legadas equivalentes.
+- Containers V2 de produção: `SetContainerPanelView`
+  (`set_container:pedir`), `FarmContainerPanelView` (`farm_container:*`) e
+  `AcaoContainerPanelView` (`acao_container:iniciar`). As variantes de teste
+  (`*_container_test:*`) permanecem registradas. Todos delegam aos callbacks
+  das views legadas equivalentes.
 - Farm/tickets: `FarmTicketView`, painel de advertências, relatório pendente,
   painel de hierarquia, painel de ação, painel de encomendas, painel de
   ausência, painel de anúncio, painel de rádio e painéis de recolhimento.

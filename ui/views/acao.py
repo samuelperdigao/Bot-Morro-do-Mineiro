@@ -12,15 +12,16 @@ from cogs.acao import (
 from cogs.acao_painel import AcaoPainelView, _build_painel_embed
 
 
-# Namespace exclusivo do painel Container de teste. O ID legado continua em
-# AcaoPainelView e o painel de participantes permanece inalterado.
+# IDs exclusivos do painel Container. O ID legado continua em AcaoPainelView
+# e o painel de participantes permanece inalterado.
+ACAO_CONTAINER_CUSTOM_ID = "acao_container:iniciar"
 ACAO_CONTAINER_TEST_CUSTOM_ID = "acao_container_test:iniciar"
 
 
 class AcaoContainerPanelView(discord.ui.LayoutView):
-    """Painel inicial de Ação em Components V2 para publicação controlada."""
+    """Painel inicial de Ação em Components V2 com fluxo legado preservado."""
 
-    def __init__(self):
+    def __init__(self, *, custom_id: str = ACAO_CONTAINER_CUSTOM_ID):
         super().__init__(timeout=None)
         self._legacy_view = AcaoPainelView()
         self._legacy_button = next(
@@ -34,7 +35,7 @@ class AcaoContainerPanelView(discord.ui.LayoutView):
             label=self._legacy_button.label,
             style=self._legacy_button.style,
             emoji=self._legacy_button.emoji,
-            custom_id=ACAO_CONTAINER_TEST_CUSTOM_ID,
+            custom_id=custom_id,
         )
         button.callback = self._iniciar
 
@@ -55,6 +56,7 @@ class AcaoContainerPanelView(discord.ui.LayoutView):
         await self._legacy_button.callback(interaction)
 
 __all__ = [
+    "ACAO_CONTAINER_CUSTOM_ID",
     "ACAO_CONTAINER_TEST_CUSTOM_ID",
     "AcaoContainerPanelView",
     "AcaoParticipantesView",

@@ -6,8 +6,14 @@ from cogs.farm import EditarUltimoModal, EscolherTipoMetaView, FarmView
 from cogs.farm_painel import FarmPainelView, _build_painel_embed
 
 
-# Namespace exclusivo do painel Container de teste. Os IDs legados continuam
-# em FarmPainelView e LegacyFarmLaunchView.
+# IDs exclusivos dos painéis Container. Os IDs legados continuam em
+# FarmPainelView e LegacyFarmLaunchView.
+FARM_CONTAINER_CUSTOM_IDS = {
+    "farm_painel:abrir_ticket": "farm_container:abrir_ticket",
+    "farm_painel:abrir_ticket_membro": "farm_container:abrir_ticket_membro",
+    "farm_painel:abrir_ticket_cargo": "farm_container:abrir_ticket_cargo",
+    "farm_painel:excluir_ticket_admin": "farm_container:excluir_ticket_admin",
+}
 FARM_CONTAINER_TEST_CUSTOM_IDS = {
     "farm_painel:abrir_ticket": "farm_container_test:abrir_ticket",
     "farm_painel:abrir_ticket_membro": "farm_container_test:abrir_ticket_membro",
@@ -17,15 +23,16 @@ FARM_CONTAINER_TEST_CUSTOM_IDS = {
 
 
 class FarmContainerPanelView(discord.ui.LayoutView):
-    """Painel público de Farm em Components V2, restrito ao canal de teste."""
+    """Painel público de Farm em Components V2 com callbacks legados."""
 
-    def __init__(self):
+    def __init__(self, *, custom_ids: dict[str, str] | None = None):
         super().__init__(timeout=None)
+        self._custom_ids = dict(custom_ids or FARM_CONTAINER_CUSTOM_IDS)
         self._legacy_view = FarmPainelView()
         self._legacy_buttons = {
             button.custom_id: button
             for button in self._legacy_view.children
-            if button.custom_id in FARM_CONTAINER_TEST_CUSTOM_IDS
+            if button.custom_id in self._custom_ids
         }
         embed = _build_painel_embed()
 
@@ -53,7 +60,7 @@ class FarmContainerPanelView(discord.ui.LayoutView):
             label=legacy_button.label,
             style=legacy_button.style,
             emoji=legacy_button.emoji,
-            custom_id=FARM_CONTAINER_TEST_CUSTOM_IDS[legacy_custom_id],
+            custom_id=self._custom_ids[legacy_custom_id],
         )
         button.callback = self._delegate(legacy_custom_id)
         return button
@@ -70,5 +77,6 @@ __all__ = [
     "EscolherTipoMetaView",
     "FarmContainerPanelView",
     "FarmView",
+    "FARM_CONTAINER_CUSTOM_IDS",
     "FARM_CONTAINER_TEST_CUSTOM_IDS",
 ]

@@ -8,11 +8,10 @@ from discord import app_commands
 from services.db_service import db_is_bot_configured, db_set_guild_config
 from services.paineis_service import (
     PainelOperacoesView,
-    PainelSetView,
     criar_embed_painel_operacoes,
-    criar_embed_painel_set,
     painel_set_logo_file,
 )
+from ui.views.set import SetContainerPanelView
 import logging
 
 log = logging.getLogger("setup_paineis")
@@ -88,8 +87,9 @@ class SetupPaineisCog(commands.Cog):
         try:
             logo = painel_set_logo_file()
             msg = await interaction.channel.send(
-                embed=criar_embed_painel_set(),
-                view=PainelSetView(),
+                view=SetContainerPanelView(
+                    logo_filename=logo.filename if logo else None,
+                ),
                 **({"file": logo} if logo else {}),
             )
 

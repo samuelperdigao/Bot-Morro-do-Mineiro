@@ -5,7 +5,11 @@ import discord
 
 from cogs.set_views import SetModal
 from config.paineis import PAINEL_SET_CONFIG
-from ui.views.set import SET_CONTAINER_TEST_CUSTOM_ID, SetContainerPanelView
+from ui.views.set import (
+    SET_CONTAINER_CUSTOM_ID,
+    SET_CONTAINER_TEST_CUSTOM_ID,
+    SetContainerPanelView,
+)
 
 
 class SetContainerPanelTests(unittest.IsolatedAsyncioTestCase):
@@ -40,8 +44,25 @@ class SetContainerPanelTests(unittest.IsolatedAsyncioTestCase):
 
         buttons = [item for item in view.walk_children() if isinstance(item, discord.ui.Button)]
         self.assertEqual(len(buttons), 1)
-        self.assertEqual(buttons[0].custom_id, SET_CONTAINER_TEST_CUSTOM_ID)
+        self.assertEqual(buttons[0].custom_id, SET_CONTAINER_CUSTOM_ID)
         self.assertEqual(buttons[0].label, "📝 Pedir Set")
+
+    def test_test_namespace_remains_available_for_existing_test_messages(self):
+        view = SetContainerPanelView(custom_id=SET_CONTAINER_TEST_CUSTOM_ID)
+        button = next(item for item in view.walk_children() if isinstance(item, discord.ui.Button))
+
+        self.assertEqual(button.custom_id, SET_CONTAINER_TEST_CUSTOM_ID)
+
+    def test_canonical_panel_can_preserve_its_logo_as_container_media(self):
+        view = SetContainerPanelView(logo_filename="mdm-logo.png")
+        gallery = next(
+            item for item in view.walk_children() if isinstance(item, discord.ui.MediaGallery)
+        )
+
+        self.assertEqual(
+            gallery.to_component_dict()["items"][0]["media"]["url"],
+            "attachment://mdm-logo.png",
+        )
 
     async def test_button_reuses_set_modal_flow(self):
         view = SetContainerPanelView()

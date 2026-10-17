@@ -5,7 +5,11 @@ from unittest.mock import AsyncMock
 import discord
 
 from cogs.acao_painel import _build_painel_embed
-from ui.views.acao import ACAO_CONTAINER_TEST_CUSTOM_ID, AcaoContainerPanelView
+from ui.views.acao import (
+    ACAO_CONTAINER_CUSTOM_ID,
+    ACAO_CONTAINER_TEST_CUSTOM_ID,
+    AcaoContainerPanelView,
+)
 
 
 class AcaoContainerPanelTests(unittest.IsolatedAsyncioTestCase):
@@ -29,7 +33,7 @@ class AcaoContainerPanelTests(unittest.IsolatedAsyncioTestCase):
 
         buttons = [item for item in view.walk_children() if isinstance(item, discord.ui.Button)]
         self.assertEqual(len(buttons), 1)
-        self.assertEqual(buttons[0].custom_id, ACAO_CONTAINER_TEST_CUSTOM_ID)
+        self.assertEqual(buttons[0].custom_id, ACAO_CONTAINER_CUSTOM_ID)
         self.assertEqual(buttons[0].label, "⚡ Iniciar Ação")
         self.assertNotIn("acao:entrar", {button.custom_id for button in buttons})
         self.assertNotIn("acao:encerrar", {button.custom_id for button in buttons})
@@ -44,6 +48,12 @@ class AcaoContainerPanelTests(unittest.IsolatedAsyncioTestCase):
         await button.callback(interaction)
 
         legacy_callback.assert_awaited_once_with(interaction)
+
+    def test_test_namespace_remains_available_for_existing_test_messages(self):
+        view = AcaoContainerPanelView(custom_id=ACAO_CONTAINER_TEST_CUSTOM_ID)
+        button = next(item for item in view.walk_children() if isinstance(item, discord.ui.Button))
+
+        self.assertEqual(button.custom_id, ACAO_CONTAINER_TEST_CUSTOM_ID)
 
 
 if __name__ == "__main__":
