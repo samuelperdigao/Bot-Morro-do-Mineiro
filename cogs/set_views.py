@@ -284,14 +284,25 @@ class ApprovalView(discord.ui.View):
         _clear_pending(self.requester.id if self.requester else 0)
 
         if not aprovado:
-            embed = discord.Embed(
-                title="❌ Set Reprovado",
-                description=f"**{self.target_name}**\nReprovado por {approver.mention}",
-                color=discord.Color.red(),
-                timestamp=discord.utils.utcnow(),
-            )
+            cfg = db_get_guild_config(guild_id)
+            log_ch_id = int(cfg["log_channel_id"]) if cfg and cfg["log_channel_id"] else None
+            log_channel = None
+            if log_ch_id:
+                log_channel = guild.get_channel(log_ch_id) or await safe_fetch_channel(guild, log_ch_id)
+
+            if log_channel:
+                log_embed = discord.Embed(
+                    title="❌ Set Reprovado",
+                    description=f"**{self.target_name}**\nReprovado por {approver.mention}",
+                    color=discord.Color.red(),
+                    timestamp=discord.utils.utcnow(),
+                )
+                log_embed.add_field(name="🎮 ID no Jogo", value=f"`{self.id_jogo}`" if self.id_jogo else "N/A", inline=True)
+                log_embed.add_field(name="👤 Solicitante", value=f"<@{self.target_user_id}>\n`{self.target_user_id}`", inline=True)
+                log_embed.add_field(name="❌ Reprovado por", value=f"{approver.mention}\n`{approver.id}`", inline=True)
+                await log_channel.send(embed=log_embed)
+
             _audit("SET_REPROVADO", approver.id, self.target_user_id)
-            await interaction.followup.send(embed=embed)
             return
 
         try:
@@ -444,16 +455,6 @@ class ApprovalView(discord.ui.View):
 
         _audit("SET_APROVADO", approver.id, member.id, id_jogo=self.id_jogo, canal=pasta.id if pasta else "N/A")
 
-        result_embed = discord.Embed(
-            title="✅ Set Aprovado",
-            description=f"{member.mention} aprovado por {approver.mention}.",
-            color=discord.Color.green(),
-            timestamp=discord.utils.utcnow(),
-        )
-        result_embed.set_thumbnail(url=member.display_avatar.url)
-        if self.id_jogo:
-            result_embed.add_field(name="🎮 ID no Jogo", value=f"`{self.id_jogo}`", inline=True)
-        await interaction.followup.send(embed=result_embed)
 
 
 def register_persistent_views(bot: discord.Client) -> None:
