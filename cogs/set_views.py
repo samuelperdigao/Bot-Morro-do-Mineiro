@@ -461,6 +461,12 @@ def register_persistent_views(bot: discord.Client) -> None:
     set_request_service.recover_interrupted()
     bot.add_view(SetPanelView())
 
+    # View V2 experimental com namespace próprio; não conflita com os IDs
+    # dos painéis legados já publicados.
+    from ui.views.set import SetContainerPanelView
+
+    bot.add_view(SetContainerPanelView())
+
     # Painéis anteriores à persistência não carregam dados suficientes para
     # aprovar alguém; o fallback responde de forma controlada sem descartá-los.
     bot.add_view(ApprovalView(0, "", None))
