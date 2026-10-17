@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import math
 import re
 import uuid
@@ -13,7 +12,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from cogs.bau_core import (
+from infrastructure.repositories.bau import (
     CATEGORIAS,
     BauRepository,
     DuplicateOperationError,
@@ -26,37 +25,30 @@ from cogs.bau_core import (
     agora_str,
 )
 from core.logger import get_logger
+from core.settings import LEGACY_FIXED_IDS
+from services.bau_service import bau_service
 
 
 log = get_logger("bau", "bau.log")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = BASE_DIR / "bau.db"
-PAINEL_JSON = BASE_DIR / "bau_painel.json"
+DB_PATH = bau_service.paths.database
+PAINEL_JSON = bau_service.paths.panel_reference
 
-CANAL_BAU_ID = 1474869322387292357
-CANAL_LOG_ID = 1499589255784173678
+CANAL_BAU_ID = int(LEGACY_FIXED_IDS["bau_channel"])
+CANAL_LOG_ID = int(LEGACY_FIXED_IDS["bau_log_channel"])
 
 CATEGORY_PAGE_SIZE = 5
 UNDO_PAGE_SIZE = 25
-repo = BauRepository(DB_PATH)
+repo = bau_service.repository
 
 
 def _load_painel_ref() -> tuple[int | None, int | None]:
-    if PAINEL_JSON.exists():
-        try:
-            data = json.loads(PAINEL_JSON.read_text(encoding="utf-8"))
-            return int(data["channel_id"]), int(data["message_id"])
-        except Exception as exc:
-            log.warning("Erro ao ler bau_painel.json: %s", exc)
-    return None, None
+    return bau_service.load_panel_reference(PAINEL_JSON)
 
 
 def _save_painel_ref(channel_id: int, message_id: int) -> None:
-    PAINEL_JSON.write_text(
-        json.dumps({"channel_id": channel_id, "message_id": message_id}),
-        encoding="utf-8",
-    )
+    bau_service.save_panel_reference(PAINEL_JSON, channel_id, message_id)
 
 
 def _format_number(value: int) -> str:

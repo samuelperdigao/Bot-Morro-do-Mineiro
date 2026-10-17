@@ -60,7 +60,7 @@ def _build_ranking_history_embed(
     guild_id: str,
     week_id: str,
 ) -> discord.Embed:
-    from cogs.farm import build_ranking_embed
+    from ui.messages.farm import build_ranking_embed
 
     participantes = db_ranking_semana(guild_id, week_id)
     embed = build_ranking_embed(guild_id, week_id, participantes, guild)
@@ -252,7 +252,7 @@ class PaineisCog(commands.Cog):
                         "❌ Você não tem permissão para ver farm.", ephemeral=True
                     )
                     return
-                from cogs.farm import build_farm_embed
+                from ui.messages.farm import build_farm_embed
                 week_id = current_week_id()
                 prog    = db_get_progresso(guild_id, week_id, str(member.id))
                 meta    = db_get_meta(guild_id, week_id)
@@ -285,7 +285,7 @@ class PaineisCog(commands.Cog):
                         "❌ Erro interno: FarmCog não carregado.", ephemeral=True
                     )
                     return
-                from cogs.farm import EditarUltimoModal
+                from ui.views.farm import EditarUltimoModal
                 await interaction.response.send_modal(
                     EditarUltimoModal(farm_cog, week_id, guild_id, str(member.id), db_evento_itens(ultimo))
                 )
@@ -305,7 +305,7 @@ class PaineisCog(commands.Cog):
                         "❌ Erro interno: FarmCog não carregado.", ephemeral=True
                     )
                     return
-                from cogs.farm import EscolherTipoMetaView
+                from ui.views.farm import EscolherTipoMetaView
                 await interaction.response.send_message(
                     "Escolha o tipo de meta para esta semana:",
                     view=EscolherTipoMetaView(farm_cog, week_id, guild_id),

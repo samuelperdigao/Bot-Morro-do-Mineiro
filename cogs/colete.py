@@ -10,8 +10,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from cogs.bau import repo as bau_repo
-from cogs.bau_core import BauRepository, DuplicateOperationError, OperationResult
+from features.farm.catalog import MATERIAIS_POR_COLETE
+from infrastructure.repositories.bau import BauRepository, DuplicateOperationError, OperationResult
+from services.bau_service import bau_service
 from core.logger import get_logger
 from services.db_service import (
     db_get_fabricacoes_colete_pendentes,
@@ -34,13 +35,6 @@ FAIXAS_QUANTIDADE = tuple(
     )
     for inicio in range(1, MAX_QUANTIDADE + 1, QUANTIDADES_POR_SELETOR)
 )
-MATERIAIS_POR_COLETE = {
-    "ferro": 20,
-    "plastico": 10,
-    "tecido": 1,
-    "aluminio": 20,
-    "borracha": 10,
-}
 CUSTO_POR_COLETE = 1000
 PRINT_TIMEOUT_SECONDS = 180.0
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
@@ -85,7 +79,7 @@ def _criar_opcao_quantidade(quantidade: int) -> discord.SelectOption:
 
 def sincronizar_fabricacao_no_bau(
     fabricacao: dict,
-    repository: BauRepository = bau_repo,
+    repository: BauRepository = bau_service.repository,
 ) -> OperationResult | None:
     """Credita uma fabricacao pendente uma unica vez no estoque do bau."""
     try:

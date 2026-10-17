@@ -16,26 +16,10 @@ from core.logger import get_logger
 from core.permissions import is_lideranca, is_permitido_farm
 from core.role_promotion import promote_role
 from core.command_config import is_enabled as _cmd_enabled
-from cogs.colete import MATERIAIS_POR_COLETE
+from features.farm.catalog import MATERIAIS_POR_COLETE
 from services.log_service import send_log
 from services.set_service import MemberFolderError, resolve_member_folder
-from services.db_service import (
-    DINHEIRO_ITEMS, DINHEIRO_LIMPO_ITEM, DINHEIRO_SUJO_ITEM,
-    init_db, current_week_id, now_tz, janela_valida, fmt_dt,
-    db_meta_dinheiro_ativo, db_meta_dinheiro_itens_ativos, db_meta_itens_ativos,
-    db_meta_tipo_efetivo, db_prog_itens, db_evento_itens, db_get_ultimo_evento,
-    db_get_meta, db_set_meta, db_set_meta_dinheiro,
-    db_get_progresso, db_ensure_progresso, db_lancar,
-    db_editar_evento, db_editar_ultimo_evento, db_verificar_conclusao,
-    db_salvar_painel, db_limpar_painel, db_aprovar,
-    db_lista_progresso, db_eventos_usuario, db_ranking_semana,
-    db_get_guild_config,
-    db_is_farm_configured,
-    db_get_lideranca_role_ids,
-    db_get_permitidos_role_ids,
-    db_all_configured_guilds,
-    classificar_resultado,
-)
+from services.farm_service import farm_service
 
 log       = get_logger("farm", "farm.log")
 audit_log = logging.getLogger("audit")
@@ -186,7 +170,46 @@ def _farm_audit(action: str, executor_id: int, target_id: int | None = None, **k
     audit_log.info(" | ".join(parts))
 
 
-from cogs.farm_embeds import FARM_PRODUTOS, build_farm_embed, build_meta_embed, build_ranking_embed
+from ui.messages.farm import FARM_PRODUTOS, build_farm_embed, build_meta_embed, build_ranking_embed
+
+# Aliases temporários: preservam o corpo extenso do cog enquanto toda a
+# superfície de Farm migra para a API pública do serviço.
+DINHEIRO_ITEMS = farm_service.DINHEIRO_ITEMS
+DINHEIRO_LIMPO_ITEM = farm_service.DINHEIRO_LIMPO_ITEM
+DINHEIRO_SUJO_ITEM = farm_service.DINHEIRO_SUJO_ITEM
+init_db = farm_service.initialize
+current_week_id = farm_service.current_week_id
+now_tz = farm_service.now
+janela_valida = farm_service.valid_window
+fmt_dt = farm_service.format_datetime
+classificar_resultado = farm_service.classify_result
+db_meta_dinheiro_ativo = farm_service.meta_dinheiro_ativo
+db_meta_dinheiro_itens_ativos = farm_service.meta_dinheiro_itens_ativos
+db_meta_itens_ativos = farm_service.meta_itens_ativos
+db_meta_tipo_efetivo = farm_service.meta_tipo_efetivo
+db_prog_itens = farm_service.progresso_itens
+db_evento_itens = farm_service.evento_itens
+db_get_ultimo_evento = farm_service.ultimo_evento
+db_get_meta = farm_service.get_meta
+db_set_meta = farm_service.set_meta
+db_set_meta_dinheiro = farm_service.set_meta_dinheiro
+db_get_progresso = farm_service.get_progresso
+db_ensure_progresso = farm_service.ensure_progresso
+db_lancar = farm_service.lancar
+db_editar_evento = farm_service.editar_evento
+db_editar_ultimo_evento = farm_service.editar_ultimo_evento
+db_verificar_conclusao = farm_service.verificar_conclusao
+db_salvar_painel = farm_service.salvar_painel
+db_limpar_painel = farm_service.limpar_painel
+db_aprovar = farm_service.aprovar
+db_lista_progresso = farm_service.lista_progresso
+db_eventos_usuario = farm_service.eventos_usuario
+db_ranking_semana = farm_service.ranking_semana
+db_get_guild_config = farm_service.get_guild_config
+db_is_farm_configured = farm_service.is_configured
+db_get_lideranca_role_ids = farm_service.get_lideranca_role_ids
+db_get_permitidos_role_ids = farm_service.get_permitidos_role_ids
+db_all_configured_guilds = farm_service.all_configured_guilds
 
 
 class DefinirMetasModal(discord.ui.Modal):

@@ -2,7 +2,6 @@
 cogs/bau_gerentes.py - Painel de Slots de Gerentes do Bau.
 """
 
-import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -13,15 +12,17 @@ from discord import app_commands
 from discord.ext import commands
 
 from core.logger import get_logger
+from core.settings import LEGACY_FIXED_IDS
+from services.bau_service import bau_service
 
 log = get_logger("bau_gerentes", "bau.log")
 
 BASE_DIR    = Path(__file__).resolve().parent.parent
-DB_PATH     = BASE_DIR / "bau.db"
-PAINEL_JSON = BASE_DIR / "bau_gerentes_painel.json"
+DB_PATH     = bau_service.paths.database
+PAINEL_JSON = bau_service.paths.managers_panel_reference
 TZ_SP       = ZoneInfo("America/Sao_Paulo")
 
-CANAL_GERENTES_ID = 1502107652027715705
+CANAL_GERENTES_ID = int(LEGACY_FIXED_IDS["bau_managers_channel"])
 SLOTS_INICIAIS    = 10
 
 
@@ -120,20 +121,11 @@ def _limpar_slot(slot_numero: int) -> None:
 # ── Painel ref ─────────────────────────────────────────────────────────────────
 
 def _load_painel_ref():
-    if PAINEL_JSON.exists():
-        try:
-            data = json.loads(PAINEL_JSON.read_text(encoding="utf-8"))
-            return int(data["channel_id"]), int(data["message_id"])
-        except Exception as e:
-            log.warning("Erro ao ler bau_gerentes_painel.json: %s", e)
-    return None, None
+    return bau_service.load_panel_reference(PAINEL_JSON)
 
 
 def _save_painel_ref(channel_id: int, message_id: int) -> None:
-    PAINEL_JSON.write_text(
-        json.dumps({"channel_id": channel_id, "message_id": message_id}),
-        encoding="utf-8",
-    )
+    bau_service.save_panel_reference(PAINEL_JSON, channel_id, message_id)
 
 
 # ── Embed ──────────────────────────────────────────────────────────────────────

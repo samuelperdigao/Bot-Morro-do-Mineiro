@@ -795,7 +795,7 @@ class FarmPainelCog(commands.Cog):
             )
             return
 
-        from cogs.farm import EditarUltimoModal
+        from ui.views.farm import EditarUltimoModal
         await interaction.response.send_modal(
             EditarUltimoModal(
                 farm_cog,
