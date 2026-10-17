@@ -599,6 +599,9 @@ class FarmPainelCog(commands.Cog):
         self._panel_reposted = False
         bot.add_view(FarmPainelView())
         bot.add_view(LegacyFarmLaunchView())
+        from ui.views.farm import FarmContainerPanelView
+
+        bot.add_view(FarmContainerPanelView())
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -854,6 +857,20 @@ class FarmPainelCog(commands.Cog):
             ephemeral=True,
         )
         log.info("Painel farm postado (guild %s, canal %s)", guild_id, channel.id)
+
+    @app_commands.command(
+        name="setup_farm_container_teste",
+        description="Posta o painel Container de Farm no canal atual para teste.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def setup_farm_container_teste(self, interaction: discord.Interaction):
+        from ui.views.farm import FarmContainerPanelView
+
+        await interaction.channel.send(view=FarmContainerPanelView())
+        await interaction.response.send_message(
+            "Painel Container de Farm postado para teste.",
+            ephemeral=True,
+        )
 
     @setup_farm_painel.error
     async def _error(self, interaction: discord.Interaction, error):
