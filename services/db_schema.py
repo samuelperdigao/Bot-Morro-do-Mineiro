@@ -33,6 +33,12 @@ CREATE TABLE IF NOT EXISTS guild_config (
     parceria_panel_message_id TEXT
 );
 
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version    INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    applied_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS channel_map (
     guild_id   TEXT NOT NULL,
     user_id    TEXT NOT NULL,
@@ -326,10 +332,6 @@ ON farm_tickets (guild_id, channel_id);
 CREATE INDEX IF NOT EXISTS idx_farm_tickets_status_week
 ON farm_tickets (status, week_id);
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_farm_tickets_active_member
-ON farm_tickets (guild_id, week_id, user_id)
-WHERE status IN ('criando', 'aberto', 'revisao');
-
 CREATE INDEX IF NOT EXISTS idx_farm_ticket_lancamentos_ticket
 ON farm_ticket_lancamentos (ticket_id, event_id);
 
@@ -414,7 +416,7 @@ CREATE INDEX IF NOT EXISTS idx_parcerias_guild_ativo
 ON parcerias (guild_id, ativo, nome_familia);
 """
 
-MIGRATIONS = (
+LEGACY_COLUMN_MIGRATIONS = (
     ("metas", "itens_json", "TEXT"),
     ("metas", "meta_tipo", "TEXT DEFAULT 'itens'"),
     ("metas", "meta_dinheiro", "REAL DEFAULT 0"),
@@ -470,6 +472,55 @@ MIGRATIONS = (
     ("farm_tickets", "log_thread_id", "TEXT"),
 )
 
+# Mantido como alias temporário para módulos externos que importavam o nome
+# antigo. A execução agora é controlada por VERSIONED_MIGRATIONS abaixo.
+MIGRATIONS = LEGACY_COLUMN_MIGRATIONS
+
+
+GUILD_CONFIG_FIELDS = frozenset({
+    "approval_channel_id",
+    "log_channel_id",
+    "private_category_id",
+    "member_role_id",
+    "approver_role_ids",
+    "canal_ausencias_id",
+    "cargos_lideranca_farm",
+    "cargos_permitidos_farm",
+    "canal_avisos_farm",
+    "canal_notificacao_farm",
+    "flanelinha_role_id",
+    "flanelinha_auto_promote",
+    "flanelinha_notify_user_id",
+    "farm_adv1_role_id",
+    "farm_adv2_role_id",
+    "farm_adv3_role_id",
+    "farm_adv_panel_channel_id",
+    "farm_adv_panel_message_id",
+    "parceria_category_id",
+    "parceria_registrar_channel_id",
+    "parceria_ativas_channel_id",
+    "parceria_panel_message_id",
+    "canal_encomendas_id",
+    "canal_log_saida_id",
+    "painel_operacoes_channel_id",
+    "painel_operacoes_message_id",
+    "painel_set_channel_id",
+    "painel_set_message_id",
+    "canal_adv_id",
+    "painel_colete_channel_id",
+    "painel_colete_message_id",
+    "dashboard_channel_id",
+    "dashboard_message_id",
+    "canal_anuncio_id",
+    "cargos_anuncio",
+    "cargos_editar_farm",
+    "painel_ranking_channel_id",
+    "painel_ranking_message_id",
+    "painel_ranking_week_id",
+    "painel_lideranca_channel_id",
+    "painel_lideranca_message_id",
+})
+
 
 def _ensure_column(conn: sqlite3.Connection, table: str, col: str, definition: str) -> None:
     cols = [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
@@ -477,67 +528,83 @@ def _ensure_column(conn: sqlite3.Connection, table: str, col: str, definition: s
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {definition}")
 
 
-def _migrate_ticket_active_uniqueness(conn: sqlite3.Connection) -> None:
-    table_sql = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='farm_tickets'"
-    ).fetchone()[0]
-    normalized = " ".join(table_sql.lower().split())
-    if "unique (guild_id, week_id, user_id)" not in normalized:
-        return
+def _apply_legacy_columns(conn: sqlite3.Connection) -> bool:
+    for table, column, definition in LEGACY_COLUMN_MIGRATIONS:
+        _ensure_column(conn, table, column, definition)
+    return True
 
-    conn.execute("ALTER TABLE farm_tickets RENAME TO farm_tickets_legacy")
+
+def _apply_set_request_schema(conn: sqlite3.Connection) -> bool:
+    # A tabela também faz parte do SCHEMA_SQL para instalações novas. Estas
+    # instruções tornam a etapa explícita e segura para bases existentes.
     conn.execute(
-        """CREATE TABLE farm_tickets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        """CREATE TABLE IF NOT EXISTS set_requests (
+            request_id TEXT PRIMARY KEY,
             guild_id TEXT NOT NULL,
-            week_id TEXT NOT NULL,
-            user_id TEXT NOT NULL,
-            member_name TEXT NOT NULL,
-            folder_channel_id TEXT,
-            folder_slot INTEGER,
-            game_id TEXT,
-            folder_nickname TEXT,
-            channel_id TEXT,
-            panel_message_id TEXT,
-            log_message_id TEXT,
-            log_thread_id TEXT,
-            status TEXT NOT NULL DEFAULT 'criando',
-            assigned_to TEXT,
-            criado_em TEXT NOT NULL,
-            atualizado_em TEXT NOT NULL,
-            finalizado_em TEXT,
-            finalizado_por TEXT,
-            finalizacao_motivo TEXT,
-            excluido_em TEXT
+            requester_user_id TEXT NOT NULL,
+            target_name TEXT NOT NULL,
+            id_jogo TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            approval_channel_id TEXT NOT NULL,
+            approval_message_id TEXT,
+            decided_by TEXT,
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            processing_started_at TEXT
         )"""
     )
-    columns = (
-        "id, guild_id, week_id, user_id, member_name, folder_channel_id, folder_slot, "
-        "game_id, folder_nickname, channel_id, panel_message_id, log_message_id, "
-        "log_thread_id, status, assigned_to, "
-        "criado_em, atualizado_em, finalizado_em, finalizado_por, finalizacao_motivo, excluido_em"
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_set_requests_pending_user
+           ON set_requests (guild_id, requester_user_id, status)"""
     )
     conn.execute(
-        f"INSERT INTO farm_tickets ({columns}) SELECT {columns} FROM farm_tickets_legacy"
+        """CREATE INDEX IF NOT EXISTS idx_set_requests_approval_message
+           ON set_requests (guild_id, approval_channel_id, approval_message_id)"""
     )
-    conn.execute("DROP TABLE farm_tickets_legacy")
-    conn.execute(
-        "CREATE INDEX idx_farm_tickets_channel ON farm_tickets (guild_id, channel_id)"
-    )
-    conn.execute(
-        "CREATE INDEX idx_farm_tickets_status_week ON farm_tickets (status, week_id)"
-    )
-    conn.execute(
-        """CREATE UNIQUE INDEX idx_farm_tickets_active_member
-           ON farm_tickets (guild_id, week_id, user_id)
-           WHERE status IN ('criando', 'aberto', 'revisao')"""
-    )
+    return True
+
+
+def _apply_farm_active_ticket_index(conn: sqlite3.Connection, log: logging.Logger) -> bool:
+    try:
+        conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_farm_tickets_active_member
+               ON farm_tickets (guild_id, week_id, user_id)
+               WHERE status IN ('criando', 'aberto', 'revisao')"""
+        )
+    except sqlite3.IntegrityError:
+        # Dados conflitantes ficam intactos. A ausência do índice é registrada
+        # para permitir correção manual e uma nova tentativa futura.
+        log.warning(
+            "Índice de ticket ativo não aplicado: existem membros duplicados "
+            "na mesma guild/semana; nenhum dado foi removido."
+        )
+        return False
+    return True
+
+
+VERSIONED_MIGRATIONS = (
+    (1, "ensure legacy columns", _apply_legacy_columns),
+    (2, "ensure persistent set requests", _apply_set_request_schema),
+    (3, "ensure active farm ticket index", _apply_farm_active_ticket_index),
+)
 
 
 def ensure_schema(conn: sqlite3.Connection, db_path: Path, log: logging.Logger) -> None:
     conn.executescript(SCHEMA_SQL)
-    for table, column, definition in MIGRATIONS:
-        _ensure_column(conn, table, column, definition)
-    _migrate_ticket_active_uniqueness(conn)
+    applied = {
+        row[0]
+        for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
+    }
+    for version, name, migration in VERSIONED_MIGRATIONS:
+        if version in applied:
+            continue
+        completed = migration(conn, log) if version == 3 else migration(conn)
+        if not completed:
+            continue
+        conn.execute(
+            """INSERT INTO schema_migrations (version, name, applied_at)
+               VALUES (?, ?, CURRENT_TIMESTAMP)""",
+            (version, name),
+        )
     conn.commit()
     log.info("Banco inicializado: %s", db_path)

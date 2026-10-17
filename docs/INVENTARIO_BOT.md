@@ -98,7 +98,13 @@ de uso e fallback compatível:
 - Disparo: categoria `1474869322387292362`.
 - Rádio: canal `1474869321863008296`.
 - Ranking: categoria `1504287738298372216`.
-- Colete/farm: IDs fixos encontrados em `cogs/colete.py` e `cogs/farm.py`.
+- Farm: canal de avisos de meta `1474869321506488447`.
+- Colete: canal de log de fabricação `1506880362633236630`.
+- Liderança: canal padrão do painel `1506885629181689886`.
+- Hierarquia: cargos autorizados `1474869320684146847`,
+  `1474869320684146846` e `1490821840191619322`.
+- Atualização de preços: canal de referência `1474869322139566167` em
+  `scripts/atualizar_precos.py`.
 - Dashboard: canal `1494692392052461588`; os IDs de exemplo
   `111222333444555` e `666777888999000` aparecem como valores de fallback/teste
   no código e não foram tratados como IDs reais.

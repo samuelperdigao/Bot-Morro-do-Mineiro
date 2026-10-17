@@ -5,14 +5,17 @@ import asyncio
 import discord
 from discord.ext import commands
 
-from core.config import CANAL_LOG_ENTRADA_ID, CANAL_LOG_PD_ID
 from core.date_utils import format_datetime_br
 from core.discord_helpers import fetch_channel_safe
 from core.logger import get_logger
+from core.settings import get_legacy_channel_id
 from services.db_service import db_channel_map_all, db_get_guild_config
 from services.set_service import liberar_pasta
 
 log = get_logger("bot", "bot.log")
+
+CANAL_LOG_ENTRADA_ID = get_legacy_channel_id("entry_log")
+CANAL_LOG_PD_ID = get_legacy_channel_id("pd_log")
 
 
 def _format_delta(delta) -> str:

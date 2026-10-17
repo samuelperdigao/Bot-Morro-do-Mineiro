@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from core.config import DB_PATH, TZ_STR
 from core.date_utils import format_datetime_br
-from services.db_schema import ensure_schema
+from services.db_schema import GUILD_CONFIG_FIELDS, ensure_schema
 
 log = logging.getLogger("farm")
 
@@ -246,6 +246,12 @@ def db_get_guild_config(guild_id: str) -> sqlite3.Row | None:
 
 def db_set_guild_config(guild_id: str, **fields):
     """Upsert parcial de guild_config. Passa apenas os campos a atualizar."""
+    invalid = set(fields) - GUILD_CONFIG_FIELDS
+    if invalid:
+        raise ValueError(
+            "Campos de guild_config não permitidos: "
+            + ", ".join(sorted(invalid))
+        )
     conn = get_conn()
     existing = conn.execute(
         "SELECT guild_id FROM guild_config WHERE guild_id=?", (guild_id,)
