@@ -25,6 +25,10 @@ from services.db_service import (
     db_ranking_semana,
 )
 from services.paineis_service import PainelOperacoesView, PainelSetView
+from ui.views.operacoes import (
+    PAINEL_OPERACOES_CONTAINER_TEST_CUSTOM_IDS,
+    PainelOperacoesContainerView,
+)
 import logging
 
 log = logging.getLogger("paineis")
@@ -222,6 +226,12 @@ class PaineisCog(commands.Cog):
         self.bot = bot
         # Registra views persistentes para sobreviver a reinicializações do bot
         bot.add_view(PainelOperacoesView())
+        bot.add_view(PainelOperacoesContainerView())
+        bot.add_view(
+            PainelOperacoesContainerView(
+                custom_ids=PAINEL_OPERACOES_CONTAINER_TEST_CUSTOM_IDS,
+            )
+        )
         bot.add_view(PainelSetView())
         bot.add_view(LegacyPainelFarmView())
 

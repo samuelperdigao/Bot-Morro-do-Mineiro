@@ -508,6 +508,9 @@ class DisparoCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         bot.add_view(BroadcastView())
+        from ui.views.disparo import BroadcastContainerView
+
+        bot.add_view(BroadcastContainerView())
 
     @app_commands.command(
         name="painel_disparo",
@@ -515,9 +518,10 @@ class DisparoCog(commands.Cog):
     )
     @app_commands.guild_only()
     async def painel_disparo(self, interaction: discord.Interaction) -> None:
+        from ui.views.disparo import BroadcastContainerView
+
         await interaction.response.send_message(
-            embed=build_broadcast_embed(),
-            view=BroadcastView(),
+            view=BroadcastContainerView(),
         )
         log.info(
             "Painel de disparo postado por %s (%s) no canal %s.",

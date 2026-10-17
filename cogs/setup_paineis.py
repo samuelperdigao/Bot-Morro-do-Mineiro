@@ -7,10 +7,9 @@ from discord.ext import commands
 from discord import app_commands
 from services.db_service import db_is_bot_configured, db_set_guild_config
 from services.paineis_service import (
-    PainelOperacoesView,
-    criar_embed_painel_operacoes,
     painel_set_logo_file,
 )
+from ui.views.operacoes import PainelOperacoesContainerView
 from ui.views.set import SetContainerPanelView
 import logging
 
@@ -41,8 +40,7 @@ class SetupPaineisCog(commands.Cog):
 
         try:
             msg_ops = await interaction.channel.send(
-                embed=criar_embed_painel_operacoes(),
-                view=PainelOperacoesView(),
+                view=PainelOperacoesContainerView(),
             )
 
             db_set_guild_config(
@@ -65,6 +63,47 @@ class SetupPaineisCog(commands.Cog):
         else:
             log.error("Erro em /setup_painel_operacoes: %s", error, exc_info=True)
             await interaction.response.send_message(f"❌ Erro inesperado: {error}", ephemeral=True)
+
+    @app_commands.command(
+        name="setup_operacoes_container_teste",
+        description="Posta o painel Container de operações neste canal para teste.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def setup_operacoes_container_teste(self, interaction: discord.Interaction):
+        from ui.views.operacoes import (
+            PAINEL_OPERACOES_CONTAINER_TEST_CUSTOM_IDS,
+            PainelOperacoesContainerView,
+        )
+
+        await interaction.channel.send(
+            view=PainelOperacoesContainerView(
+                custom_ids=PAINEL_OPERACOES_CONTAINER_TEST_CUSTOM_IDS,
+            )
+        )
+        await interaction.response.send_message(
+            "Painel Container de operações postado para teste.",
+            ephemeral=True,
+        )
+
+    @setup_operacoes_container_teste.error
+    async def _erro_setup_ops_container_teste(
+        self,
+        interaction: discord.Interaction,
+        error: app_commands.AppCommandError,
+    ):
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message(
+                "Sem permissao para usar este comando.", ephemeral=True
+            )
+        else:
+            log.error(
+                "Erro em /setup_operacoes_container_teste: %s",
+                error,
+                exc_info=True,
+            )
+            await interaction.response.send_message(
+                f"Erro inesperado: {error}", ephemeral=True
+            )
 
     @app_commands.command(
         name="setup_painel_set",
