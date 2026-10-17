@@ -9,6 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from core.farm_policy import FARM_HIERARCHY_ROLES
 from core.logger import get_logger
 from services.db_service import db_get_system_config
 from services.log_service import send_log
@@ -18,19 +19,7 @@ log = get_logger("hierarquia", "bot.log")
 COR_HIERARQUIA = 0xFFD700
 FOOTER_HIERARQUIA = "Morro do Mineiro — Sistema de Hierarquia"
 
-HIERARQUIA_CARGOS = [
-    "| Pedir Set",
-    "| Membro",
-    "| Gerente de Recrutamento",
-    "| Gerente de Ação",
-    "| Gerente de Farm",
-    "| Gerente de Produção",
-    "| Gerente de Produtos",
-    "| Gerente Geral",
-    "| 03",
-    "| 02",
-    "| 01 Dono",
-]
+HIERARQUIA_CARGOS = list(FARM_HIERARCHY_ROLES)
 
 CARGOS_IGNORADOS = {
     "| Bots", "| Programador Dev", "| Loritta", "| Rio Bot",

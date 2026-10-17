@@ -145,6 +145,47 @@ class FarmReportLayoutTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(embeds[0].fields, [])
 
+    async def test_unified_report_keeps_managers_in_separate_section(self):
+        meta = {
+            "meta_tipo": "itens",
+            "itens_json": '{"Borracha": 50}',
+            "folha": 0,
+            "opio": 0,
+            "seringa": 0,
+            "agulha": 0,
+            "meta_dinheiro": 0,
+        }
+        snapshot = {
+            "obrigados": [{"user_id": "10", "display_name": "Membro"}],
+            "entregaram": [],
+            "parciais": [],
+            "ausentes": [],
+            "isentos": [],
+            "pendentes": [{"user_id": "10", "display_name": "Membro"}],
+            "gerentes": [
+                {
+                    "user_id": "20",
+                    "display_name": "Gerente",
+                    "status": "pendente",
+                    "nivel": 1,
+                }
+            ],
+        }
+
+        embeds = build_pending_report_embeds(
+            meta,
+            "2026-06-15",
+            snapshot["obrigados"],
+            set(),
+            status_snapshot=snapshot,
+        )
+        fields = [field for embed in embeds for field in embed.fields]
+
+        self.assertIn("Gerente", "\n".join(field.value for field in fields))
+        manager_fields = [field for field in fields if "Gerentes" in field.name]
+        self.assertEqual(len(manager_fields), 1)
+        self.assertNotIn("Gerente", next(field.value for field in fields if field.name == "❌ Pendentes"))
+
 
 class FarmReportPermissionTests(unittest.TestCase):
     def setUp(self):

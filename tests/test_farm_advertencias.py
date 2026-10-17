@@ -170,6 +170,31 @@ class FarmAdvertenciasTests(unittest.TestCase):
         self.assertEqual(snapshot["pendentes"], [])
         self.assertEqual([item["user_id"] for item in snapshot["isentos"]], ["10"])
 
+    def test_manager_is_separated_and_never_enters_automatic_warning_list(self):
+        guild_id = "1"
+        week_id = "2026-06-15"
+        farm_role = FakeRole(50)
+        manager_role = FakeRole(70, "| Gerente de Farm")
+        manager = FakeMember(10, "Gerente", [farm_role, manager_role])
+
+        db.db_set_guild_config(
+            guild_id,
+            cargos_permitidos_farm="50",
+            cargos_lideranca_farm="70",
+            farm_adv1_role_id="101",
+            farm_adv2_role_id="102",
+            farm_adv3_role_id="103",
+        )
+        db.db_set_meta(guild_id, week_id, {"Borracha": 100}, "99")
+
+        snapshot = build_farm_warning_preview(
+            FakeGuild([manager]), guild_id, week_id
+        )
+
+        self.assertEqual(snapshot["pendentes"], [])
+        self.assertEqual([item["user_id"] for item in snapshot["gerentes"]], ["10"])
+        self.assertEqual(snapshot["gerentes"][0]["status"], "pendente")
+
     def test_panel_uses_stable_title_for_message_recovery(self):
         embed = build_panel_embed(SimpleNamespace(), "1")
 
@@ -212,6 +237,26 @@ class FarmAdvertenciasTests(unittest.TestCase):
 
 
 class FarmAdvertenciasInteractionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_automatic_application_rejects_manager_for_manual_review(self):
+        cog = FarmAdvertenciasCog.__new__(FarmAdvertenciasCog)
+        manager = FakeMember(
+            10,
+            "Gerente",
+            [FakeRole(50), FakeRole(70, "| Gerente de Farm")],
+        )
+        interaction = SimpleNamespace(
+            guild=SimpleNamespace(get_member=lambda _user_id: manager),
+        )
+
+        result = await cog._apply_warning_item(
+            interaction,
+            {"guild_id": "1", "week_id": "2026-06-15"},
+            {"user_id": "10", "display_name": "Gerente", "nivel": 1},
+            {1: "101", 2: "102", 3: "103"},
+        )
+
+        self.assertEqual(result["status"], "gerente_revisao_manual")
+
     async def test_apply_ignores_member_who_left_after_preview(self):
         cog = FarmAdvertenciasCog.__new__(FarmAdvertenciasCog)
         interaction = SimpleNamespace(

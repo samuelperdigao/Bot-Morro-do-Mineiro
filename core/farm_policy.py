@@ -9,6 +9,23 @@ from core.date_utils import BRAZIL_TZ
 
 FarmWeekMembership = Literal["obrigado", "isento_entrada", "fora_da_semana"]
 
+# Mantida aqui para que o relatório e o fechamento de advertências usem a
+# mesma ordem de hierarquia sem depender de um cog específico.
+FARM_HIERARCHY_ROLES = (
+    "| Pedir Set",
+    "| Membro",
+    "| Gerente de Recrutamento",
+    "| Gerente de Ação",
+    "| Gerente de Farm",
+    "| Gerente de Produção",
+    "| Gerente de Produtos",
+    "| Gerente Geral",
+    "| 03",
+    "| 02",
+    "| 01 Dono",
+)
+FARM_WARNING_HIERARCHY_CUTOFF = "| 02"
+
 FARM_TICKET_ONLY_MESSAGE = """⚠️ **Sistema atualizado**
 
 O modo antigo de lançamento de farm foi desativado.
@@ -54,3 +71,41 @@ def member_is_exempt_from_farm(member, week_id: str) -> bool:
 def previous_farm_week_id(week_id: str) -> str:
     """Retorna a semana imediatamente encerrada antes da semana informada."""
     return (date.fromisoformat(week_id) - timedelta(days=7)).isoformat()
+
+
+def _normalize_role_name(name: str) -> str:
+    normalized = str(name or "").strip()
+    while normalized and not normalized[0].isalnum():
+        normalized = normalized[1:].lstrip()
+    return normalized.casefold()
+
+
+def is_farm_manager(member) -> bool:
+    """Indica se o membro possui algum cargo de gerente."""
+    return any(
+        _normalize_role_name(getattr(role, "name", "")).startswith("gerente")
+        for role in getattr(member, "roles", ()) or ()
+    )
+
+
+def _highest_farm_hierarchy_index(member) -> int | None:
+    indexes = [
+        FARM_HIERARCHY_ROLES.index(getattr(role, "name", ""))
+        for role in getattr(member, "roles", ()) or ()
+        if getattr(role, "name", "") in FARM_HIERARCHY_ROLES
+    ]
+    return max(indexes) if indexes else None
+
+
+def is_farm_warning_eligible(member, permitted_role_ids: list[int]) -> bool:
+    """Aplica a mesma elegibilidade usada pelo fechamento de Farm."""
+    if getattr(member, "bot", False):
+        return False
+    if {
+        getattr(role, "id", None)
+        for role in getattr(member, "roles", ()) or ()
+    } & set(permitted_role_ids):
+        return True
+    cutoff = FARM_HIERARCHY_ROLES.index(FARM_WARNING_HIERARCHY_CUTOFF)
+    member_index = _highest_farm_hierarchy_index(member)
+    return member_index is not None and member_index < cutoff

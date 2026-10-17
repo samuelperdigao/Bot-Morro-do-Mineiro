@@ -9,9 +9,14 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from core.farm_policy import farm_week_membership, member_joined_date, previous_farm_week_id
+from core.farm_policy import (
+    farm_week_membership,
+    is_farm_manager,
+    is_farm_warning_eligible,
+    member_joined_date,
+    previous_farm_week_id,
+)
 from core.logger import get_logger
-from core.permissions import is_permitido_farm
 from services.db_service import (
     current_week_id,
     db_farm_report_get,
@@ -21,9 +26,9 @@ from services.db_service import (
     db_get_permitidos_role_ids,
     db_is_farm_configured,
     db_meta_tipo_efetivo,
-    db_ticket_approved_user_ids,
     db_ticket_config_get,
 )
+from services.farm_status_service import build_farm_week_snapshot
 
 log = get_logger("farm_relatorio", "farm.log")
 
@@ -67,7 +72,8 @@ def snapshot_eligible_members(
         for member in guild.members
         if (
             not member.bot
-            and is_permitido_farm(member, permitted_role_ids)
+            and is_farm_warning_eligible(member, permitted_role_ids)
+            and not is_farm_manager(member)
             and farm_week_membership(member, week_id) == "obrigado"
         )
     ]
@@ -115,7 +121,8 @@ def report_member_control(
     for member in guild.members:
         if (
             getattr(member, "bot", False)
-            or not is_permitido_farm(member, permitted_role_ids)
+            or not is_farm_warning_eligible(member, permitted_role_ids)
+            or is_farm_manager(member)
             or farm_week_membership(member, week_id) != "isento_entrada"
         ):
             continue
@@ -160,6 +167,23 @@ def _chunk_pending_names(names: list[str]) -> list[str]:
     return chunks
 
 
+def _chunk_report_lines(lines: list[str]) -> list[str]:
+    chunks: list[str] = []
+    current: list[str] = []
+    current_length = 0
+    for line in lines:
+        added_length = len(line) + (1 if current else 0)
+        if current and current_length + added_length > REPORT_FIELD_LIMIT:
+            chunks.append("\n".join(current))
+            current = []
+            current_length = 0
+        current.append(line)
+        current_length += added_length
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
 def build_pending_report_embeds(
     meta,
     week_id: str,
@@ -168,16 +192,40 @@ def build_pending_report_embeds(
     *,
     exempt_members: list[dict[str, str]] | None = None,
     departed_members: list[dict[str, str]] | None = None,
+    status_snapshot: dict | None = None,
 ) -> list[discord.Embed]:
     exempt_members = exempt_members or []
     departed_members = departed_members or []
-    required_ids = {str(member["user_id"]) for member in required_members}
-    delivered_ids = required_ids.intersection(approved_user_ids)
-    pending = [
-        member
-        for member in required_members
-        if str(member["user_id"]) not in delivered_ids
-    ]
+    if status_snapshot is None:
+        required_ids = {str(member["user_id"]) for member in required_members}
+        delivered_ids = required_ids.intersection(approved_user_ids)
+        delivered_members = [
+            member
+            for member in required_members
+            if str(member["user_id"]) in delivered_ids
+        ]
+        partial_members: list[dict] = []
+        absence_members: list[dict] = []
+        manager_members: list[dict] = []
+        pending = [
+            member
+            for member in required_members
+            if str(member["user_id"]) not in delivered_ids
+        ]
+    else:
+        required_members = status_snapshot.get("obrigados", [])
+        required_ids = {str(member["user_id"]) for member in required_members}
+        delivered_members = status_snapshot.get("entregaram", [])
+        delivered_ids = {str(member["user_id"]) for member in delivered_members}
+        partial_members = status_snapshot.get("parciais", [])
+        absence_members = status_snapshot.get("ausentes", [])
+        manager_members = status_snapshot.get("gerentes", [])
+        pending = status_snapshot.get("pendentes", [])
+
+    delivered_members.sort(key=lambda member: member.get("display_name", "").casefold())
+    partial_members.sort(key=lambda member: member.get("display_name", "").casefold())
+    absence_members.sort(key=lambda member: member.get("display_name", "").casefold())
+    manager_members.sort(key=lambda member: member.get("display_name", "").casefold())
     pending.sort(key=lambda member: member.get("display_name", "").casefold())
 
     summary = (
@@ -186,9 +234,12 @@ def build_pending_report_embeds(
         f"👥 **Membros obrigados:** {len(required_ids)}\n"
         f"✅ **Entregaram:** {len(delivered_ids)}\n"
         f"❌ **Pendentes:** {len(pending)}\n"
-        f"🛡️ **Isentos (entraram na semana):** {len(exempt_members)}"
+        f"🟡 **Parciais:** {len(partial_members)}\n"
+        f"📌 **Ausências:** {len(absence_members)}\n"
+        f"🛡️ **Isentos (entraram na semana):** {len(exempt_members)}\n"
+        f"🧑‍💼 **Gerentes — decisão manual:** {len(manager_members)}"
     )
-    if departed_members:
+    if departed_members and status_snapshot is None:
         summary += (
             f"\n🚪 **Desconsiderados (saíram do servidor):** "
             f"{len(departed_members)}"
@@ -197,32 +248,101 @@ def build_pending_report_embeds(
         summary += "\n\n✅ Todos os membros obrigados entregaram a meta desta semana."
 
     first = discord.Embed(
-        title="📋 Relatório de Pendentes — Semana Atual",
+        title="📋 Relatório de Farm — Semana Atual",
         description=summary,
         color=discord.Color.green() if not pending else discord.Color.red(),
     )
     embeds = [first]
 
-    for index, chunk in enumerate(
-        _chunk_pending_names(
-            [member.get("display_name") or "Apelido indisponível" for member in pending]
-        )
-    ):
-        current = embeds[-1]
-        if len(current.fields) == REPORT_FIELDS_PER_EMBED:
-            current = discord.Embed(
-                title="📋 Relatório de Pendentes — Continuação",
-                color=discord.Color.red(),
+    # Mantém a renderização legada para chamadas externas/testes antigos. O
+    # fluxo oficial do cog usa ``status_snapshot`` e renderiza todas as abas.
+    if status_snapshot is None:
+        for index, chunk in enumerate(
+            _chunk_pending_names(
+                [member.get("display_name") or "Apelido indisponível" for member in pending]
             )
-            embeds.append(current)
-        current.add_field(
-            name="❌ Não entregaram:" if index == 0 else "❌ Não entregaram (continuação):",
-            value=chunk,
-            inline=False,
-        )
+        ):
+            current = embeds[-1]
+            if len(current.fields) >= REPORT_FIELDS_PER_EMBED:
+                current = discord.Embed(
+                    title="📋 Relatório de Pendentes — Continuação",
+                    color=discord.Color.red(),
+                )
+                embeds.append(current)
+            current.add_field(
+                name="❌ Não entregaram:" if index == 0 else "❌ Não entregaram (continuação):",
+                value=chunk,
+                inline=False,
+            )
+        for embed in embeds:
+            embed.set_footer(
+                text="Morro do Mineiro • semana aberta • atualização automática"
+            )
+        return embeds
+
+    sections = [
+        (
+            "✅ Entregaram",
+            [f"- {member.get('display_name') or 'Apelido indisponível'}" for member in delivered_members],
+        ),
+        (
+            "🟡 Parciais — cobrança manual",
+            [
+                f"- {member.get('display_name') or 'Apelido indisponível'} ({member.get('pct', 0)}%)"
+                for member in partial_members
+            ],
+        ),
+        (
+            "❌ Pendentes",
+            [f"- {member.get('display_name') or 'Apelido indisponível'}" for member in pending],
+        ),
+        (
+            "📌 Ausências",
+            [f"- {member.get('display_name') or 'Apelido indisponível'}" for member in absence_members],
+        ),
+        (
+            "🛡️ Isentos — entrada na semana",
+            [
+                f"- {member.get('display_name') or 'Apelido indisponível'}"
+                for member in exempt_members
+            ],
+        ),
+        (
+            "🧑‍💼 Gerentes — decisão manual",
+            [
+                (
+                    f"- {member.get('display_name') or 'Apelido indisponível'} — entrou na semana"
+                    if member.get("status") == "isento_entrada"
+                    else f"- {member.get('display_name') or 'Apelido indisponível'} — entregou"
+                    if member.get("status") == "entregou"
+                    else f"- {member.get('display_name') or 'Apelido indisponível'} — parcial ({member.get('pct', 0)}%)"
+                    if member.get("status") == "parcial"
+                    else f"- {member.get('display_name') or 'Apelido indisponível'} — ausência registrada"
+                    if member.get("status") == "ausente"
+                    else f"- {member.get('display_name') or 'Apelido indisponível'} — pendente, não aplicar automaticamente"
+                )
+                for member in manager_members
+            ],
+        ),
+    ]
+    for name, lines in sections:
+        if not lines:
+            continue
+        for index, chunk in enumerate(_chunk_report_lines(lines)):
+            current = embeds[-1]
+            if len(current.fields) >= REPORT_FIELDS_PER_EMBED:
+                current = discord.Embed(
+                    title="📋 Relatório de Farm — Continuação",
+                    color=discord.Color.red(),
+                )
+                embeds.append(current)
+            suffix = "" if index == 0 else " (continuação)"
+            current.add_field(name=f"{name}{suffix}", value=chunk, inline=False)
 
     for embed in embeds:
-        embed.set_footer(text="Morro do Mineiro • semana aberta • atualização automática")
+        embed.set_footer(
+            text="Morro do Mineiro • semana aberta • gerentes exigem decisão manual"
+        )
     return embeds
 
 
@@ -234,6 +354,7 @@ def build_report_panel_embed() -> discord.Embed:
             "aplicadas automaticamente.\n\n"
             "🛡️ Quem entrou durante a semana fica **isento**.\n"
             "🚪 Quem saiu do servidor é **retirado da contagem**.\n"
+            "🧑‍💼 Gerentes aparecem em seção própria e exigem decisão manual.\n"
             "🔄 O relatório é atualizado automaticamente a cada 5 minutos.\n"
             "📋 Use o botão para atualizar imediatamente."
         ),
@@ -442,19 +563,14 @@ class FarmPendingReportCog(commands.Cog):
             )
             return week_id, False
 
-        current_members = snapshot_eligible_members(guild, guild_id, week_id)
-        required_members, exempt_members, _ = report_member_control(
-            guild,
-            guild_id,
-            week_id,
-            current_members,
-        )
+        status_snapshot = build_farm_week_snapshot(guild, guild_id, week_id)
         embeds = build_pending_report_embeds(
             meta,
             week_id,
-            required_members,
-            db_ticket_approved_user_ids(guild_id, week_id),
-            exempt_members=exempt_members,
+            status_snapshot.get("obrigados", []),
+            set(),
+            exempt_members=status_snapshot.get("isentos", []),
+            status_snapshot=status_snapshot,
         )
         await self._upsert_report_message(channel, embeds)
         return week_id, True
