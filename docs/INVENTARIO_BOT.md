@@ -33,7 +33,8 @@ Módulos de apoio que não são extensões: `cogs.set_views`, `cogs.bau_core`,
   `/setup_farm_painel`, `/setup_acao_painel`, `/setup_hierarquia`,
   `/setup_radio_painel`, `/setup_ranking_painel`, `/setup_relatorio_farm`,
   `/setup_parcerias`, `/setup_bau`, `/setup_bau_gerentes`,
-  `/setup_painel_disparo`.
+  `/setup_painel_disparo`, `/setup_set_container_teste`,
+  `/setup_farm_container_teste` e `/setup_acao_container_teste`.
 - Farm: `/meta`, `/farm`, `/resultado`, `/historico`, `/ranking`,
   `/definir_metas`, `/lancar`, `/editar`, `/aprovar_farm`, `/avisos_farm`,
   `/farm_membro`, `/farm_ausencia`, `/setup_farm_advertencias`,
@@ -56,6 +57,11 @@ Views persistentes (`timeout=None`) encontradas:
   (`approval:aprovar`, `approval:reprovar`).
 - Painéis: `PainelOperacoesView`, `PainelSetView`
   (`painel_set:pedir`) e painel legado de Farm.
+- Containers V2 de teste: `SetContainerPanelView`
+  (`set_container_test:pedir`), `FarmContainerPanelView`
+  (`farm_container_test:*`) e `AcaoContainerPanelView`
+  (`acao_container_test:iniciar`). Todos usam namespace próprio e delegam aos
+  callbacks das views legadas equivalentes.
 - Farm/tickets: `FarmTicketView`, painel de advertências, relatório pendente,
   painel de hierarquia, painel de ação, painel de encomendas, painel de
   ausência, painel de anúncio, painel de rádio e painéis de recolhimento.
