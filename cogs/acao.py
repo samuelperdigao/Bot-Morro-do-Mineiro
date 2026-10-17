@@ -12,14 +12,8 @@ from discord.ext import commands
 from core.date_utils import DATE_BR_EXAMPLE, normalize_date_br
 from core.logger import get_logger
 from core.permissions import is_lideranca
+from services.acao_service import acao_service
 from services.db_service import (
-    db_acao_criar,
-    db_acao_finalizar,
-    db_acao_get,
-    db_acao_get_by_message,
-    db_acao_participante_add,
-    db_acao_participante_remove,
-    db_acao_participantes,
     db_get_lideranca_role_ids,
     db_get_system_config,
 )
@@ -638,7 +632,16 @@ class AcaoSelectView(discord.ui.View):
         embed = _build_regras_embed(acao_key, horario=self.horario, tipo=self.tipo, data=self.data, criador_id=self.criador_id)
         await interaction.response.send_message(embed=embed, view=AcaoParticipantesView())
         msg = await interaction.original_response()
-        acao_id = db_acao_criar(str(interaction.guild_id), acao_key, self.tipo, self.data, self.horario, self.criador_id, str(msg.channel.id), str(msg.id))
+        acao_id = acao_service.create(
+            str(interaction.guild_id),
+            acao_key,
+            self.tipo,
+            self.data,
+            self.horario,
+            self.criador_id,
+            str(msg.channel.id),
+            str(msg.id),
+        )
         try:
             await interaction.message.delete()
         except Exception:
@@ -653,10 +656,10 @@ class AcaoParticipantesView(discord.ui.View):
     def _load(self, interaction: discord.Interaction):
         if not interaction.message:
             return None
-        return db_acao_get_by_message(str(interaction.guild_id), str(interaction.message.id))
+        return acao_service.get_by_message(str(interaction.guild_id), str(interaction.message.id))
 
     async def _refresh_message(self, interaction: discord.Interaction, acao_row):
-        participantes = db_acao_participantes(int(acao_row["id"]))
+        participantes = acao_service.participants(int(acao_row["id"]))
         embed = _build_regras_embed(
             acao_row["acao_key"],
             participantes,
@@ -676,16 +679,25 @@ class AcaoParticipantesView(discord.ui.View):
         if not acao_row or acao_row["status"] != "aberta":
             await interaction.response.send_message("❌ Ação não encontrada ou já finalizada.", ephemeral=True)
             return
-        participantes = db_acao_participantes(int(acao_row["id"]))
         max_b = ACOES[acao_row["acao_key"]]["max_bandidos"]
-        if max_b and len(participantes) >= max_b:
-            await interaction.response.send_message(f"❌ Vagas esgotadas (máximo: {max_b}).", ephemeral=True)
-            return
-        added = db_acao_participante_add(int(acao_row["id"]), str(interaction.user.id), interaction.user.display_name, "self", str(interaction.user.id))
-        if not added:
+        result = acao_service.add_participant(
+            int(acao_row["id"]),
+            str(interaction.user.id),
+            interaction.user.display_name,
+            "self",
+            str(interaction.user.id),
+            max_b,
+        )
+        if not result.added:
+            if result.reason == "closed":
+                await interaction.response.send_message("❌ Ação não encontrada ou já finalizada.", ephemeral=True)
+                return
+            if result.reason == "full":
+                await interaction.response.send_message(f"❌ Vagas esgotadas (máximo: {max_b}).", ephemeral=True)
+                return
             await interaction.response.send_message("⚠️ Você já está inscrito nesta ação.", ephemeral=True)
             return
-        acao_row = db_acao_get(int(acao_row["id"]))
+        acao_row = acao_service.get(int(acao_row["id"]))
         await self._refresh_message(interaction, acao_row)
         await interaction.followup.send(f"✅ {interaction.user.mention} inscrito na ação!", ephemeral=True)
 
@@ -695,11 +707,11 @@ class AcaoParticipantesView(discord.ui.View):
         if not acao_row or acao_row["status"] != "aberta":
             await interaction.response.send_message("❌ Ação não encontrada ou já finalizada.", ephemeral=True)
             return
-        removed = db_acao_participante_remove(int(acao_row["id"]), str(interaction.user.id))
+        removed = acao_service.remove_participant(int(acao_row["id"]), str(interaction.user.id))
         if not removed:
             await interaction.response.send_message("⚠️ Você não está inscrito nesta ação.", ephemeral=True)
             return
-        acao_row = db_acao_get(int(acao_row["id"]))
+        acao_row = acao_service.get(int(acao_row["id"]))
         await self._refresh_message(interaction, acao_row)
         await interaction.followup.send(f"🚪 {interaction.user.mention} removido da ação.", ephemeral=True)
 
@@ -712,7 +724,7 @@ class AcaoParticipantesView(discord.ui.View):
         if not _is_lideranca(interaction.user, str(interaction.guild_id)):
             await interaction.response.send_message("❌ Apenas liderança pode adicionar membros.", ephemeral=True)
             return
-        inscritos = {p["user_id"] for p in db_acao_participantes(int(acao_row["id"]))}
+        inscritos = {p["user_id"] for p in acao_service.participants(int(acao_row["id"]))}
         membros = sorted([m for m in interaction.guild.members if not m.bot and str(m.id) not in inscritos], key=lambda m: m.display_name.lower())
         if not membros:
             await interaction.response.send_message("⚠️ Nenhum membro disponível para adicionar.", ephemeral=True)
@@ -733,7 +745,7 @@ class AcaoParticipantesView(discord.ui.View):
         if not _is_lideranca(interaction.user, str(interaction.guild_id)):
             await interaction.response.send_message("❌ Apenas liderança pode remover membros.", ephemeral=True)
             return
-        participantes = db_acao_participantes(int(acao_row["id"]))
+        participantes = acao_service.participants(int(acao_row["id"]))
         if not participantes:
             await interaction.response.send_message("⚠️ Nenhum membro inscrito para remover.", ephemeral=True)
             return
@@ -785,7 +797,7 @@ class AdicionarMembroPaginadoView(discord.ui.View):
             self.add_item(nxt)
 
     async def _on_select(self, interaction: discord.Interaction):
-        acao_row = db_acao_get(self.acao_id)
+        acao_row = acao_service.get(self.acao_id)
         if not acao_row or acao_row["status"] != "aberta":
             await interaction.response.edit_message(content="❌ Ação não encontrada ou já finalizada.", view=None)
             return
@@ -797,17 +809,26 @@ class AdicionarMembroPaginadoView(discord.ui.View):
             except Exception:
                 await interaction.response.edit_message(content="❌ Membro não encontrado no servidor.", view=None)
                 return
-        participantes = db_acao_participantes(self.acao_id)
         max_b = ACOES[acao_row["acao_key"]]["max_bandidos"]
-        if max_b and len(participantes) >= max_b:
-            await interaction.response.edit_message(content=f"❌ Vagas esgotadas (máximo: {max_b}).", view=None)
-            return
-        added = db_acao_participante_add(self.acao_id, str(member.id), member.display_name, "lideranca_add", str(interaction.user.id))
-        if not added:
+        result = acao_service.add_participant(
+            self.acao_id,
+            str(member.id),
+            member.display_name,
+            "lideranca_add",
+            str(interaction.user.id),
+            max_b,
+        )
+        if not result.added:
+            if result.reason == "closed":
+                await interaction.response.edit_message(content="❌ Ação não encontrada ou já finalizada.", view=None)
+                return
+            if result.reason == "full":
+                await interaction.response.edit_message(content=f"❌ Vagas esgotadas (máximo: {max_b}).", view=None)
+                return
             await interaction.response.edit_message(content=f"⚠️ {member.display_name} já está inscrito.", view=None)
             return
-        acao_row = db_acao_get(self.acao_id)
-        embed = _build_regras_embed(acao_row["acao_key"], db_acao_participantes(self.acao_id), acao_row["horario"], acao_row["tipo"], acao_row["data"], acao_row["criado_por"])
+        acao_row = acao_service.get(self.acao_id)
+        embed = _build_regras_embed(acao_row["acao_key"], acao_service.participants(self.acao_id), acao_row["horario"], acao_row["tipo"], acao_row["data"], acao_row["criado_por"])
         await self.painel_msg.edit(embed=embed, view=AcaoParticipantesView())
         await interaction.response.edit_message(content=f"✅ {member.mention} adicionado à ação!", view=None)
 
@@ -837,17 +858,17 @@ class RemoverMembroView(discord.ui.View):
         self.add_item(select)
 
     async def _on_select(self, interaction: discord.Interaction):
-        acao_row = db_acao_get(self.acao_id)
+        acao_row = acao_service.get(self.acao_id)
         if not acao_row or acao_row["status"] != "aberta":
             await interaction.response.edit_message(content="❌ Ação não encontrada ou já finalizada.", view=None)
             return
         member_id = str(interaction.data["values"][0])
-        removed = db_acao_participante_remove(self.acao_id, member_id)
+        removed = acao_service.remove_participant(self.acao_id, member_id)
         if not removed:
             await interaction.response.edit_message(content="❌ Membro não encontrado na lista.", view=None)
             return
-        acao_row = db_acao_get(self.acao_id)
-        embed = _build_regras_embed(acao_row["acao_key"], db_acao_participantes(self.acao_id), acao_row["horario"], acao_row["tipo"], acao_row["data"], acao_row["criado_por"])
+        acao_row = acao_service.get(self.acao_id)
+        embed = _build_regras_embed(acao_row["acao_key"], acao_service.participants(self.acao_id), acao_row["horario"], acao_row["tipo"], acao_row["data"], acao_row["criado_por"])
         await self.painel_msg.edit(embed=embed, view=AcaoParticipantesView())
         await interaction.response.edit_message(content=f"🚪 <@{member_id}> removido da ação.", view=None)
 
@@ -888,7 +909,7 @@ class FinalizarAcaoModal(discord.ui.Modal, title="🔒 Finalizar Ação"):
         self.acao_id = acao_id
 
     async def on_submit(self, interaction: discord.Interaction):
-        acao_row = db_acao_get(self.acao_id)
+        acao_row = acao_service.get(self.acao_id)
         if not acao_row or acao_row["status"] != "aberta":
             await interaction.response.send_message("❌ Ação não encontrada ou já finalizada.", ephemeral=True)
             return
@@ -900,7 +921,7 @@ class FinalizarAcaoModal(discord.ui.Modal, title="🔒 Finalizar Ação"):
         except ValueError as exc:
             await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
             return
-        participantes = db_acao_participantes(self.acao_id)
+        participantes = acao_service.participants(self.acao_id)
         pagamento = {"valor_total_centavos": None, "valor_faccao_centavos": None, "valor_participantes_centavos": None, "valor_por_participante_centavos": None}
         if resultado == "ganha":
             if not participantes:
@@ -913,7 +934,7 @@ class FinalizarAcaoModal(discord.ui.Modal, title="🔒 Finalizar Ação"):
                 return
         obs = self.observacao.value.strip() or None
         await interaction.response.defer(ephemeral=True)
-        finalized = db_acao_finalizar(
+        finalized = acao_service.finalize(
             self.acao_id,
             resultado,
             str(interaction.user.id),
@@ -929,7 +950,7 @@ class FinalizarAcaoModal(discord.ui.Modal, title="🔒 Finalizar Ação"):
                 ephemeral=True,
             )
             return
-        final = db_acao_get(self.acao_id)
+        final = acao_service.get(self.acao_id)
         destino = "acao_ganhas" if resultado == "ganha" else "acao_perdidas"
         sent_result = await _send_action_channel_log(interaction.guild, destino, _build_resultado_embed(final, participantes))
         sent_payment = True

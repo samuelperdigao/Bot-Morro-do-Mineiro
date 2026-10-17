@@ -20,16 +20,8 @@ from services.db_service import (
     db_get_approver_role_ids,
     db_channel_map_get,
     db_channel_map_set,
-    db_set_request_attach_message,
-    db_set_request_claim,
-    db_set_request_complete,
-    db_set_request_create,
-    db_set_request_get,
-    db_set_request_list_recoverable,
-    db_set_request_pending_for_user,
-    db_set_request_recover_interrupted,
-    db_set_request_release,
 )
+from services.set_requests import set_request_service
 from services.set_service import criar_pasta, safe_fetch_channel
 
 log       = logging.getLogger("bot")
@@ -119,7 +111,7 @@ class SetModal(discord.ui.Modal, title="Solicitação de Set"):
             await interaction.followup.send(f"⏳ Aguarde **{mins}m {secs}s** para enviar outra.", ephemeral=True)
             return
 
-        if db_set_request_pending_for_user(guild_id, str(interaction.user.id)):
+        if set_request_service.pending_for_user(guild_id, str(interaction.user.id)):
             await interaction.followup.send(
                 "Você já possui uma solicitação de Set aguardando decisão.",
                 ephemeral=True,
@@ -145,7 +137,7 @@ class SetModal(discord.ui.Modal, title="Solicitação de Set"):
         embed.add_field(name="📨 Solicitante (Discord)", value=f"{solicitante.mention}\n`{solicitante.id}`", inline=False)
         embed.set_footer(text="Aguardando decisão da liderança")
 
-        request_id = db_set_request_create(
+        request_id = set_request_service.create(
             guild_id,
             str(solicitante.id),
             self.membro_nome.value,
@@ -163,11 +155,11 @@ class SetModal(discord.ui.Modal, title="Solicitação de Set"):
         try:
             msg = await approval_channel.send(embed=embed, view=view)
         except Exception:
-            db_set_request_release(request_id)
+            set_request_service.release(request_id)
             _clear_pending(solicitante.id)
             raise
         view.message = msg
-        db_set_request_attach_message(request_id, str(msg.id))
+        set_request_service.attach_message(request_id, str(msg.id))
 
         _audit("SET_SOLICITADO", solicitante.id, nome=self.membro_nome.value, id_jogo=self.id_jogo.value.strip())
         await interaction.followup.send(
@@ -179,7 +171,7 @@ class SetModal(discord.ui.Modal, title="Solicitação de Set"):
         log.error(f"Erro no SetModal: {error}", exc_info=True)
         _clear_pending(interaction.user.id)
         if getattr(self, "_request_id", None):
-            db_set_request_release(self._request_id)
+            set_request_service.release(self._request_id)
         try:
             if not interaction.response.is_done():
                 await interaction.response.send_message("❌ Erro interno. Tente novamente.", ephemeral=True)
@@ -255,8 +247,8 @@ class ApprovalView(discord.ui.View):
             return
 
         decision = "approved" if aprovado else "rejected"
-        if not db_set_request_claim(self.request_id, str(interaction.user.id), decision):
-            current = db_set_request_get(self.request_id)
+        if not set_request_service.claim(self.request_id, str(interaction.user.id), decision):
+            current = set_request_service.get(self.request_id)
             status = current["status"] if current else "inexistente"
             await interaction.followup.send(
                 f"Esta solicitação já foi processada ou está indisponível (status: {status}).",
@@ -268,11 +260,11 @@ class ApprovalView(discord.ui.View):
         try:
             await self._processar_impl(interaction, aprovado)
         except Exception:
-            db_set_request_release(self.request_id)
+            set_request_service.release(self.request_id)
             self._processando = False
             raise
         else:
-            db_set_request_complete(self.request_id, decision)
+            set_request_service.complete(self.request_id, decision)
             self._processando = False
 
     async def _processar_impl(self, interaction: discord.Interaction, aprovado: bool):
@@ -305,11 +297,11 @@ class ApprovalView(discord.ui.View):
         try:
             member = guild.get_member(self.target_user_id) or await guild.fetch_member(self.target_user_id)
         except discord.NotFound:
-            db_set_request_release(self.request_id)
+            set_request_service.release(self.request_id)
             await interaction.followup.send(f"❌ Membro `{self.target_user_id}` não encontrado.", ephemeral=True)
             return
         except Exception as e:
-            db_set_request_release(self.request_id)
+            set_request_service.release(self.request_id)
             log.error(f"Erro ao buscar membro: {e}")
             await interaction.followup.send("❌ Erro ao buscar membro.", ephemeral=True)
             return
@@ -466,14 +458,14 @@ class ApprovalView(discord.ui.View):
 
 def register_persistent_views(bot: discord.Client) -> None:
     """Registra o painel atual e recupera solicitações de Set pendentes."""
-    db_set_request_recover_interrupted()
+    set_request_service.recover_interrupted()
     bot.add_view(SetPanelView())
 
     # Painéis anteriores à persistência não carregam dados suficientes para
     # aprovar alguém; o fallback responde de forma controlada sem descartá-los.
     bot.add_view(ApprovalView(0, "", None))
 
-    for row in db_set_request_list_recoverable():
+    for row in set_request_service.recoverable():
         try:
             view = ApprovalView(
                 target_user_id=int(row["requester_user_id"]),
