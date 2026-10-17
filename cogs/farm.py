@@ -170,6 +170,26 @@ def _farm_audit(action: str, executor_id: int, target_id: int | None = None, **k
     audit_log.info(" | ".join(parts))
 
 
+async def _refresh_ticket_after_approval(
+    interaction: discord.Interaction,
+    guild_id: str,
+    week_id: str,
+    user_id: str,
+) -> None:
+    """Sincroniza o canal quando a aprovação veio do painel geral de Farm."""
+    ticket_cog = interaction.client.get_cog("FarmTicketsCog")
+    if not ticket_cog:
+        return
+    try:
+        await ticket_cog.refresh_ticket_for_member(guild_id, week_id, user_id)
+    except Exception:
+        log.warning(
+            "Falha ao sincronizar ticket após aprovação de %s",
+            user_id,
+            exc_info=True,
+        )
+
+
 from ui.messages.farm import FARM_PRODUTOS, build_farm_embed, build_meta_embed, build_ranking_embed
 
 # Aliases temporários: preservam o corpo extenso do cog enquanto toda a
@@ -897,6 +917,9 @@ class DetalheResultadoView(discord.ui.View):
         else:
             db_aprovar(self.guild_id, self.week_id, self.user_id, str(interaction.user.id))
             _farm_audit("META_APROVADA", interaction.user.id, int(self.user_id), antecipada=False)
+            await _refresh_ticket_after_approval(
+                interaction, self.guild_id, self.week_id, self.user_id
+            )
             await interaction.response.send_message("✅ Meta aprovada!", ephemeral=True)
             await self.cog._notificar_aprovacao(interaction.guild, self.user_id, interaction.user, antecipada=False)
             await self.cog._atualizar_ranking_fixo(self.guild_id)
@@ -939,6 +962,9 @@ class AprovarNivelView(discord.ui.View):
                 str(self.aprovador.id), antecipada=True, nivel=nivel,
             )
             _farm_audit("META_APROVADA_ANTECIPADA", self.aprovador.id, int(self.user_id), nivel=nivel)
+            await _refresh_ticket_after_approval(
+                interaction, self.guild_id, self.week_id, self.user_id
+            )
             await interaction.response.send_message(
                 f"⚡ Aprovação antecipada registrada! Nível: **{label}**", ephemeral=True
             )

@@ -2100,6 +2100,17 @@ def db_ticket_get_week(guild_id: str, week_id: str, user_id: str):
     ).fetchone()
 
 
+def db_ticket_get_week_any(guild_id: str, week_id: str, user_id: str):
+    """Retorna o ticket rastreado do membro, inclusive se já foi finalizado."""
+    return get_conn().execute(
+        """SELECT * FROM farm_tickets
+           WHERE guild_id=? AND week_id=? AND user_id=?
+             AND channel_id IS NOT NULL AND excluido_em IS NULL
+           ORDER BY id DESC LIMIT 1""",
+        (guild_id, week_id, user_id),
+    ).fetchone()
+
+
 def db_ticket_get_channel(guild_id: str, channel_id: str):
     return get_conn().execute(
         "SELECT * FROM farm_tickets WHERE guild_id=? AND channel_id=?",
@@ -2126,6 +2137,15 @@ def db_ticket_list_existing(guild_id: str) -> list[sqlite3.Row]:
            WHERE guild_id=? AND channel_id IS NOT NULL AND excluido_em IS NULL
            ORDER BY week_id DESC, id DESC""",
         (guild_id,),
+    ).fetchall()
+
+
+def db_ticket_list_existing_all() -> list[sqlite3.Row]:
+    """Lista todos os tickets com canal ainda existente para reconciliação."""
+    return get_conn().execute(
+        """SELECT * FROM farm_tickets
+           WHERE channel_id IS NOT NULL AND excluido_em IS NULL
+           ORDER BY guild_id, week_id DESC, id DESC"""
     ).fetchall()
 
 

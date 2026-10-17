@@ -28,6 +28,8 @@ from cogs.farm_tickets import (
     _expanded_admin_role_ids,
     _payload_approval_origin,
     _progress,
+    _ticket_sort_key,
+    approved_ticket_channel_name,
 )
 from services.db_service import (
     APROVACAO_ORIGEM_EXPIRACAO,
@@ -174,6 +176,162 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         cog = FarmTicketsCog.__new__(FarmTicketsCog)
         cog.bot = SimpleNamespace(get_guild=lambda guild_id: guild if guild_id == 1 else None)
         return cog, channel
+
+    def test_approved_channel_name_is_idempotent_and_respects_discord_limit(self):
+        self.assertEqual(approved_ticket_channel_name("farm-01-mineiro-123"), "✅-farm-01-mineiro-123")
+        self.assertEqual(approved_ticket_channel_name("✅-farm-01-mineiro-123"), "✅-farm-01-mineiro-123")
+        self.assertEqual(len(approved_ticket_channel_name("x" * 100)), 100)
+
+    def test_ticket_sort_key_uses_numeric_folder_slot(self):
+        self.assertLess(
+            _ticket_sort_key({"id": 1, "folder_slot": 2}),
+            _ticket_sort_key({"id": 2, "folder_slot": 10}),
+        )
+        self.assertLess(
+            _ticket_sort_key({"id": 3, "folder_slot": 10}),
+            _ticket_sort_key({"id": 4, "folder_slot": 10}),
+        )
+        self.assertGreater(
+            _ticket_sort_key({"id": 5, "folder_slot": None}),
+            _ticket_sort_key({"id": 6, "folder_slot": 10}),
+        )
+
+    def test_approved_ticket_channel_is_renamed_without_duplicate_marker(self):
+        ticket, _ = db.db_ticket_reserve(
+            "1", "2026-06-15", "10", "Membro", folder_slot=1
+        )
+        db.db_ticket_activate(int(ticket["id"]), "100", "200")
+        db.db_aprovar("1", "2026-06-15", "10", "99")
+
+        class FakeTicketChannel:
+            def __init__(self):
+                self.name = "farm-01-mineiro-123"
+                self.edit = AsyncMock()
+
+        channel = FakeTicketChannel()
+        cog = FarmTicketsCog.__new__(FarmTicketsCog)
+        with unittest.mock.patch("cogs.farm_tickets.discord.TextChannel", FakeTicketChannel):
+            changed = asyncio.run(
+                cog.sync_approved_channel_name(db.db_ticket_get(int(ticket["id"])), channel)
+            )
+
+        self.assertTrue(changed)
+        channel.edit.assert_awaited_once_with(
+            name="✅-farm-01-mineiro-123",
+            reason="Ticket de farm aprovado",
+        )
+
+    def test_unapproved_ticket_channel_is_not_renamed(self):
+        ticket, _ = db.db_ticket_reserve(
+            "1", "2026-06-15", "10", "Membro", folder_slot=1
+        )
+        db.db_ticket_activate(int(ticket["id"]), "100", "200")
+
+        class FakeTicketChannel:
+            name = "farm-01-mineiro-123"
+
+            def __init__(self):
+                self.edit = AsyncMock()
+
+        channel = FakeTicketChannel()
+        cog = FarmTicketsCog.__new__(FarmTicketsCog)
+        with unittest.mock.patch("cogs.farm_tickets.discord.TextChannel", FakeTicketChannel):
+            changed = asyncio.run(
+                cog.sync_approved_channel_name(db.db_ticket_get(int(ticket["id"])), channel)
+            )
+
+        self.assertFalse(changed)
+        channel.edit.assert_not_awaited()
+
+    def test_ticket_category_is_reordered_by_numeric_folder_slot(self):
+        tickets = []
+        channels = []
+        for ticket_id, slot in ((1, 10), (2, 2), (3, 1)):
+            ticket, _ = db.db_ticket_reserve(
+                "1", "2026-06-15", str(ticket_id), f"Membro {ticket_id}", folder_slot=slot
+            )
+            db.db_ticket_activate(int(ticket["id"]), str(100 + ticket_id), "200")
+            tickets.append(ticket)
+
+        class FakeTicketChannel:
+            def __init__(self, channel_id, name):
+                self.id = channel_id
+                self.name = name
+                self.category_id = 700
+                self.moves = []
+
+            async def move(self, **kwargs):
+                self.moves.append(kwargs)
+
+        channels = [
+            FakeTicketChannel(101, "farm-10"),
+            FakeTicketChannel(102, "farm-02"),
+            FakeTicketChannel(103, "farm-01"),
+        ]
+
+        class FakeCategory:
+            id = 700
+
+            def __init__(self, channels):
+                self.guild = SimpleNamespace(id=1)
+                self.text_channels = channels
+
+        category = FakeCategory(channels)
+        cog = FarmTicketsCog.__new__(FarmTicketsCog)
+        with unittest.mock.patch("cogs.farm_tickets.discord.TextChannel", FakeTicketChannel), \
+             unittest.mock.patch("cogs.farm_tickets.discord.CategoryChannel", FakeCategory):
+            asyncio.run(cog.reorder_ticket_category(category))
+
+        self.assertTrue(channels[2].moves[0]["beginning"])
+        self.assertIs(channels[1].moves[0]["after"], channels[2])
+        self.assertIs(channels[0].moves[0]["after"], channels[1])
+
+    def test_reconciliation_marks_existing_finalized_approved_ticket(self):
+        ticket, _ = db.db_ticket_reserve(
+            "1", "2026-06-15", "10", "Membro", folder_slot=1
+        )
+        db.db_ticket_activate(int(ticket["id"]), "100", "200")
+        db.db_ticket_finalize(int(ticket["id"]), "99", "Finalizado")
+        db.db_aprovar("1", "2026-06-15", "10", "99")
+
+        class FakeTicketChannel:
+            id = 100
+            name = "farm-01-mineiro-123"
+            category_id = 700
+
+            def __init__(self):
+                self.edit = AsyncMock()
+
+        class FakeCategory:
+            id = 700
+            text_channels = []
+
+            def __init__(self):
+                self.guild = SimpleNamespace(id=1)
+
+        channel = FakeTicketChannel()
+        category = FakeCategory()
+        category.text_channels = [channel]
+
+        class FakeGuild:
+            id = 1
+
+            def get_channel(self, channel_id):
+                return {100: channel, 700: category}.get(int(channel_id))
+
+            async def fetch_channel(self, channel_id):
+                return self.get_channel(channel_id)
+
+        cog = FarmTicketsCog.__new__(FarmTicketsCog)
+        cog.bot = SimpleNamespace(get_guild=lambda guild_id: FakeGuild())
+        with unittest.mock.patch("cogs.farm_tickets.discord.TextChannel", FakeTicketChannel), \
+             unittest.mock.patch("cogs.farm_tickets.discord.CategoryChannel", FakeCategory):
+            asyncio.run(cog.reconcile_existing_ticket_channels())
+
+        channel.edit.assert_awaited_once_with(
+            name="✅-farm-01-mineiro-123",
+            reason="Ticket de farm aprovado",
+        )
 
     def test_ticket_is_unique_per_member_and_week(self):
         first, created = db.db_ticket_reserve("1", "2026-06-15", "10", "Membro")

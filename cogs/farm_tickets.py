@@ -44,8 +44,10 @@ from services.db_service import (
     db_ticket_get_week,
     db_ticket_launch,
     db_ticket_launches,
+    db_ticket_get_week_any,
     db_ticket_latest_action,
     db_ticket_list_existing,
+    db_ticket_list_existing_all,
     db_ticket_list_week,
     db_ticket_mark_corrected,
     db_ticket_mark_deleted,
@@ -73,6 +75,8 @@ from services.set_service import (
 log = logging.getLogger("farm")
 PROOF_TIMEOUT = 180.0
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+APPROVED_TICKET_PREFIX = "✅-"
+DISCORD_CHANNEL_NAME_LIMIT = 100
 GERENTE_PRODUCAO_NAMES = (
     "| Gerente de Produ\u00e7\u00e3o",
     "Gerente de Produ\u00e7\u00e3o",
@@ -97,6 +101,27 @@ def _slug(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode()
     normalized = re.sub(r"[^a-zA-Z0-9]+", "-", normalized).strip("-").lower()
     return normalized[:80] or "membro"
+
+
+def approved_ticket_channel_name(name: str) -> str:
+    """Adiciona o marcador visual de aprovação de forma idempotente."""
+    name = str(name or "")
+    if name.startswith(APPROVED_TICKET_PREFIX):
+        return name[:DISCORD_CHANNEL_NAME_LIMIT]
+    return f"{APPROVED_TICKET_PREFIX}{name}"[:DISCORD_CHANNEL_NAME_LIMIT]
+
+
+def _ticket_sort_key(ticket) -> tuple[int, int, int]:
+    """Ordena slots numericamente e coloca snapshots sem slot ao final."""
+    try:
+        slot = int(_row_get(ticket, "folder_slot"))
+    except (TypeError, ValueError):
+        slot = None
+    try:
+        ticket_id = int(_row_get(ticket, "id", 0))
+    except (TypeError, ValueError):
+        ticket_id = 0
+    return (1, 0, ticket_id) if slot is None else (0, slot, ticket_id)
 
 
 def _row_get(row, key: str, default=None):
@@ -867,6 +892,7 @@ class FarmTicketsCog(commands.Cog):
         self._tickets_reconciled = True
         for ticket in db_ticket_active():
             await self.refresh_ticket(int(ticket["id"]))
+        await self.reconcile_existing_ticket_channels()
 
     def is_admin(self, member: discord.Member, guild_id: str) -> bool:
         if member.guild_permissions.administrator:
@@ -890,6 +916,124 @@ class FarmTicketsCog(commands.Cog):
 
     def ticket_operator_roles(self, guild: discord.Guild) -> list[discord.Role]:
         return _ticket_operator_roles_for_guild(guild)
+
+    async def sync_approved_channel_name(
+        self,
+        ticket,
+        channel: discord.TextChannel,
+        *,
+        progress=None,
+    ) -> bool:
+        """Marca no nome do canal qualquer ticket cuja aprovação já foi salva."""
+        if not isinstance(channel, discord.TextChannel):
+            return False
+        if progress is None:
+            progress = db_get_progresso(
+                ticket["guild_id"], ticket["week_id"], ticket["user_id"]
+            )
+        if not progress or not progress["aprovada"]:
+            return False
+        new_name = approved_ticket_channel_name(channel.name)
+        if new_name == channel.name:
+            return False
+        try:
+            await channel.edit(
+                name=new_name,
+                reason="Ticket de farm aprovado",
+            )
+            return True
+        except Exception:
+            log.warning(
+                "Falha ao marcar canal aprovado do ticket %s",
+                ticket["id"],
+                exc_info=True,
+            )
+            return False
+
+    async def reorder_ticket_category(self, category: discord.CategoryChannel) -> None:
+        """Mantém os canais rastreados da categoria em ordem crescente de slot."""
+        if not isinstance(category, discord.CategoryChannel):
+            return
+
+        entries = []
+        for channel in category.text_channels:
+            ticket = db_ticket_get_channel(str(category.guild.id), str(channel.id))
+            if ticket and not ticket["excluido_em"]:
+                entries.append((channel, ticket))
+        if len(entries) < 2:
+            return
+
+        ordered = sorted(entries, key=lambda item: _ticket_sort_key(item[1]))
+        if [channel.id for channel, _ in entries] == [channel.id for channel, _ in ordered]:
+            return
+
+        previous = None
+        for channel, ticket in ordered:
+            try:
+                if previous is None:
+                    await channel.move(
+                        beginning=True,
+                        reason="Ordenacao crescente dos tickets de farm",
+                    )
+                else:
+                    await channel.move(
+                        after=previous,
+                        reason="Ordenacao crescente dos tickets de farm",
+                    )
+            except Exception:
+                log.warning(
+                    "Falha ao ordenar canal do ticket %s na categoria %s",
+                    ticket["id"],
+                    category.id,
+                    exc_info=True,
+                )
+                return
+            previous = channel
+
+    async def reconcile_existing_ticket_channels(self) -> None:
+        """Corrige nomes aprovados e posições de canais já criados."""
+        categories: dict[int, discord.CategoryChannel] = {}
+        for ticket in db_ticket_list_existing_all():
+            guild = self.bot.get_guild(int(ticket["guild_id"]))
+            if not guild or not ticket["channel_id"]:
+                continue
+            try:
+                channel = guild.get_channel(int(ticket["channel_id"]))
+                if channel is None:
+                    channel = await guild.fetch_channel(int(ticket["channel_id"]))
+                if not isinstance(channel, discord.TextChannel):
+                    continue
+                progress = db_get_progresso(
+                    ticket["guild_id"], ticket["week_id"], ticket["user_id"]
+                )
+                await self.sync_approved_channel_name(
+                    ticket, channel, progress=progress
+                )
+                category = guild.get_channel(int(channel.category_id)) if channel.category_id else None
+                if category is None and channel.category_id:
+                    category = await guild.fetch_channel(int(channel.category_id))
+                if isinstance(category, discord.CategoryChannel):
+                    categories[category.id] = category
+            except Exception:
+                log.warning(
+                    "Falha ao reconciliar canal do ticket %s",
+                    ticket["id"],
+                    exc_info=True,
+                )
+
+        for category in categories.values():
+            await self.reorder_ticket_category(category)
+
+    async def refresh_ticket_for_member(
+        self,
+        guild_id: str,
+        week_id: str,
+        user_id: str,
+    ) -> None:
+        """Atualiza o ticket do membro depois de uma aprovação externa ao ticket."""
+        ticket = db_ticket_get_week_any(guild_id, week_id, user_id)
+        if ticket:
+            await self.refresh_ticket(int(ticket["id"]))
 
     async def ensure_ticket_admin_overwrites(
         self,
@@ -1225,6 +1369,14 @@ class FarmTicketsCog(commands.Cog):
             return False, "O ticket ja foi finalizado."
 
         logged = await self.send_finalization_log(result, actor, motivo)
+        try:
+            await self.refresh_ticket(ticket_id)
+        except Exception:
+            log.warning(
+                "Falha ao sincronizar canal do ticket finalizado %s",
+                ticket_id,
+                exc_info=True,
+            )
         if not logged:
             return False, "O ticket foi finalizado no banco, mas o log do Discord ficou pendente. O canal nao foi apagado."
         return True, "Ticket finalizado."
@@ -1374,12 +1526,13 @@ class FarmTicketsCog(commands.Cog):
             return
         try:
             channel = guild.get_channel(int(ticket["channel_id"])) or await guild.fetch_channel(int(ticket["channel_id"]))
+            progress = db_get_progresso(ticket["guild_id"], ticket["week_id"], ticket["user_id"])
             if isinstance(channel, discord.TextChannel):
+                await self.sync_approved_channel_name(ticket, channel, progress=progress)
                 await self.ensure_ticket_admin_overwrites(guild, channel)
             message = await channel.fetch_message(int(ticket["panel_message_id"]))
             member = guild.get_member(int(ticket["user_id"])) or await guild.fetch_member(int(ticket["user_id"]))
             meta = db_get_meta(ticket["guild_id"], ticket["week_id"])
-            progress = db_get_progresso(ticket["guild_id"], ticket["week_id"], ticket["user_id"])
             approved = bool(progress and progress["aprovada"])
             await message.edit(
                 embed=build_ticket_embed(ticket, member, meta),
@@ -1672,6 +1825,7 @@ class FarmTicketsCog(commands.Cog):
             except discord.Forbidden:
                 pass
             db_ticket_activate(int(ticket["id"]), str(channel.id), str(message.id))
+            await self.reorder_ticket_category(category)
             action_payload = {"aberto_para": str(owner.id)} if administrative else None
             action_id = db_ticket_add_action(
                 int(ticket["id"]),
@@ -2151,7 +2305,7 @@ class FarmTicketsCog(commands.Cog):
                         break
                 approval_action = db_ticket_latest_action(int(ticket["id"]), "aprovacao")
                 detail = payload.get("motivo") or "Ticket expirado - aprovação automática"
-                await self.send_finalization_log(
+                logged = await self.send_finalization_log(
                     {
                         "ticket": ticket,
                         "logs": db_ticket_finalization_logs(int(ticket["id"])),
@@ -2161,6 +2315,8 @@ class FarmTicketsCog(commands.Cog):
                     actor,
                     detail,
                 )
+                if logged:
+                    await self.refresh_ticket(int(ticket["id"]))
                 continue
             if action["action"] == "lancamento" and action["event_id"]:
                 launch = next((row for row in db_ticket_launches(int(ticket["id"])) if int(row["id"]) == int(action["event_id"])), None)
