@@ -360,7 +360,7 @@ class PaineisCog(commands.Cog):
         funcao = custom_id.removeprefix("painel_set:")
         try:
             if funcao == "pedir":
-                from cogs.set_views import SetModal
+                from ui.views.set import SetModal
                 await interaction.response.send_modal(SetModal())
                 log.info("set_solicitado: %s (%s)", interaction.user.name, interaction.guild_id)
             else:

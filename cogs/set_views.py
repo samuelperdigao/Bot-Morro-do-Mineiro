@@ -21,7 +21,7 @@ from services.db_service import (
     db_channel_map_get,
     db_channel_map_set,
 )
-from services.set_requests import set_request_service
+from features.set.service import set_request_service
 from services.set_service import criar_pasta, safe_fetch_channel
 
 log       = logging.getLogger("bot")

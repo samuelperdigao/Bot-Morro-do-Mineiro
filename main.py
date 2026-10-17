@@ -6,11 +6,12 @@ from datetime import datetime, timezone
 import discord
 from discord.ext import commands
 
-from cogs.set_views import register_persistent_views
+from ui.views.set import register_persistent_views
 from core.config import APPLICATION_ID, TOKEN
 from core.extensions import COG_EXTENSIONS
 from core.logger import console_handler, get_logger
-from services.db_service import db_get_approver_role_ids, db_get_guild_config, init_db
+from infrastructure.database import initialize_database
+from services.db_service import db_get_approver_role_ids, db_get_guild_config
 from services.set_service import sync_member_folder_manager_overwrites
 
 logging.basicConfig(level=logging.INFO, handlers=[console_handler])
@@ -27,7 +28,7 @@ class MyBot(commands.Bot):
 
     async def setup_hook(self):
         log.info("setup_hook iniciado...")
-        init_db()
+        initialize_database()
         register_persistent_views(self)
 
         for ext in COG_EXTENSIONS:

@@ -4,7 +4,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from cogs.set_views import SetPanelView
+from ui.views.set import SetPanelView
 from core.logger import get_logger
 from services.db_service import db_is_bot_configured
 

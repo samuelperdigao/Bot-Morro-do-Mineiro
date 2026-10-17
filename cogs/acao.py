@@ -12,7 +12,7 @@ from discord.ext import commands
 from core.date_utils import DATE_BR_EXAMPLE, normalize_date_br
 from core.logger import get_logger
 from core.permissions import is_lideranca
-from services.acao_service import acao_service
+from features.acao.service import acao_service
 from services.db_service import (
     db_get_lideranca_role_ids,
     db_get_system_config,

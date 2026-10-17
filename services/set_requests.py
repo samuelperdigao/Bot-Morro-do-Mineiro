@@ -6,17 +6,7 @@ conhece Discord e não altera mensagens.
 
 from __future__ import annotations
 
-from services.db_service import (
-    db_set_request_attach_message,
-    db_set_request_claim,
-    db_set_request_complete,
-    db_set_request_create,
-    db_set_request_get,
-    db_set_request_list_recoverable,
-    db_set_request_pending_for_user,
-    db_set_request_recover_interrupted,
-    db_set_request_release,
-)
+from infrastructure.repositories.set_requests import set_request_repository
 
 
 class SetRequestService:
@@ -28,7 +18,7 @@ class SetRequestService:
         id_jogo: str,
         approval_channel_id: str,
     ) -> str:
-        return db_set_request_create(
+        return set_request_repository.create(
             guild_id,
             requester_user_id,
             target_name,
@@ -37,28 +27,28 @@ class SetRequestService:
         )
 
     def attach_message(self, request_id: str, message_id: str) -> None:
-        db_set_request_attach_message(request_id, message_id)
+        set_request_repository.attach_message(request_id, message_id)
 
     def get(self, request_id: str):
-        return db_set_request_get(request_id)
+        return set_request_repository.get(request_id)
 
     def pending_for_user(self, guild_id: str, user_id: str):
-        return db_set_request_pending_for_user(guild_id, user_id)
+        return set_request_repository.pending_for_user(guild_id, user_id)
 
     def claim(self, request_id: str, decided_by: str, decision: str) -> bool:
-        return db_set_request_claim(request_id, decided_by, decision)
+        return set_request_repository.claim(request_id, decided_by, decision)
 
     def complete(self, request_id: str, status: str) -> bool:
-        return db_set_request_complete(request_id, status)
+        return set_request_repository.complete(request_id, status)
 
     def release(self, request_id: str) -> bool:
-        return db_set_request_release(request_id)
+        return set_request_repository.release(request_id)
 
     def recover_interrupted(self) -> int:
-        return db_set_request_recover_interrupted()
+        return set_request_repository.recover_interrupted()
 
     def recoverable(self):
-        return db_set_request_list_recoverable()
+        return set_request_repository.recoverable()
 
 
 set_request_service = SetRequestService()

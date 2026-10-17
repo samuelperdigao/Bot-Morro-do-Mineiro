@@ -4,15 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from services.db_service import (
-    db_acao_criar,
-    db_acao_finalizar,
-    db_acao_get,
-    db_acao_get_by_message,
-    db_acao_participante_add,
-    db_acao_participante_remove,
-    db_acao_participantes,
-)
+from infrastructure.repositories.acoes import acao_repository
 
 
 @dataclass(frozen=True)
@@ -33,7 +25,7 @@ class AcaoService:
         channel_id: str,
         message_id: str,
     ) -> int:
-        return db_acao_criar(
+        return acao_repository.create(
             guild_id,
             acao_key,
             tipo,
@@ -45,13 +37,13 @@ class AcaoService:
         )
 
     def get(self, acao_id: int):
-        return db_acao_get(acao_id)
+        return acao_repository.get(acao_id)
 
     def get_by_message(self, guild_id: str, message_id: str):
-        return db_acao_get_by_message(guild_id, message_id)
+        return acao_repository.get_by_message(guild_id, message_id)
 
     def participants(self, acao_id: int):
-        return db_acao_participantes(acao_id)
+        return acao_repository.participants(acao_id)
 
     def add_participant(
         self,
@@ -62,27 +54,27 @@ class AcaoService:
         added_by: str | None,
         max_participants: int | None = None,
     ) -> ParticipantMutation:
-        action = db_acao_get(acao_id)
+        action = acao_repository.get(acao_id)
         if not action or action["status"] != "aberta":
             return ParticipantMutation(False, "closed")
 
-        participants = db_acao_participantes(acao_id)
+        participants = acao_repository.participants(acao_id)
         if any(row["user_id"] == user_id for row in participants):
             return ParticipantMutation(False, "duplicate")
         if max_participants and len(participants) >= max_participants:
             return ParticipantMutation(False, "full")
 
-        if not db_acao_participante_add(
+        if not acao_repository.add_participant(
             acao_id, user_id, user_name, origem, added_by
         ):
             return ParticipantMutation(False, "duplicate")
         return ParticipantMutation(True)
 
     def remove_participant(self, acao_id: int, user_id: str) -> bool:
-        action = db_acao_get(acao_id)
+        action = acao_repository.get(acao_id)
         if not action or action["status"] != "aberta":
             return False
-        return db_acao_participante_remove(acao_id, user_id)
+        return acao_repository.remove_participant(acao_id, user_id)
 
     def finalize(
         self,
@@ -95,7 +87,7 @@ class AcaoService:
         valor_participantes_centavos: int | None = None,
         valor_por_participante_centavos: int | None = None,
     ) -> bool:
-        return db_acao_finalizar(
+        return acao_repository.finalize(
             acao_id,
             resultado,
             finalizado_por,

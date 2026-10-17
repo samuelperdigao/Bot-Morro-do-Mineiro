@@ -66,7 +66,7 @@ class PreAcaoModal(discord.ui.Modal, title="⚡ Configurar Ação"):
 
         await interaction.response.defer(ephemeral=True)
 
-        from cogs.acao import AcaoSelectView
+        from ui.views.acao import AcaoSelectView
 
         tipo_display = "🏃 Fuga" if tipo_val == "fuga" else "🔫 No Tiro"
         acao_embed = discord.Embed(
@@ -134,7 +134,7 @@ class AcaoPainelView(discord.ui.View):
             return
         row      = db_get_system_config(guild_id, "acao")
         canal_id = row["canal_interacao_id"] if row else None
-        from cogs.acao import AcaoTipoView
+        from ui.views.acao import AcaoTipoView
 
         await interaction.response.send_message(
             "Escolha o tipo da ação:",
