@@ -1178,6 +1178,130 @@ def db_get_all_system_configs(guild_id: str):
 
 # ── Ações ─────────────────────────────────────────────────────────────────────
 
+def db_set_request_create(
+    guild_id: str,
+    requester_user_id: str,
+    target_name: str,
+    id_jogo: str,
+    approval_channel_id: str,
+) -> str:
+    request_id = uuid.uuid4().hex
+    conn = get_conn()
+    conn.execute(
+        """INSERT INTO set_requests
+           (request_id, guild_id, requester_user_id, target_name, id_jogo,
+            status, approval_channel_id, created_at)
+           VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)""",
+        (
+            request_id,
+            guild_id,
+            requester_user_id,
+            target_name,
+            id_jogo,
+            approval_channel_id,
+            now_tz().isoformat(),
+        ),
+    )
+    conn.commit()
+    return request_id
+
+
+def db_set_request_attach_message(request_id: str, approval_message_id: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        "UPDATE set_requests SET approval_message_id=? WHERE request_id=?",
+        (approval_message_id, request_id),
+    )
+    conn.commit()
+
+
+def db_set_request_get(request_id: str):
+    return get_conn().execute(
+        "SELECT * FROM set_requests WHERE request_id=?", (request_id,)
+    ).fetchone()
+
+
+def db_set_request_get_by_message(
+    guild_id: str,
+    approval_channel_id: str,
+    approval_message_id: str,
+):
+    return get_conn().execute(
+        """SELECT * FROM set_requests
+           WHERE guild_id=? AND approval_channel_id=? AND approval_message_id=?""",
+        (guild_id, approval_channel_id, approval_message_id),
+    ).fetchone()
+
+
+def db_set_request_pending_for_user(guild_id: str, requester_user_id: str):
+    return get_conn().execute(
+        """SELECT * FROM set_requests
+           WHERE guild_id=? AND requester_user_id=?
+             AND status IN ('pending', 'processing')
+           ORDER BY created_at DESC LIMIT 1""",
+        (guild_id, requester_user_id),
+    ).fetchone()
+
+
+def db_set_request_list_recoverable() -> list[sqlite3.Row]:
+    return get_conn().execute(
+        """SELECT * FROM set_requests
+           WHERE status='pending' AND approval_message_id IS NOT NULL
+           ORDER BY created_at ASC"""
+    ).fetchall()
+
+
+def db_set_request_recover_interrupted() -> int:
+    conn = get_conn()
+    cur = conn.execute(
+        """UPDATE set_requests
+           SET status='pending', decided_by=NULL, processing_started_at=NULL
+           WHERE status='processing'"""
+    )
+    conn.commit()
+    return cur.rowcount
+
+
+def db_set_request_claim(request_id: str, decided_by: str, decision: str) -> bool:
+    if decision not in {"approved", "rejected"}:
+        raise ValueError("Decisao de Set invalida.")
+    conn = get_conn()
+    cur = conn.execute(
+        """UPDATE set_requests
+           SET status='processing', decided_by=?, processing_started_at=?
+           WHERE request_id=? AND status='pending'""",
+        (decided_by, now_tz().isoformat(), request_id),
+    )
+    conn.commit()
+    return bool(cur.rowcount)
+
+
+def db_set_request_complete(request_id: str, status: str) -> bool:
+    if status not in {"approved", "rejected"}:
+        raise ValueError("Status final de Set invalido.")
+    conn = get_conn()
+    cur = conn.execute(
+        """UPDATE set_requests
+           SET status=?, completed_at=?, processing_started_at=NULL
+           WHERE request_id=? AND status='processing'""",
+        (status, now_tz().isoformat(), request_id),
+    )
+    conn.commit()
+    return bool(cur.rowcount)
+
+
+def db_set_request_release(request_id: str) -> bool:
+    conn = get_conn()
+    cur = conn.execute(
+        """UPDATE set_requests
+           SET status='pending', decided_by=NULL, processing_started_at=NULL
+           WHERE request_id=? AND status='processing'""",
+        (request_id,),
+    )
+    conn.commit()
+    return bool(cur.rowcount)
+
+
 def db_acao_criar(
     guild_id: str,
     acao_key: str,
@@ -1281,16 +1405,16 @@ def db_acao_finalizar(
     valor_faccao_centavos: int | None = None,
     valor_participantes_centavos: int | None = None,
     valor_por_participante_centavos: int | None = None,
-) -> None:
+) -> bool:
     conn = get_conn()
     agora = now_tz().isoformat()
-    conn.execute(
+    cur = conn.execute(
         """UPDATE acoes
            SET status=?, resultado=?, finalizado_por=?, observacao=?,
                valor_total_centavos=?, valor_faccao_centavos=?,
                valor_participantes_centavos=?, valor_por_participante_centavos=?,
                finalizado_em=?, atualizado_em=?
-           WHERE id=?""",
+           WHERE id=? AND status='aberta'""",
         (
             resultado,
             resultado,
@@ -1306,6 +1430,7 @@ def db_acao_finalizar(
         ),
     )
     conn.commit()
+    return bool(cur.rowcount)
 
 
 # ── Recolhimento — Ciclos ─────────────────────────────────────────────────────

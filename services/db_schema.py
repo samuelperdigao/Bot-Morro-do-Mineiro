@@ -122,6 +122,27 @@ CREATE TABLE IF NOT EXISTS system_config (
     PRIMARY KEY (guild_id, sistema)
 );
 
+CREATE TABLE IF NOT EXISTS set_requests (
+    request_id            TEXT PRIMARY KEY,
+    guild_id              TEXT NOT NULL,
+    requester_user_id     TEXT NOT NULL,
+    target_name           TEXT NOT NULL,
+    id_jogo               TEXT NOT NULL,
+    status                TEXT NOT NULL DEFAULT 'pending',
+    approval_channel_id   TEXT NOT NULL,
+    approval_message_id   TEXT,
+    decided_by            TEXT,
+    created_at            TEXT NOT NULL,
+    completed_at          TEXT,
+    processing_started_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_set_requests_pending_user
+ON set_requests (guild_id, requester_user_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_set_requests_approval_message
+ON set_requests (guild_id, approval_channel_id, approval_message_id);
+
 CREATE TABLE IF NOT EXISTS acoes (
     id                              INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id                        TEXT NOT NULL,

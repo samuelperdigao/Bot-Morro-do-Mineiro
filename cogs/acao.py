@@ -913,7 +913,7 @@ class FinalizarAcaoModal(discord.ui.Modal, title="🔒 Finalizar Ação"):
                 return
         obs = self.observacao.value.strip() or None
         await interaction.response.defer(ephemeral=True)
-        db_acao_finalizar(
+        finalized = db_acao_finalizar(
             self.acao_id,
             resultado,
             str(interaction.user.id),
@@ -923,6 +923,12 @@ class FinalizarAcaoModal(discord.ui.Modal, title="🔒 Finalizar Ação"):
             pagamento["valor_participantes_centavos"],
             pagamento["valor_por_participante_centavos"],
         )
+        if not finalized:
+            await interaction.followup.send(
+                "Esta ação já foi finalizada por outra pessoa.",
+                ephemeral=True,
+            )
+            return
         final = db_acao_get(self.acao_id)
         destino = "acao_ganhas" if resultado == "ganha" else "acao_perdidas"
         sent_result = await _send_action_channel_log(interaction.guild, destino, _build_resultado_embed(final, participantes))

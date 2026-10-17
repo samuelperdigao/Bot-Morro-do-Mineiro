@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import discord
 from discord.ext import commands
 
-from cogs.set_views import SetPanelView
+from cogs.set_views import register_persistent_views
 from core.config import APPLICATION_ID, TOKEN
 from core.extensions import COG_EXTENSIONS
 from core.logger import console_handler, get_logger
@@ -28,7 +28,7 @@ class MyBot(commands.Bot):
     async def setup_hook(self):
         log.info("setup_hook iniciado...")
         init_db()
-        self.add_view(SetPanelView())
+        register_persistent_views(self)
 
         for ext in COG_EXTENSIONS:
             try:
