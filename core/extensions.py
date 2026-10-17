@@ -17,7 +17,6 @@ COG_EXTENSIONS = (
     "cogs.setup_lideranca",
     "cogs.adv",
     "cogs.colete",
-    "cogs.dashboard",
     "cogs.farm_painel",
     "cogs.farm_tickets",
     "cogs.farm_relatorio",
