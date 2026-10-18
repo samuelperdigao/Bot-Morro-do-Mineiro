@@ -286,6 +286,45 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         self.assertIs(channels[1].moves[0]["after"], channels[2])
         self.assertIs(channels[0].moves[0]["after"], channels[1])
 
+    def test_ticket_category_keeps_farm_panel_at_top(self):
+        db.db_set_system_config("1", "farm", "999", None)
+        for ticket_id, slot in ((1, 10), (2, 2), (3, 1)):
+            ticket, _ = db.db_ticket_reserve(
+                "1", "2026-06-15", str(ticket_id), f"Membro {ticket_id}", folder_slot=slot
+            )
+            db.db_ticket_activate(int(ticket["id"]), str(100 + ticket_id), "200")
+
+        class FakeChannel:
+            def __init__(self, channel_id, name):
+                self.id = channel_id
+                self.name = name
+                self.moves = []
+
+            async def move(self, **kwargs):
+                self.moves.append(kwargs)
+
+        panel = FakeChannel(999, "farm-painel")
+        ticket_10 = FakeChannel(101, "farm-10")
+        ticket_02 = FakeChannel(102, "farm-02")
+        ticket_01 = FakeChannel(103, "farm-01")
+
+        class FakeCategory:
+            id = 700
+
+            def __init__(self, channels):
+                self.guild = SimpleNamespace(id=1)
+                self.text_channels = channels
+
+        category = FakeCategory([ticket_10, panel, ticket_02, ticket_01])
+        cog = FarmTicketsCog.__new__(FarmTicketsCog)
+        with unittest.mock.patch("cogs.farm_tickets.discord.CategoryChannel", FakeCategory):
+            asyncio.run(cog.reorder_ticket_category(category))
+
+        self.assertTrue(panel.moves[0]["beginning"])
+        self.assertIs(ticket_01.moves[0]["after"], panel)
+        self.assertIs(ticket_02.moves[0]["after"], ticket_01)
+        self.assertIs(ticket_10.moves[0]["after"], ticket_02)
+
     def test_reconciliation_marks_existing_finalized_approved_ticket(self):
         ticket, _ = db.db_ticket_reserve(
             "1", "2026-06-15", "10", "Membro", folder_slot=1

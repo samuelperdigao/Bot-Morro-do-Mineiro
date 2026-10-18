@@ -951,23 +951,63 @@ class FarmTicketsCog(commands.Cog):
             return False
 
     async def reorder_ticket_category(self, category: discord.CategoryChannel) -> None:
-        """Mantém os canais rastreados da categoria em ordem crescente de slot."""
+        """Mantém o painel no topo e os tickets em ordem crescente de slot."""
         if not isinstance(category, discord.CategoryChannel):
             return
 
+        channels = list(category.text_channels)
+        interaction_channel = None
+        system_config = db_get_system_config(str(category.guild.id), "farm")
+        interaction_channel_id = _row_get(system_config, "canal_interacao_id")
+        if interaction_channel_id:
+            interaction_channel = next(
+                (
+                    channel
+                    for channel in channels
+                    if str(getattr(channel, "id", "")) == str(interaction_channel_id)
+                ),
+                None,
+            )
+
         entries = []
-        for channel in category.text_channels:
+        for channel in channels:
             ticket = db_ticket_get_channel(str(category.guild.id), str(channel.id))
-            if ticket and not ticket["excluido_em"]:
+            if (
+                ticket
+                and not ticket["excluido_em"]
+                and (interaction_channel is None or channel.id != interaction_channel.id)
+            ):
                 entries.append((channel, ticket))
-        if len(entries) < 2:
+
+        if interaction_channel is not None:
+            interaction_is_first = bool(channels) and channels[0].id == interaction_channel.id
+            if not interaction_is_first:
+                try:
+                    await interaction_channel.move(
+                        beginning=True,
+                        reason="Painel de abertura de tickets no topo",
+                    )
+                except Exception:
+                    log.warning(
+                        "Falha ao posicionar o painel de abertura no topo da categoria %s",
+                        category.id,
+                        exc_info=True,
+                    )
+                    return
+
+        if not entries:
             return
 
         ordered = sorted(entries, key=lambda item: _ticket_sort_key(item[1]))
-        if [channel.id for channel, _ in entries] == [channel.id for channel, _ in ordered]:
+        ticket_ids = [channel.id for channel, _ in entries]
+        ordered_ids = [channel.id for channel, _ in ordered]
+        panel_was_moved = interaction_channel is not None and (
+            not channels or channels[0].id != interaction_channel.id
+        )
+        if ticket_ids == ordered_ids and not panel_was_moved:
             return
 
-        previous = None
+        previous = interaction_channel
         for channel, ticket in ordered:
             try:
                 if previous is None:
