@@ -1,4 +1,6 @@
 .env
+.env.*
+!.env.example
 *.key
 *.db
 *.db-shm
@@ -14,6 +16,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.claude/
+.claude/*
+!.claude/settings.json
 .codex-remote-attachments/
 *.db.bak

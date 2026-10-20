@@ -1,154 +1,302 @@
-# atualizar_token.ps1 - Valida o DISCORD_TOKEN local, envia o .env e reinicia o bot
-# Uso: .\scripts\atualizar_token.ps1
-#
-# O deploy.ps1 nao envia o .env (esta na lista de exclusoes), entao trocar o token
-# exige este envio manual. O script so sobe o arquivo se o token autenticar no Discord.
+# atualizar_token.ps1 - Valida e atualiza somente DISCORD_TOKEN em producao.
+# O .env completo nunca e enviado, exibido ou copiado por este script.
 
-$SSH_KEY    = "$(Split-Path $PSScriptRoot -Parent)\oracle.key"
-$REMOTE     = "ubuntu@163.176.143.142"
+[CmdletBinding()]
+param(
+    [switch]$ConfirmedByUser,
+    [string]$KnownHostsFile = $env:MORRO_BOT_KNOWN_HOSTS
+)
+
+$ErrorActionPreference = "Stop"
+
+$PROJECT_DIR = Split-Path $PSScriptRoot -Parent
+$SSH_KEY = Join-Path $PROJECT_DIR "oracle.key"
+$LOCAL_ENV = Join-Path $PROJECT_DIR ".env"
+$REMOTE_HOST = "163.176.143.142"
+$REMOTE_USER = "ubuntu"
+$REMOTE = "${REMOTE_USER}@${REMOTE_HOST}"
 $REMOTE_DIR = "/home/ubuntu/farmbot"
-$LOCAL_ENV  = "$(Split-Path $PSScriptRoot -Parent)\.env"
+$REMOTE_ENV = "$REMOTE_DIR/.env"
+$REMOTE_TOKEN_ENV = "$REMOTE_DIR/.env.token"
+$SERVICE_NAME = "farmbot"
+
+function Stop-WithError {
+    param([string]$Message)
+
+    Write-Host "[ERRO] $Message" -ForegroundColor Red
+    exit 1
+}
+
+function Get-SshOptions {
+    $options = @(
+        "-i", $SSH_KEY,
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=yes"
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($KnownHostsFile)) {
+        if (-not (Test-Path -LiteralPath $KnownHostsFile -PathType Leaf)) {
+            Stop-WithError "Arquivo known_hosts configurado nao foi encontrado."
+        }
+        $resolvedKnownHosts = (Resolve-Path -LiteralPath $KnownHostsFile).Path
+        $options += @("-o", "UserKnownHostsFile=$resolvedKnownHosts")
+    }
+
+    return $options
+}
+
+function Protect-LocalSecretFile {
+    param([string]$Path)
+
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $acl = [System.Security.AccessControl.FileSecurity]::new()
+    $acl.SetOwner($identity.User)
+    $acl.SetAccessRuleProtection($true, $false)
+    $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+        $identity.User,
+        [System.Security.AccessControl.FileSystemRights]::FullControl,
+        [System.Security.AccessControl.AccessControlType]::Allow
+    )
+    [void]$acl.AddAccessRule($rule)
+    Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
+function Invoke-TokenRollback {
+    param(
+        [string[]]$SshOptions,
+        [string]$PreviousTokenPath,
+        [string]$RemoteTokenPath,
+        [string]$NewTokenMarker
+    )
+
+    $rollbackCommand = @"
+set -eu
+if [ -f '$PreviousTokenPath' ]; then
+  mv -f '$PreviousTokenPath' '$REMOTE_TOKEN_ENV'
+  rm -f '$RemoteTokenPath' '$NewTokenMarker'
+  exit 0
+elif [ -f '$NewTokenMarker' ]; then
+  rm -f '$REMOTE_TOKEN_ENV'
+  rm -f '$RemoteTokenPath' '$NewTokenMarker'
+  exit 0
+elif [ -f '$RemoteTokenPath' ]; then
+  rm -f '$RemoteTokenPath'
+  exit 0
+fi
+exit 10
+"@
+
+    & ssh @SshOptions $REMOTE $rollbackCommand | Out-Host
+    return $LASTEXITCODE
+}
+
+function Invoke-TokenCleanup {
+    param(
+        [string[]]$SshOptions,
+        [string]$PreviousTokenPath,
+        [string]$RemoteTokenPath,
+        [string]$NewTokenMarker
+    )
+
+    $cleanupCommand = @"
+set -eu
+rm -f '$RemoteTokenPath' '$NewTokenMarker' '$PreviousTokenPath'
+"@
+
+    & ssh @SshOptions $REMOTE $cleanupCommand | Out-Host
+    return $LASTEXITCODE
+}
 
 Write-Host ""
 Write-Host "======================================" -ForegroundColor Cyan
-Write-Host "  Atualizacao de token - Morro do Mineiro" -ForegroundColor Cyan
+Write-Host "  Atualizacao segura de token" -ForegroundColor Cyan
 Write-Host "======================================" -ForegroundColor Cyan
 Write-Host ""
 
-# ── 1. Leitura do token local ─────────────────────────────────────────────────
-
-Write-Host "[1/5] Lendo o token do .env local..." -ForegroundColor Yellow
-
-if (-not (Test-Path $LOCAL_ENV)) {
-    Write-Host "  [ERRO] .env nao encontrado em: $LOCAL_ENV" -ForegroundColor Red
-    exit 1
+foreach ($command in @("ssh", "scp")) {
+    if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
+        Stop-WithError "Comando obrigatorio nao encontrado: $command"
+    }
 }
 
-if (-not (Test-Path $SSH_KEY)) {
-    Write-Host "  [ERRO] Chave SSH nao encontrada em: $SSH_KEY" -ForegroundColor Red
-    exit 1
+if (-not (Test-Path -LiteralPath $LOCAL_ENV -PathType Leaf)) {
+    Stop-WithError ".env local nao encontrado."
+}
+if (-not (Test-Path -LiteralPath $SSH_KEY -PathType Leaf)) {
+    Stop-WithError "Chave SSH nao encontrada no caminho configurado."
 }
 
-$linha = Get-Content $LOCAL_ENV | Where-Object { $_ -match '^DISCORD_TOKEN=' } | Select-Object -First 1
-
-if (-not $linha) {
-    Write-Host "  [ERRO] Linha DISCORD_TOKEN= nao encontrada no .env." -ForegroundColor Red
-    exit 1
+$tokenLine = Get-Content -LiteralPath $LOCAL_ENV |
+    Where-Object { $_ -match '^DISCORD_TOKEN=' } |
+    Select-Object -First 1
+if (-not $tokenLine) {
+    Stop-WithError "A variavel DISCORD_TOKEN nao foi encontrada no .env local."
 }
 
-$token = $linha -replace '^DISCORD_TOKEN=', ''
-$token = $token.Trim().Trim('"').Trim("'")
-
+$token = ($tokenLine -replace '^DISCORD_TOKEN=', '').Trim().Trim('"').Trim("'")
 if ([string]::IsNullOrWhiteSpace($token)) {
-    Write-Host "  [ERRO] DISCORD_TOKEN esta vazio no .env." -ForegroundColor Red
-    exit 1
+    Stop-WithError "A variavel DISCORD_TOKEN esta vazia."
 }
 
-# Fingerprint (12 primeiros chars do SHA256) para conferir o envio sem expor o token
-$sha       = [System.Security.Cryptography.SHA256]::Create()
-$bytes     = [System.Text.Encoding]::UTF8.GetBytes($token)
-$localFp   = (($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") }) -join "").Substring(0, 12)
+Write-Host "  Operacao: substituir somente DISCORD_TOKEN"
+Write-Host "  Destino: producao (identificador mascarado)"
+Write-Host "  O arquivo .env completo nao sera enviado."
 
-Write-Host "  Token lido ($($token.Length) chars, fingerprint $localFp)." -ForegroundColor Green
+if (-not $ConfirmedByUser) {
+    Write-Host ""
+    $expected = "ATUALIZAR TOKEN"
+    $confirmation = Read-Host "Digite '$expected' para validar o token e iniciar o acesso externo"
+    if ($confirmation -cne $expected) {
+        Stop-WithError "Confirmacao invalida; nenhum acesso externo foi realizado."
+    }
+} else {
+    Write-Host "  Confirmacao externa declarada pelo operador." -ForegroundColor Yellow
+}
 
-# ── 2. Validacao contra a API do Discord ──────────────────────────────────────
-
-Write-Host ""
-Write-Host "[2/5] Validando o token na API do Discord..." -ForegroundColor Yellow
-
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
+$sha = [System.Security.Cryptography.SHA256]::Create()
 try {
-    $me = Invoke-RestMethod -Uri "https://discord.com/api/v10/users/@me" `
+    $tokenBytes = [System.Text.Encoding]::UTF8.GetBytes($token)
+    $localHash = (($sha.ComputeHash($tokenBytes) | ForEach-Object { $_.ToString("x2") }) -join "")
+} finally {
+    $sha.Dispose()
+}
+
+Write-Host "[1/4] Validando credencial na API do Discord..." -ForegroundColor Yellow
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+try {
+    [void](Invoke-RestMethod -Uri "https://discord.com/api/v10/users/@me" `
         -Headers @{ Authorization = "Bot $token" } `
-        -Method Get -TimeoutSec 20 -ErrorAction Stop
+        -Method Get -TimeoutSec 20 -ErrorAction Stop)
 } catch {
     $code = $null
     if ($_.Exception.Response) {
         $code = $_.Exception.Response.StatusCode.value__
     }
-    Write-Host "  [ERRO] Token recusado pelo Discord (HTTP $code)." -ForegroundColor Red
-    Write-Host ""
-    Write-Host "  Gere um token novo em:" -ForegroundColor Yellow
-    Write-Host "    Developer Portal > sua aplicacao > aba Bot > Reset Token" -ForegroundColor Yellow
-    Write-Host "  Copie com o botao Copy (ele so aparece uma vez), cole no .env e rode de novo." -ForegroundColor Yellow
-    Write-Host "  Nada foi enviado ao servidor." -ForegroundColor Yellow
-    exit 1
+    Stop-WithError "Token recusado pelo Discord (HTTP $code); nada foi enviado ao servidor."
 }
+Write-Host "  Credencial validada; valor mantido oculto." -ForegroundColor Green
 
-Write-Host "  Token valido: $($me.username) (ID: $($me.id))" -ForegroundColor Green
+$sshOptions = Get-SshOptions
+$suffix = [Guid]::NewGuid().ToString("N")
+$localTokenPath = Join-Path ([IO.Path]::GetTempPath()) "morro-discord-token-$suffix.tmp"
+$remoteTokenPath = "$REMOTE_DIR/.discord-token-$suffix.tmp"
+$previousTokenPath = "$REMOTE_DIR/.discord-token-previous-$suffix.tmp"
+$newTokenMarker = "$REMOTE_DIR/.discord-token-new-$suffix.marker"
+$remoteTransferAttempted = $false
+$remoteSwapAttempted = $false
+$failureMessage = $null
 
-# ── 3. Envio do .env ──────────────────────────────────────────────────────────
+try {
+    [IO.File]::Create($localTokenPath).Dispose()
+    Protect-LocalSecretFile -Path $localTokenPath
+    [IO.File]::WriteAllText(
+        $localTokenPath,
+        "DISCORD_TOKEN=$token`n",
+        [System.Text.UTF8Encoding]::new($false)
+    )
 
-Write-Host ""
-Write-Host "[3/5] Enviando .env para o servidor..." -ForegroundColor Yellow
+    Write-Host "[2/4] Enviando somente a credencial selecionada..." -ForegroundColor Yellow
+    $remoteTransferAttempted = $true
+    & scp @sshOptions $localTokenPath "${REMOTE}:${remoteTokenPath}"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Falha ao transferir a credencial selecionada."
+    }
 
-scp -i $SSH_KEY -o StrictHostKeyChecking=no $LOCAL_ENV "${REMOTE}:${REMOTE_DIR}/.env"
+    & ssh @sshOptions $REMOTE "chmod 600 '$remoteTokenPath'"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Falha ao restringir o arquivo temporario remoto."
+    }
 
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "  [ERRO] Falha ao enviar o .env." -ForegroundColor Red
-    exit 1
-}
-
-Write-Host "  .env enviado." -ForegroundColor Green
-
-# ── 4. Conferencia do arquivo remoto ──────────────────────────────────────────
-
-Write-Host ""
-Write-Host "[4/5] Conferindo o token no servidor..." -ForegroundColor Yellow
-
-$fpCmd = @"
-printf '%s' "`$(grep '^DISCORD_TOKEN=' $REMOTE_DIR/.env | cut -d= -f2- | tr -d '\r')" | sha256sum | cut -c1-12
+    Write-Host "[3/4] Atualizando DISCORD_TOKEN de forma atomica..." -ForegroundColor Yellow
+    $updateCommand = @"
+set -eu
+test -f '$REMOTE_ENV'
+test -s '$remoteTokenPath'
+umask 077
+if [ -f '$REMOTE_TOKEN_ENV' ]; then
+  cp -p '$REMOTE_TOKEN_ENV' '$previousTokenPath'
+else
+  : > '$newTokenMarker'
+  chmod 600 '$newTokenMarker'
+fi
+chown --reference='$REMOTE_ENV' '$remoteTokenPath'
+chmod 600 '$remoteTokenPath'
+mv -f '$remoteTokenPath' '$REMOTE_TOKEN_ENV'
 "@
+    $remoteSwapAttempted = $true
+    & ssh @sshOptions $REMOTE $updateCommand
+    if ($LASTEXITCODE -ne 0) {
+        throw "Falha ao atualizar a variavel remota; o servico nao foi reiniciado."
+    }
 
-$remoteFp = ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE $fpCmd
+    $hashCommand = @'
+set -eu
+token="$(grep '^DISCORD_TOKEN=' '__REMOTE_TOKEN_ENV__' | head -n 1 | cut -d= -f2-)"
+printf '%s' "$token" | sha256sum | cut -d' ' -f1
+'@.Replace('__REMOTE_TOKEN_ENV__', $REMOTE_TOKEN_ENV)
+    $remoteHashOutput = @(& ssh @sshOptions $REMOTE $hashCommand)
+    $hashExitCode = $LASTEXITCODE
+    $remoteHash = ($remoteHashOutput -join "`n").Trim()
+    if ($hashExitCode -ne 0 -or $remoteHash -ne $localHash) {
+        throw "A verificacao remota da credencial falhou."
+    }
 
-if ("$remoteFp".Trim() -ne $localFp) {
-    Write-Host "  [ERRO] Fingerprint remoto ($remoteFp) difere do local ($localFp)." -ForegroundColor Red
-    Write-Host "  O arquivo no servidor nao corresponde ao local. Servico nao reiniciado." -ForegroundColor Red
-    exit 1
+    Write-Host "[4/4] Reiniciando e verificando o servico..." -ForegroundColor Yellow
+    & ssh @sshOptions $REMOTE "sudo systemctl reset-failed '$SERVICE_NAME'; sudo systemctl restart '$SERVICE_NAME'"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Falha ao reiniciar o servico com a nova credencial."
+    }
+
+    Start-Sleep -Seconds 12
+    $statusOutput = @(& ssh @sshOptions $REMOTE "systemctl is-active '$SERVICE_NAME'")
+    $statusCode = $LASTEXITCODE
+    $status = ($statusOutput -join "`n").Trim()
+    if ($statusCode -ne 0 -or $status -ne "active") {
+        throw "O servico nao confirmou estado active com a nova credencial."
+    }
+
+    $cleanupCode = Invoke-TokenCleanup `
+        -SshOptions $sshOptions `
+        -PreviousTokenPath $previousTokenPath `
+        -RemoteTokenPath $remoteTokenPath `
+        -NewTokenMarker $newTokenMarker
+    if ($cleanupCode -ne 0) {
+        throw "A limpeza remota da credencial nao foi confirmada."
+    }
+
+    Write-Host "Token atualizado e servico ativo; valor mantido oculto." -ForegroundColor Green
+} catch {
+    $failureMessage = $_.Exception.Message
+
+    if ($remoteTransferAttempted) {
+        Write-Host "  Falha detectada; restaurando a credencial anterior..." -ForegroundColor Yellow
+        $rollbackCode = Invoke-TokenRollback `
+            -SshOptions $sshOptions `
+            -PreviousTokenPath $previousTokenPath `
+            -RemoteTokenPath $remoteTokenPath `
+            -NewTokenMarker $newTokenMarker
+        if ($rollbackCode -eq 0) {
+            if ($remoteSwapAttempted) {
+                & ssh @sshOptions $REMOTE "sudo systemctl reset-failed '$SERVICE_NAME'; sudo systemctl restart '$SERVICE_NAME'" | Out-Host
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "[ERRO] A credencial anterior foi restaurada, mas o servico nao reiniciou; intervencao manual e necessaria." -ForegroundColor Red
+                }
+            }
+        } elseif ($rollbackCode -eq 10) {
+            Write-Host "  Nenhum artefato temporario remoto pendente foi encontrado; nenhuma restauracao adicional foi necessaria." -ForegroundColor Yellow
+        } else {
+            Write-Host "[ERRO] Nao foi possivel confirmar rollback ou limpeza; a credencial anterior foi preservada para recuperacao manual." -ForegroundColor Red
+        }
+    }
+} finally {
+    if (Test-Path -LiteralPath $localTokenPath -PathType Leaf) {
+        [IO.File]::Delete($localTokenPath)
+    }
+    $token = $null
+    $tokenLine = $null
+    $tokenBytes = $null
 }
 
-Write-Host "  Fingerprint confere ($localFp)." -ForegroundColor Green
-
-# ── 5. Reinicio e verificacao ─────────────────────────────────────────────────
-
-Write-Host ""
-Write-Host "[5/5] Reiniciando o servico farmbot..." -ForegroundColor Yellow
-
-# reset-failed zera o contador de reinicios acumulado enquanto o token estava invalido
-ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE `
-    "sudo systemctl reset-failed farmbot; sudo systemctl restart farmbot"
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "  [ERRO] Falha ao reiniciar o servico." -ForegroundColor Red
-    exit 1
+if ($failureMessage) {
+    Stop-WithError $failureMessage
 }
-
-Write-Host "  Aguardando inicializacao (12s)..." -ForegroundColor Yellow
-Start-Sleep -Seconds 12
-
-$status = ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE "systemctl is-active farmbot"
-
-Write-Host ""
-Write-Host "======================================" -ForegroundColor Cyan
-
-if ("$status".Trim() -eq "active") {
-    Write-Host "  STATUS: ONLINE" -ForegroundColor Green
-    Write-Host "  Token atualizado e bot no ar!" -ForegroundColor Green
-    Write-Host ""
-    Write-Host "  Ultimas linhas do log:" -ForegroundColor Cyan
-    ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE `
-        "journalctl -u farmbot -n 10 --no-pager --output=cat"
-} else {
-    Write-Host "  STATUS: $("$status".Trim().ToUpper())" -ForegroundColor Red
-    Write-Host "  Bot nao iniciou corretamente." -ForegroundColor Red
-    Write-Host ""
-    Write-Host "  Log de erro:" -ForegroundColor Red
-    ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE `
-        "journalctl -u farmbot -n 20 --no-pager --output=cat"
-    exit 1
-}
-
-Write-Host "======================================" -ForegroundColor Cyan
-Write-Host ""

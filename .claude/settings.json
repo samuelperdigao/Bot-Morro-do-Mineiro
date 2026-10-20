@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status *)",
+      "Bash(git diff --check)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git ls-files *)",
+      "Bash(python -m pytest tests/*)",
+      "Bash(venv/Scripts/python.exe -m pytest tests/*)"
+    ],
+    "additionalDirectories": []
+  }
+}

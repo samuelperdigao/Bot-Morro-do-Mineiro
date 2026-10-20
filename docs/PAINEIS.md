@@ -87,7 +87,12 @@
 
 Os painéis de Operações e Set sobrevivem a reinícios do bot. As views são registradas como persistentes em `PaineisCog.__init__`. Os IDs de mensagem e canal são salvos no banco (`guild_config`).
 
-> ⚠️ **Atenção:** Solicitações de set pendentes (com botões Aprovar/Reprovar) **perdem a funcionalidade** após reinício do bot. O `ApprovalView` não é registrado como view persistente.
+As solicitações de Set recuperáveis são carregadas por
+`register_persistent_views` a partir do banco e registradas com o
+`message_id`. Portanto, solicitações persistidas podem continuar funcionando
+após reinício. Mensagens antigas sem dados suficientes para recuperação usam
+um fallback controlado e podem não permitir aprovação; isso não é a mesma
+coisa que a `ApprovalView` deixar de ser registrada.
 
 ---
 

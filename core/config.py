@@ -8,10 +8,18 @@ Toda configuração por servidor é armazenada na tabela guild_config do banco.
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(dotenv_path=BASE_DIR / ".env")
+# Segredo operacional opcional. Quando existe, substitui somente DISCORD_TOKEN
+# e permite rotacionar o token sem copiar ou reescrever o .env.
+TOKEN_OVERRIDE_FILE = BASE_DIR / ".env.token"
+if TOKEN_OVERRIDE_FILE.exists():
+    token_override = (dotenv_values(TOKEN_OVERRIDE_FILE).get("DISCORD_TOKEN") or "").strip()
+    if not token_override:
+        raise RuntimeError("Arquivo .env.token existe sem DISCORD_TOKEN válido")
+    os.environ["DISCORD_TOKEN"] = token_override
 
 
 def _env(key: str, required: bool = True) -> str:

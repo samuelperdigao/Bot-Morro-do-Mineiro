@@ -138,17 +138,22 @@ Pontos de atencao no codigo:
 
 ## Paineis principais
 
+> **Dashboard legado:** `cogs.dashboard` não está em `core/extensions.py`,
+> portanto `/setup_dashboard` não é registrado em novos startups. Os itens de
+> Dashboard abaixo só se aplicam a uma mensagem antiga existente e confirmada
+> no servidor; não são um teste de comando ativo.
+
 | OK | Comando/interacao | Cenario minimo |
 | --- | --- | --- |
 | [ ] | `/setup_painel_operacoes` | Posta painel de operacoes. |
 | [ ] | `/setup_painel_set` | Posta painel de set. |
-| [ ] | `/setup_dashboard` | Posta dashboard persistente. |
-| [ ] | `Dashboard > SetConfigModal` | Salva configuracao de set. |
-| [ ] | `Dashboard > FarmConfigModal` | Salva configuracao de farm. |
-| [ ] | `Dashboard > AnuncioConfigModal` | Salva configuracao de anuncios. |
-| [ ] | `Dashboard > FarmTicketsConfigModal` | Salva configuracao de tickets. |
-| [ ] | `Dashboard > AcaoConfigModal` | Salva configuracao de acoes. |
-| [ ] | `Dashboard > SystemConfigModal` | Salva configuracao geral. |
+| [ ] | `/setup_dashboard` (legado) | Somente validar em mensagem antiga confirmada; nao e comando ativo. |
+| [ ] | `Dashboard > SetConfigModal` (legado) | Somente validar em mensagem antiga confirmada. |
+| [ ] | `Dashboard > FarmConfigModal` (legado) | Somente validar em mensagem antiga confirmada. |
+| [ ] | `Dashboard > AnuncioConfigModal` (legado) | Somente validar em mensagem antiga confirmada. |
+| [ ] | `Dashboard > FarmTicketsConfigModal` (legado) | Somente validar em mensagem antiga confirmada. |
+| [ ] | `Dashboard > AcaoConfigModal` (legado) | Somente validar em mensagem antiga confirmada. |
+| [ ] | `Dashboard > SystemConfigModal` (legado) | Somente validar em mensagem antiga confirmada. |
 
 ## Set e aprovacao
 

@@ -1,165 +1,323 @@
-# deploy.ps1 - Envia arquivos e reinicia o bot no servidor Oracle
-# Uso: .\deploy.ps1
+# deploy.ps1 - Publica um commit validado e reinicia o bot no servidor Oracle.
+# Uso interativo: pwsh scripts/deploy.ps1
+# Uso por agente: -ConfirmedByUser somente apos confirmacao explicita na conversa atual.
 
-$SSH_KEY    = "$(Split-Path $PSScriptRoot -Parent)\oracle.key"
-$REMOTE     = "ubuntu@163.176.143.142"
-$REMOTE_DIR = "/home/ubuntu/farmbot"
-$LOCAL_DIR  = Split-Path $PSScriptRoot -Parent
-
-Write-Host ""
-Write-Host "======================================" -ForegroundColor Cyan
-Write-Host "  Deploy - Bot Morro do Mineiro" -ForegroundColor Cyan
-Write-Host "======================================" -ForegroundColor Cyan
-Write-Host ""
-
-# ── 1. Envio dos arquivos via SCP ─────────────────────────────────────────────
-
-Write-Host "[1/3] Enviando arquivos para o servidor..." -ForegroundColor Yellow
-
-# rsync nao esta disponivel no Windows por padrao, entao usamos scp com exclusoes manuais.
-# Copiamos arquivo por arquivo/pasta por pasta, excluindo o que nao deve ir.
-
-$excludedDirs  = @(
-    "venv",
-    ".codex-test-venv",
-    "__pycache__",
-    "docs",
-    ".git",
-    ".claude",
-    ".codex-remote-attachments",
-    ".pytest_cache",
-    ".vscode",
-    "data",
-    "logs"
+[CmdletBinding()]
+param(
+    [switch]$ConfirmedByUser,
+    [string]$KnownHostsFile = $env:MORRO_BOT_KNOWN_HOSTS
 )
-$excludedFiles = @(".env", ".env.example", "oracle.key")
-$excludedExts  = @("*.db", "*.db-shm", "*.db-wal", "*.log", "*.pyc", "*.key")
 
-# Coleta todos os itens a enviar (exclui pastas e extensoes indesejadas)
-$items = Get-ChildItem -Path $LOCAL_DIR -Recurse |
-    Where-Object {
-        $relativePath = $_.FullName.Substring($LOCAL_DIR.Length + 1)
-        $parts = $relativePath -split "\\"
+$ErrorActionPreference = "Stop"
 
-        # Exclui se algum segmento do caminho for uma pasta excluida
-        $inExcludedDir = $false
-        foreach ($part in $parts) {
-            if ($excludedDirs -contains $part) {
-                $inExcludedDir = $true
-                break
-            }
-        }
+$PROJECT_DIR = Split-Path $PSScriptRoot -Parent
+$SSH_KEY = Join-Path $PROJECT_DIR "oracle.key"
+$REMOTE_HOST = "163.176.143.142"
+$REMOTE_USER = "ubuntu"
+$REMOTE = "${REMOTE_USER}@${REMOTE_HOST}"
+$REMOTE_DIR = "/home/ubuntu/farmbot"
+$SERVICE_NAME = "farmbot"
 
-        # Exclui arquivos com extensoes indesejadas
-        $hasExcludedExt = $false
-        if (-not $_.PSIsContainer) {
-            if ($excludedFiles -contains $_.Name) {
-                return $false
-            }
-            foreach ($ext in $excludedExts) {
-                if ($_.Name -like $ext) {
-                    $hasExcludedExt = $true
-                    break
-                }
-            }
-        }
+$runtimeRoots = @(
+    "assets/",
+    "cogs/",
+    "config/",
+    "core/",
+    "features/",
+    "infrastructure/",
+    "services/",
+    "ui/"
+)
+$runtimeFiles = @("main.py", "requirements.txt")
 
-        -not $inExcludedDir -and -not $hasExcludedExt
-    }
+function Stop-WithError {
+    param([string]$Message)
 
-# Garante que a estrutura de diretorios existe no servidor
-$dirs = $items | Where-Object { $_.PSIsContainer } |
-    ForEach-Object { $_.FullName.Substring($LOCAL_DIR.Length + 1) -replace "\\", "/" }
-
-foreach ($dir in $dirs) {
-    ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE "mkdir -p $REMOTE_DIR/$dir" 2>$null
+    Write-Host "[ERRO] $Message" -ForegroundColor Red
+    exit 1
 }
 
-# Envia os arquivos
-$files = $items | Where-Object { -not $_.PSIsContainer }
-$total = $files.Count
-$count = 0
+function Get-SshOptions {
+    $options = @(
+        "-i", $SSH_KEY,
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=yes"
+    )
 
-foreach ($file in $files) {
-    $count++
-    $relativePath = $file.FullName.Substring($LOCAL_DIR.Length + 1) -replace "\\", "/"
-    $remotePath   = "$REMOTE_DIR/$relativePath"
-    $pathParts    = $remotePath -split "/"
-    $remoteFolder = $pathParts[0..($pathParts.Count - 2)] -join "/"
+    if (-not [string]::IsNullOrWhiteSpace($KnownHostsFile)) {
+        if (-not (Test-Path -LiteralPath $KnownHostsFile -PathType Leaf)) {
+            Stop-WithError "Arquivo known_hosts configurado nao foi encontrado."
+        }
+        $resolvedKnownHosts = (Resolve-Path -LiteralPath $KnownHostsFile).Path
+        $options += @("-o", "UserKnownHostsFile=$resolvedKnownHosts")
+    }
 
-    Write-Progress -Activity "Enviando arquivos" -Status "$relativePath" -PercentComplete (($count / $total) * 100)
+    return $options
+}
 
-    scp -i $SSH_KEY -o StrictHostKeyChecking=no `
-        $file.FullName `
-        "${REMOTE}:${remotePath}" 2>$null
+function Invoke-RemoteRollback {
+    param(
+        [string[]]$SshOptions,
+        [string]$BackupDir
+    )
 
+    $rollbackCommand = @"
+set -eu
+test -d '$BackupDir/files'
+cp -a '$BackupDir/files/.' '$REMOTE_DIR/'
+if [ -f '$BackupDir/new-files.txt' ]; then
+  while IFS= read -r path; do
+    if [ -n "`$path" ]; then
+      rm -f "$REMOTE_DIR/`$path"
+    fi
+  done < '$BackupDir/new-files.txt'
+fi
+"@
+
+    & ssh @SshOptions $REMOTE $rollbackCommand | Out-Host
+    return $LASTEXITCODE
+}
+
+Write-Host ""
+Write-Host "======================================" -ForegroundColor Cyan
+Write-Host "  Deploy seguro - Bot Morro do Mineiro" -ForegroundColor Cyan
+Write-Host "======================================" -ForegroundColor Cyan
+Write-Host ""
+
+foreach ($command in @("git", "ssh", "scp")) {
+    if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
+        Stop-WithError "Comando obrigatorio nao encontrado: $command"
+    }
+}
+
+if (-not (Test-Path -LiteralPath $SSH_KEY -PathType Leaf)) {
+    Stop-WithError "Chave SSH nao encontrada no caminho configurado."
+}
+
+$repoRoot = (& git -C $PROJECT_DIR rev-parse --show-toplevel 2>$null)
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($repoRoot)) {
+    Stop-WithError "O diretorio do projeto nao e um repositorio Git valido."
+}
+
+$resolvedProject = (Resolve-Path -LiteralPath $PROJECT_DIR).Path.TrimEnd("\")
+$resolvedRepo = (Resolve-Path -LiteralPath $repoRoot.Trim()).Path.TrimEnd("\")
+if ($resolvedProject -ne $resolvedRepo) {
+    Stop-WithError "O script deve ser executado na raiz do repositorio esperado."
+}
+
+$workingChanges = @(& git -C $PROJECT_DIR status --porcelain --untracked-files=all)
+if ($LASTEXITCODE -ne 0) {
+    Stop-WithError "Nao foi possivel verificar o estado da arvore de trabalho."
+}
+if ($workingChanges.Count -gt 0) {
+    Stop-WithError "Deploy recusado: a arvore de trabalho possui alteracoes ou arquivos nao rastreados."
+}
+
+& git -C $PROJECT_DIR diff --check
+if ($LASTEXITCODE -ne 0) {
+    Stop-WithError "Deploy recusado: git diff --check encontrou problemas."
+}
+
+$commit = (& git -C $PROJECT_DIR rev-parse HEAD).Trim()
+$shortCommit = (& git -C $PROJECT_DIR rev-parse --short=12 HEAD).Trim()
+$branch = (& git -C $PROJECT_DIR branch --show-current).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commit)) {
+    Stop-WithError "Nao foi possivel identificar o commit de deploy."
+}
+if ([string]::IsNullOrWhiteSpace($branch)) {
+    Stop-WithError "Deploy recusado: HEAD destacado. Use uma branch identificada."
+}
+
+$parentCommit = (& git -C $PROJECT_DIR rev-parse "${commit}^" 2>$null).Trim()
+$parentCommitExitCode = $LASTEXITCODE
+if ($parentCommitExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($parentCommit)) {
+    & git -C $PROJECT_DIR diff --check $parentCommit $commit --
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "  [ERRO] Falha ao enviar: $relativePath" -ForegroundColor Red
+        Stop-WithError "Deploy recusado: o diff do commit aprovado possui problemas de whitespace."
     }
 }
 
-Write-Progress -Activity "Enviando arquivos" -Completed
-Write-Host "  $total arquivo(s) enviado(s)." -ForegroundColor Green
+$python = Join-Path $PROJECT_DIR "venv\Scripts\python.exe"
+if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+    Stop-WithError "Python da venv nao encontrado; execute o onboarding local antes do deploy."
+}
 
-# ── 2. Instalar dependencias no servidor ─────────────────────────────────────
+Write-Host "[1/5] Executando validacao local..." -ForegroundColor Yellow
+Push-Location $PROJECT_DIR
+try {
+    & $python -m pytest tests/ -q
+    if ($LASTEXITCODE -ne 0) {
+        Stop-WithError "Deploy recusado: os testes locais falharam."
+    }
+} finally {
+    Pop-Location
+}
 
-Write-Host ""
-Write-Host "[2/4] Instalando dependencias Python no servidor..." -ForegroundColor Yellow
+$postTestChanges = @(& git -C $PROJECT_DIR status --porcelain --untracked-files=all)
+$postTestCommit = (& git -C $PROJECT_DIR rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $postTestChanges.Count -gt 0 -or $postTestCommit -ne $commit) {
+    Stop-WithError "Deploy recusado: o repositorio mudou durante a validacao local."
+}
 
-ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE `
-    "cd $REMOTE_DIR && $REMOTE_DIR/venv/bin/pip install -r requirements.txt -q" 2>&1
-
+$trackedPaths = @(& git -C $PROJECT_DIR ls-files)
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "  [AVISO] pip install retornou erro (pode ser normal se ja instalado)." -ForegroundColor Yellow
+    Stop-WithError "Nao foi possivel montar o manifesto de arquivos rastreados."
+}
+
+$deployPaths = @(
+    $trackedPaths |
+        ForEach-Object { $_.Trim().Replace("\", "/") } |
+        Where-Object {
+            $path = $_
+            ($runtimeFiles -contains $path) -or
+            ($runtimeRoots | Where-Object { $path.StartsWith($_, [System.StringComparison]::Ordinal) })
+        } |
+        Sort-Object -Unique
+)
+
+if ($deployPaths.Count -eq 0) {
+    Stop-WithError "O manifesto de deploy ficou vazio."
+}
+
+foreach ($relativePath in $deployPaths) {
+    if ($relativePath -notmatch '^[A-Za-z0-9._/-]+$' -or $relativePath -match '(^|/)\.\.(/|$)') {
+        Stop-WithError "Caminho rastreado nao suportado pelo deploy seguro: $relativePath"
+    }
+    $localPath = Join-Path $PROJECT_DIR $relativePath.Replace('/', [IO.Path]::DirectorySeparatorChar)
+    if (-not (Test-Path -LiteralPath $localPath -PathType Leaf)) {
+        Stop-WithError "Arquivo rastreado nao encontrado no disco: $relativePath"
+    }
+    $expectedBlob = (& git -C $PROJECT_DIR rev-parse "${commit}:$relativePath").Trim()
+    $actualBlob = (& git -C $PROJECT_DIR hash-object -- $localPath).Trim()
+    if ($LASTEXITCODE -ne 0 -or $actualBlob -ne $expectedBlob) {
+        Stop-WithError "Arquivo local diverge do commit aprovado: $relativePath"
+    }
+}
+
+Write-Host "  Branch: $branch"
+Write-Host "  Commit: $shortCommit"
+Write-Host "  Arquivos no manifesto: $($deployPaths.Count)"
+Write-Host "  Destino: producao (identificador mascarado)"
+
+if (-not $ConfirmedByUser) {
+    Write-Host ""
+    $expected = "DEPLOY $shortCommit"
+    $confirmation = Read-Host "Digite '$expected' para iniciar SSH e publicar"
+    if ($confirmation -cne $expected) {
+        Stop-WithError "Confirmacao invalida; nenhum acesso remoto foi realizado."
+    }
 } else {
-    Write-Host "  Dependencias atualizadas." -ForegroundColor Green
+    Write-Host "  Confirmacao externa declarada pelo operador." -ForegroundColor Yellow
 }
 
-# ── 3. Reinicio do servico ────────────────────────────────────────────────────
+$sshOptions = Get-SshOptions
+$backupId = "$(Get-Date -Format 'yyyyMMddHHmmss')-$shortCommit"
+$backupDir = "$REMOTE_DIR/.deploy-backups/$backupId"
+$stagingDir = "$REMOTE_DIR/.deploy-staging/$backupId"
 
-Write-Host ""
-Write-Host "[3/4] Reiniciando servico farmbot..." -ForegroundColor Yellow
-
-ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE `
-    "sudo systemctl restart farmbot" 2>&1
-
+Write-Host "[2/6] Preparando staging e backup remoto..." -ForegroundColor Yellow
+$prepareCommand = "set -eu; mkdir -p '$backupDir/files' '$stagingDir/files'; printf '%s\n' '$commit' > '$backupDir/target-commit.txt'"
+& ssh @sshOptions $REMOTE $prepareCommand
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "  [ERRO] Falha ao reiniciar o servico." -ForegroundColor Red
-    exit 1
+    Stop-WithError "Nao foi possivel preparar staging e backup remoto."
 }
 
-Write-Host "  Comando de restart enviado." -ForegroundColor Green
+Write-Host "[3/6] Enviando e verificando o manifesto validado..." -ForegroundColor Yellow
+$count = 0
+foreach ($relativePath in $deployPaths) {
+    $count++
+    $localPath = Join-Path $PROJECT_DIR $relativePath.Replace('/', [IO.Path]::DirectorySeparatorChar)
+    $lastSlash = $relativePath.LastIndexOf('/')
+    $relativeDir = if ($lastSlash -ge 0) { $relativePath.Substring(0, $lastSlash) } else { "" }
+    $stagingFolder = if ($relativeDir) { "$stagingDir/files/$relativeDir" } else { "$stagingDir/files" }
+    $stagingPath = "$stagingDir/files/$relativePath"
 
-# ── 4. Verificacao de status ──────────────────────────────────────────────────
+    $expectedBlob = (& git -C $PROJECT_DIR rev-parse "${commit}:$relativePath").Trim()
+    $actualBlob = (& git -C $PROJECT_DIR hash-object -- $localPath).Trim()
+    if ($LASTEXITCODE -ne 0 -or $actualBlob -ne $expectedBlob) {
+        Stop-WithError "Arquivo mudou depois da confirmacao: $relativePath"
+    }
 
-Write-Host ""
-Write-Host "[4/4] Aguardando inicializacao (3s)..." -ForegroundColor Yellow
+    $localSha256 = (Get-FileHash -LiteralPath $localPath -Algorithm SHA256).Hash.ToLowerInvariant()
+
+    Write-Progress -Activity "Enviando arquivos rastreados" -Status $relativePath -PercentComplete (($count / $deployPaths.Count) * 100)
+
+    & ssh @sshOptions $REMOTE "mkdir -p '$stagingFolder'"
+    if ($LASTEXITCODE -ne 0) {
+        Stop-WithError "Falha ao preparar staging para $relativePath."
+    }
+
+    & scp @sshOptions $localPath "${REMOTE}:${stagingPath}"
+    if ($LASTEXITCODE -ne 0) {
+        Stop-WithError "Falha ao enviar $relativePath para staging; producao nao foi alterada."
+    }
+
+    $remoteHashOutput = @(& ssh @sshOptions $REMOTE "sha256sum '$stagingPath' | cut -d' ' -f1")
+    $remoteHashCode = $LASTEXITCODE
+    $remoteSha256 = ($remoteHashOutput -join "`n").Trim().ToLowerInvariant()
+    if ($remoteHashCode -ne 0 -or $remoteSha256 -ne $localSha256) {
+        Stop-WithError "Integridade do staging falhou para $relativePath; producao nao foi alterada."
+    }
+}
+Write-Progress -Activity "Enviando arquivos rastreados" -Completed
+
+Write-Host "[4/6] Ativando arquivos com backup..." -ForegroundColor Yellow
+foreach ($relativePath in $deployPaths) {
+    $remotePath = "$REMOTE_DIR/$relativePath"
+    $stagingPath = "$stagingDir/files/$relativePath"
+    $backupPath = "$backupDir/files/$relativePath"
+    $lastSlash = $relativePath.LastIndexOf('/')
+    $relativeDir = if ($lastSlash -ge 0) { $relativePath.Substring(0, $lastSlash) } else { "" }
+    $remoteFolder = if ($relativeDir) { "$REMOTE_DIR/$relativeDir" } else { $REMOTE_DIR }
+    $backupFolder = if ($relativeDir) { "$backupDir/files/$relativeDir" } else { "$backupDir/files" }
+
+    $activateCommand = @"
+set -eu
+mkdir -p '$remoteFolder' '$backupFolder'
+if [ -f '$remotePath' ]; then
+  cp -p '$remotePath' '$backupPath'
+else
+  printf '%s\n' '$relativePath' >> '$backupDir/new-files.txt'
+fi
+cp -p '$stagingPath' '$remotePath'
+"@
+    & ssh @sshOptions $REMOTE $activateCommand
+    if ($LASTEXITCODE -ne 0) {
+        [void](Invoke-RemoteRollback -SshOptions $sshOptions -BackupDir $backupDir)
+        Stop-WithError "Falha ao ativar $relativePath; arquivos anteriores foram restaurados."
+    }
+}
+
+Write-Host "[5/6] Instalando dependencias versionadas..." -ForegroundColor Yellow
+& ssh @sshOptions $REMOTE "set -eu; cd '$REMOTE_DIR'; '$REMOTE_DIR/venv/bin/pip' install -r requirements.txt -q"
+if ($LASTEXITCODE -ne 0) {
+    [void](Invoke-RemoteRollback -SshOptions $sshOptions -BackupDir $backupDir)
+    Stop-WithError "Falha ao instalar dependencias; arquivos anteriores foram restaurados."
+}
+
+Write-Host "[6/6] Reiniciando e verificando o servico..." -ForegroundColor Yellow
+& ssh @sshOptions $REMOTE "sudo systemctl restart '$SERVICE_NAME'"
+if ($LASTEXITCODE -ne 0) {
+    [void](Invoke-RemoteRollback -SshOptions $sshOptions -BackupDir $backupDir)
+    & ssh @sshOptions $REMOTE "sudo systemctl restart '$SERVICE_NAME'" | Out-Host
+    Stop-WithError "Falha no restart; rollback automatico solicitado."
+}
+
 Start-Sleep -Seconds 3
+$statusOutput = @(& ssh @sshOptions $REMOTE "systemctl is-active '$SERVICE_NAME'")
+$statusCode = $LASTEXITCODE
+$status = ($statusOutput -join "`n").Trim()
 
-$status = ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE `
-    "systemctl is-active farmbot"
-
-Write-Host ""
-Write-Host "======================================" -ForegroundColor Cyan
-
-if ($status -eq "active") {
-    Write-Host "  STATUS: ONLINE" -ForegroundColor Green
-    Write-Host "  Bot subiu com sucesso!" -ForegroundColor Green
-
-    # Exibe as ultimas linhas do log para confirmar
-    Write-Host ""
-    Write-Host "  Ultimas linhas do log:" -ForegroundColor Cyan
-    ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE `
-        "journalctl -u farmbot -n 10 --no-pager --output=cat"
-} else {
-    Write-Host "  STATUS: $($status.ToUpper())" -ForegroundColor Red
-    Write-Host "  Bot nao iniciou corretamente." -ForegroundColor Red
-    Write-Host ""
-    Write-Host "  Log de erro:" -ForegroundColor Red
-    ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE `
-        "journalctl -u farmbot -n 20 --no-pager --output=cat"
-    exit 1
+if ($statusCode -ne 0 -or $status -ne "active") {
+    $rollbackCode = Invoke-RemoteRollback -SshOptions $sshOptions -BackupDir $backupDir
+    if ($rollbackCode -eq 0) {
+        & ssh @sshOptions $REMOTE "sudo systemctl restart '$SERVICE_NAME'" | Out-Host
+    }
+    Stop-WithError "A nova versao nao ficou ativa; rollback automatico solicitado."
 }
 
-Write-Host "======================================" -ForegroundColor Cyan
 Write-Host ""
+Write-Host "Deploy concluido com sucesso." -ForegroundColor Green
+Write-Host "Commit publicado: $shortCommit"
+Write-Host "Backup de rollback: $backupId"
+Write-Host "Rollback manual: pwsh scripts/rollback_deploy.ps1 -BackupId '$backupId'"

@@ -1,6 +1,6 @@
 # Inventário técnico do bot
 
-Data do inventário: 17/10/2026
+Data do inventário: 18/10/2026
 
 Este inventário foi obtido por busca no código da branch
 `refactor/organizar-estabilizar-bot`. IDs e painéis abaixo são referências
@@ -14,11 +14,16 @@ durante a auditoria local.
 `cogs.setup`, `cogs.sistema`, `cogs.membros`, `cogs.apelidos`,
 `cogs.setup_set`, `cogs.farm`, `cogs.ausencia`, `cogs.acao`, `cogs.anuncio`,
 `cogs.encomenda`, `cogs.paineis`, `cogs.setup_paineis`, `cogs.lideranca`,
-`cogs.setup_lideranca`, `cogs.adv`, `cogs.colete`, `cogs.dashboard`,
+`cogs.setup_lideranca`, `cogs.adv`, `cogs.colete`,
 `cogs.farm_painel`, `cogs.farm_tickets`, `cogs.farm_relatorio`,
 `cogs.farm_advertencias`, `cogs.ranking_painel`, `cogs.parcerias`,
 `cogs.hierarquia`, `cogs.acao_painel`, `cogs.radio`, `cogs.bau`, `cogs.mod`,
 `cogs.recolhimento`, `cogs.bau_gerentes` e `cogs.disparo`.
+
+`cogs/dashboard.py` permanece no repositório como código legado, mas
+`cogs.dashboard` não está em `COG_EXTENSIONS`. Portanto, `/setup_dashboard`
+não é registrado no startup atual. A decisão e o risco de mensagens antigas
+estão descritos em `docs/FASE_7_DASHBOARD_LEGADO.md`.
 
 Módulos de apoio que não são extensões: `cogs.set_views`, `cogs.bau_core`,
 `cogs.farm_embeds` e `services/*`.
@@ -28,7 +33,7 @@ Módulos de apoio que não são extensões: `cogs.set_views`, `cogs.bau_core`,
 - Sistema/configuração: `/ping`, `/status`, `/setup_bot`, `/setup_farm`,
   `/setup_ausencia`, `/setup_encomenda`, `/setup_log_saida`,
   `/setup_anuncio`, `/config_ver`, `/encomenda`, `/setup_set`,
-  `/setup_painel_operacoes`, `/setup_painel_set`, `/setup_dashboard`,
+  `/setup_painel_operacoes`, `/setup_painel_set`,
   `/setup_lideranca`, `/setup_adv`, `/setup_adv_painel`, `/setup_colete`,
   `/setup_farm_painel`, `/setup_acao_painel`, `/setup_hierarquia`,
   `/setup_radio_painel`, `/setup_ranking_painel`, `/setup_relatorio_farm`,

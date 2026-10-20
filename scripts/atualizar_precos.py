@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import time
@@ -13,6 +14,19 @@ from dotenv import load_dotenv
 
 CHANNEL_ID = "1474869322139566167"
 API_BASE = "https://discord.com/api/v10"
+
+
+def require_confirmation(confirmed_by_user: bool) -> None:
+    if confirmed_by_user:
+        return
+
+    expected = f"ATUALIZAR PRECOS {CHANNEL_ID}"
+    confirmation = input(
+        f"Digite '{expected}' para confirmar a substituicao completa do canal "
+        f"{CHANNEL_ID} (publicar a tabela e remover as mensagens anteriores): "
+    )
+    if confirmation != expected:
+        raise SystemExit("Confirmacao invalida; nenhuma chamada externa foi realizada.")
 
 
 def api_request(method: str, path: str, payload: dict | None = None):
@@ -223,7 +237,8 @@ EMBEDS = [
 ]
 
 
-def main() -> None:
+def main(*, confirmed_by_user: bool = False) -> None:
+    require_confirmation(confirmed_by_user)
     load_dotenv()
     old_messages = api_request("GET", f"/channels/{CHANNEL_ID}/messages?limit=100")
     old_ids = [message["id"] for message in old_messages]
@@ -250,4 +265,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--confirmed-by-user",
+        action="store_true",
+        help="Use somente apos confirmacao explicita na conversa atual.",
+    )
+    args = parser.parse_args()
+    main(confirmed_by_user=args.confirmed_by_user)
