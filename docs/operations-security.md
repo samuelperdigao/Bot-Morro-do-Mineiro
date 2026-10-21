@@ -26,6 +26,30 @@ O parâmetro `-ConfirmedByUser` dos scripts operacionais é reservado a agentes
 que já receberam essa confirmação específica na conversa atual. Operadores
 humanos devem preferir a confirmação interativa exibida pelo script.
 
+## Fluxo guiado de commit e deploy
+
+Para publicar mudanças locais com uma sequência guiada, use:
+
+```powershell
+pwsh scripts/publicar.ps1
+```
+
+O script:
+
+1. mostra os arquivos alterados e pede confirmação antes de incluí-los;
+2. bloqueia arquivos `.env`, chaves, bancos e diretórios `data/` e `logs/`;
+3. pede a mensagem e confirmação do commit local;
+4. executa a suíte de testes antes do commit;
+5. mostra o upstream e os commits exatos antes de confirmar o `git push`;
+6. mostra branch, hash completo e ambiente antes de confirmar produção;
+7. chama `deploy.ps1`, que repete os testes, valida o manifesto, faz backup e
+   só então acessa o servidor.
+
+O fluxo para se a branch estiver atrás do upstream, se houver arquivos fora do
+commit ou se qualquer teste, push ou deploy falhar. Se não houver mudanças
+locais, ele pode publicar o commit atual após as confirmações de push e deploy.
+Atualização de preços e troca de token permanecem operações separadas.
+
 ## Segredos
 
 - Nunca imprimir ou incluir em relatórios tokens, senhas, chaves privadas ou o

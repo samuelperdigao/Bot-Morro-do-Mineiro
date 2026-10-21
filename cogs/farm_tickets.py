@@ -262,85 +262,6 @@ def _approval_is_automatic(ticket) -> bool:
     return _approval_origin(ticket) is not None
 
 
-def build_ticket_embed(ticket, member: discord.Member, meta) -> discord.Embed:
-    targets, delivered, percentage, completed, launches = _progress(ticket, meta)
-    general_progress = db_get_progresso(
-        ticket["guild_id"], ticket["week_id"], ticket["user_id"]
-    )
-    approved = bool(general_progress and general_progress["aprovada"])
-    approval_origin = _approval_origin(ticket) if approved else None
-    auto_approved = approval_origin is not None
-    status = ticket["status"]
-    if status == "finalizado":
-        color, status_text = discord.Color.blue(), "🔒 Finalizado"
-    elif status == "revisao":
-        color, status_text = discord.Color.red(), "⚠️ Em revisão"
-    elif auto_approved:
-        color, status_text = discord.Color.green(), "✅ Meta aprovada automaticamente"
-    elif approved:
-        color, status_text = discord.Color.green(), "✅ Meta aprovada pela liderança"
-    elif completed:
-        color, status_text = discord.Color.green(), "✅ Meta atingida - aguardando finalização"
-    else:
-        color, status_text = discord.Color.orange(), "🔄 Em andamento"
-
-    meta_type = db_meta_tipo_efetivo(meta)
-    type_label = {"dinheiro": "Dinheiro", "colete": "Materiais de Colete", "itens": "Kit Desmanche"}.get(meta_type, meta_type.title())
-    money = meta_type == "dinheiro"
-    filled = round(percentage / 10)
-    bar = "🟩" * filled + "⬜" * (10 - filled)
-    lines = []
-    for name, target in targets.items():
-        current = delivered.get(name, 0)
-        remaining = max(target - current, 0)
-        lines.append(f"**{name}:** `{_fmt_value(current, money)}` / `{_fmt_value(target, money)}`\nRestante: `{_fmt_value(remaining, money)}`")
-
-    embed = discord.Embed(
-        title="📌 Controle de Farm Semanal",
-        description=f"{bar}\n\n**📊 Progresso geral: {percentage:.0f}%**",
-        color=color,
-        timestamp=discord.utils.utcnow(),
-    )
-    embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="👤 Membro", value=member.mention, inline=True)
-    if ticket["folder_slot"] is not None:
-        embed.add_field(name="📁 Slot da Pasta", value=f"`{int(ticket['folder_slot']):02d}`", inline=True)
-        embed.add_field(name="🏷️ Apelido", value=ticket["folder_nickname"] or ticket["member_name"], inline=True)
-        embed.add_field(name="🎮 ID do Jogo", value=f"`{ticket['game_id']}`", inline=True)
-        if ticket["folder_channel_id"]:
-            embed.add_field(name="🗂️ Pasta Individual", value=f"<#{ticket['folder_channel_id']}>", inline=False)
-    embed.add_field(name="🎯 Farm ativo", value=type_label, inline=True)
-    embed.add_field(name="📅 Semana", value=format_date_br(ticket["week_id"]), inline=True)
-    embed.add_field(name="💰 Entregas e metas", value="\n\n".join(lines) or "Meta não configurada.", inline=False)
-    embed.add_field(name="📝 Lançamentos", value=str(len(launches)), inline=True)
-    embed.add_field(name="📌 Status", value=status_text, inline=True)
-    assigned = f"<@{ticket['assigned_to']}>" if ticket["assigned_to"] else "Não assumido"
-    embed.add_field(name="👮 Responsável", value=assigned, inline=True)
-    if approval_origin == APROVACAO_ORIGEM_META:
-        approval = "✅ Aprovada automaticamente ao atingir 100% da meta"
-    elif approval_origin == APROVACAO_ORIGEM_EXPIRACAO:
-        approval = "✅ Aprovada automaticamente ao encerrar o prazo do ticket"
-    elif approved:
-        approval = f"✅ Aprovada por <@{general_progress['aprovada_por']}>"
-    elif status == "revisao":
-        approval = "⚠️ Resolva as revisões pendentes antes de decidir"
-    elif completed:
-        approval = "⏳ Disponível para aprovação da liderança"
-    else:
-        approval = "🟢 Disponível para decisão manual da liderança"
-    embed.add_field(name="✅ Aprovação da meta", value=approval, inline=False)
-
-    history = []
-    for launch in launches[-5:][::-1]:
-        values = db_evento_itens(launch)
-        text = ", ".join(f"+{_fmt_value(float(value), money)} {name}" for name, value in values.items())
-        history.append(f"• {text} — {format_datetime_br(launch['criado_em'])}")
-    embed.add_field(name="📂 Últimos lançamentos", value="\n".join(history) or "Nenhum lançamento no ticket.", inline=False)
-    embed.add_field(name="🕒 Última atualização", value=format_datetime_br(ticket["atualizado_em"]), inline=False)
-    embed.set_footer(text="Sistema de Farm • Prazo semanal: domingo às 23:59")
-    return embed
-
-
 class TicketLinkView(discord.ui.View):
     def __init__(self, channel_url: str):
         super().__init__(timeout=60)
@@ -785,6 +706,142 @@ class FarmTicketView(discord.ui.View):
             await interaction.response.send_message("Sem permissão administrativa.", ephemeral=True)
             return
         await interaction.response.send_modal(FinalizeTicketModal(cog, int(ticket["id"])))
+
+
+def build_ticket_view(
+    ticket,
+    member: discord.Member,
+    meta,
+    *,
+    finalized: bool = False,
+    can_approve: bool = True,
+    approved: bool = False,
+) -> discord.ui.LayoutView:
+    """Renderiza o painel principal do ticket em Components V2."""
+    targets, delivered, percentage, completed, launches = _progress(ticket, meta)
+    general_progress = db_get_progresso(
+        ticket["guild_id"], ticket["week_id"], ticket["user_id"]
+    )
+    approved = approved or bool(general_progress and general_progress["aprovada"])
+    approval_origin = _approval_origin(ticket) if approved else None
+    status = ticket["status"]
+    if status == "finalizado":
+        color, status_text = discord.Color.blue(), "🔒 Finalizado"
+    elif status == "revisao":
+        color, status_text = discord.Color.red(), "⚠️ Em revisão"
+    elif approval_origin is not None:
+        color, status_text = discord.Color.green(), "✅ Meta aprovada automaticamente"
+    elif approved:
+        color, status_text = discord.Color.green(), "✅ Meta aprovada pela liderança"
+    elif completed:
+        color, status_text = discord.Color.green(), "✅ Meta atingida · aguardando finalização"
+    else:
+        color, status_text = discord.Color.orange(), "🔄 Em andamento"
+
+    meta_type = db_meta_tipo_efetivo(meta)
+    type_label = {"dinheiro": "Dinheiro", "colete": "Materiais de Colete", "itens": "Kit Desmanche"}.get(meta_type, meta_type.title())
+    money = meta_type == "dinheiro"
+    bar = "🟩" * min(round(percentage / 10), 10) + "⬜" * (10 - min(round(percentage / 10), 10))
+    slot = ticket["folder_slot"]
+    header = [
+        "# Controle de Farm Semanal",
+        f"{member.mention} · {member.display_name} · ID `{member.id}`",
+    ]
+    if slot is not None:
+        header.append(
+            f"Pasta `{int(slot):02d}` · **{ticket['folder_nickname'] or ticket['member_name']}** · Jogo `{ticket['game_id']}`"
+        )
+    header.append(f"**{status_text}**")
+    avatar = getattr(member.display_avatar, "url", None)
+    header_text = discord.ui.TextDisplay("\n".join(header))
+    header_section = (
+        discord.ui.Section(header_text, accessory=discord.ui.Thumbnail(avatar))
+        if avatar
+        else header_text
+    )
+
+    progress_section = (
+        f"## Progresso · {percentage:.0f}%\n{bar}\n"
+        f"Semana **{format_date_br(ticket['week_id'])}** · {type_label}"
+    )
+    material_lines = []
+    for name, target in targets.items():
+        current = delivered.get(name, 0)
+        remaining = max(target - current, 0)
+        marker = "✅" if current >= target else "▫️"
+        material_lines.append(
+            f"{marker} **{name}**  `{_fmt_value(current, money)}` / `{_fmt_value(target, money)}`  ·  faltam `{_fmt_value(remaining, money)}`"
+        )
+    materials_section = "## Materiais e entregas\n" + ("\n".join(material_lines) or "Meta não configurada.")
+
+    if approval_origin == APROVACAO_ORIGEM_META:
+        approval = "✅ Aprovada automaticamente ao atingir 100% da meta"
+    elif approval_origin == APROVACAO_ORIGEM_EXPIRACAO:
+        approval = "✅ Aprovada automaticamente ao encerrar o prazo do ticket"
+    elif approved:
+        approval = f"✅ Aprovada por <@{general_progress['aprovada_por']}>"
+    elif status == "revisao":
+        approval = "⚠️ Resolva as revisões pendentes antes de decidir"
+    elif completed:
+        approval = "⏳ Disponível para aprovação da liderança"
+    else:
+        approval = "🟢 Disponível para decisão manual da liderança"
+    assigned = f"<@{ticket['assigned_to']}>" if ticket["assigned_to"] else "Não assumido"
+    folder = f"<#{ticket['folder_channel_id']}>" if ticket["folder_channel_id"] else "—"
+    operations = (
+        "## Acompanhamento\n"
+        f"**Lançamentos:** {len(launches)}  ·  **Responsável:** {assigned}\n"
+        f"**Aprovação:** {approval}\n"
+        f"**Pasta individual:** {folder}"
+    )
+
+    history = []
+    for launch in launches[-5:][::-1]:
+        values = db_evento_itens(launch)
+        text = ", ".join(f"+{_fmt_value(float(value), money)} {name}" for name, value in values.items())
+        history.append(f"• {text} — {format_datetime_br(launch['criado_em'])}")
+    footer = (
+        "## Últimos lançamentos\n"
+        + ("\n".join(history) or "Nenhum lançamento no ticket.")
+        + f"\nAtualizado {format_datetime_br(ticket['atualizado_em'])} · Prazo: domingo às 23:59"
+    )
+
+    legacy_view = FarmTicketView(
+        finalized=finalized or status == "finalizado",
+        can_approve=can_approve,
+        approved=approved,
+    )
+    buttons = []
+    for item in legacy_view.children:
+        button = discord.ui.Button(
+            label=item.label,
+            style=item.style,
+            emoji=item.emoji,
+            custom_id=item.custom_id,
+            disabled=item.disabled,
+            row=item.row,
+        )
+        button.callback = item.callback
+        buttons.append(button)
+
+    layout = discord.ui.LayoutView(timeout=None)
+    layout.add_item(
+        discord.ui.Container(
+            header_section,
+            discord.ui.Separator(spacing=discord.SeparatorSpacing.small),
+            discord.ui.TextDisplay(progress_section),
+            discord.ui.Separator(spacing=discord.SeparatorSpacing.small),
+            discord.ui.TextDisplay(materials_section),
+            discord.ui.Separator(spacing=discord.SeparatorSpacing.small),
+            discord.ui.TextDisplay(operations),
+            discord.ui.Separator(spacing=discord.SeparatorSpacing.small),
+            discord.ui.TextDisplay(footer),
+            discord.ui.ActionRow(*buttons[:3]),
+            discord.ui.ActionRow(*buttons[3:]),
+            accent_color=color,
+        )
+    )
+    return layout
 
 
 class ManualDeleteConfirmView(discord.ui.View):
@@ -1575,8 +1632,13 @@ class FarmTicketsCog(commands.Cog):
             meta = db_get_meta(ticket["guild_id"], ticket["week_id"])
             approved = bool(progress and progress["aprovada"])
             await message.edit(
-                embed=build_ticket_embed(ticket, member, meta),
-                view=FarmTicketView(
+                content=None,
+                embed=None,
+                attachments=[],
+                view=build_ticket_view(
+                    ticket,
+                    member,
+                    meta,
                     finalized=ticket["status"] == "finalizado",
                     can_approve=ticket["status"] != "revisao",
                     approved=approved,
@@ -1856,9 +1918,8 @@ class FarmTicketsCog(commands.Cog):
             provisional["channel_id"] = str(channel.id)
             provisional["status"] = "aberto"
             message = await channel.send(
-                content=owner.mention,
-                embed=build_ticket_embed(provisional, owner, meta),
-                view=FarmTicketView(),
+                view=build_ticket_view(provisional, owner, meta),
+                allowed_mentions=discord.AllowedMentions(users=[owner]),
             )
             try:
                 await message.pin(reason="Painel principal do ticket de farm")
@@ -2239,9 +2300,8 @@ class FarmTicketsCog(commands.Cog):
             provisional["channel_id"] = str(channel.id)
             provisional["status"] = "aberto"
             message = await channel.send(
-                content=interaction.user.mention,
-                embed=build_ticket_embed(provisional, interaction.user, meta),
-                view=FarmTicketView(),
+                view=build_ticket_view(provisional, interaction.user, meta),
+                allowed_mentions=discord.AllowedMentions(users=[interaction.user]),
             )
             try:
                 await message.pin(reason="Painel principal do ticket de farm")

@@ -23,6 +23,7 @@ from cogs.farm_painel import (
 from cogs.farm_tickets import (
     FarmTicketView,
     FarmTicketsCog,
+    build_ticket_view,
     _approval_is_automatic,
     _approval_origin,
     _expanded_admin_role_ids,
@@ -168,6 +169,90 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         self.assertTrue(created)
         db.db_ticket_activate(int(ticket["id"]), "100", "200")
         return db.db_ticket_get(int(ticket["id"]))
+
+    def _ticket_panel(self, *, approved=False):
+        ticket = db.db_ticket_get(1)
+        member = SimpleNamespace(
+            id=10,
+            display_name="Membro",
+            mention="<@10>",
+            display_avatar=SimpleNamespace(url="https://cdn.example/avatar.png"),
+        )
+        view = build_ticket_view(
+            ticket,
+            member,
+            db.db_get_meta("1", "2026-06-15"),
+            approved=approved,
+        )
+        return view, "\n".join(
+            child.content
+            for item in view.children
+            for child in item.children
+            if isinstance(child, discord.ui.TextDisplay)
+        )
+
+    def test_ticket_panel_v2_shows_zero_partial_and_complete_progress(self):
+        db.db_set_meta("1", "2026-06-15", {"Ferro": 100}, "99")
+        ticket = self._create_ticket()
+
+        view, text = self._ticket_panel()
+        self.assertIsInstance(view, discord.ui.LayoutView)
+        self.assertIn("Progresso · 0%", text)
+        self.assertIn("faltam `100`", text)
+
+        db.db_ticket_launch(
+            int(ticket["id"]), "10", {"Ferro": 50},
+            "100", "300", "https://cdn.example/proof.png", None,
+        )
+        view, text = self._ticket_panel()
+        self.assertIn("Progresso · 50%", text)
+        self.assertIn("`50` / `100`", text)
+
+        db.db_ticket_launch(
+            int(ticket["id"]), "10", {"Ferro": 50},
+            "101", "301", "https://cdn.example/proof2.png", None,
+        )
+        view, text = self._ticket_panel()
+        self.assertIn("Progresso · 100%", text)
+        self.assertIn("✅ **Ferro**", text)
+
+        db.db_aprovar("1", "2026-06-15", "10", "99")
+        view, text = self._ticket_panel(approved=True)
+        self.assertIn("Aprovada por <@99>", text)
+        db.db_ticket_add_action(
+            int(ticket["id"]),
+            "aprovacao",
+            "0",
+            payload={
+                "aprovacao_automatica": True,
+                "origem": APROVACAO_ORIGEM_META,
+            },
+        )
+        view, text = self._ticket_panel(approved=True)
+        self.assertIn("Aprovada automaticamente ao atingir", text)
+
+    def test_ticket_panel_v2_preserves_action_ids_and_disabled_states(self):
+        ticket = self._create_ticket()
+        member = SimpleNamespace(
+            id=10,
+            display_name="Membro",
+            mention="<@10>",
+            display_avatar=SimpleNamespace(url="https://cdn.example/avatar.png"),
+        )
+        meta = db.db_get_meta("1", "2026-06-15")
+        active = build_ticket_view(ticket, member, meta)
+        items = [child for row in active.children[0].children if isinstance(row, discord.ui.ActionRow) for child in row.children]
+        expected = {item.custom_id for item in FarmTicketView().children}
+        self.assertEqual({item.custom_id for item in items}, expected)
+
+        finalized = dict(ticket)
+        finalized["status"] = "finalizado"
+        db.db_aprovar("1", "2026-06-15", "10", "99")
+        view = build_ticket_view(finalized, member, meta, finalized=True, approved=True)
+        self.assertTrue(view.to_components())
+        items = [child for row in view.children[0].children if isinstance(row, discord.ui.ActionRow) for child in row.children]
+        self.assertTrue(all(item.disabled for item in items if item.custom_id != "farm_ticket:proofs"))
+        self.assertFalse(next(item for item in items if item.custom_id == "farm_ticket:proofs").disabled)
 
     def _create_log_cog(self):
         db.db_set_system_config("1", "farm", None, "900")

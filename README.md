@@ -71,7 +71,23 @@ no Discord Developer Portal.
 
 ## Operacao
 
-```bash
+```powershell
+pwsh scripts/publicar.ps1
+```
+
+Fluxo guiado para revisar os arquivos alterados, criar o commit local, enviar a
+branch ao upstream e chamar o deploy. O script pede confirmações separadas para
+incluir os arquivos, criar o commit, fazer o push e publicar em produção. Ele
+roda os testes antes do commit e o deploy os repete antes de abrir SSH. Revise a
+lista de arquivos antes de confirmar. Para publicar um commit já existente,
+rode o mesmo comando sem alterações locais.
+
+O fluxo de publicação não atualiza preços nem tokens. Essas operações ficam
+separadas por alterarem recursos independentes.
+
+Para executar apenas o deploy, sem criar commit ou fazer push:
+
+```powershell
 pwsh scripts/deploy.ps1
 ```
 

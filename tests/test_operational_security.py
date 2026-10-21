@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "scripts" / "deploy.ps1"
 TOKEN_UPDATE = ROOT / "scripts" / "atualizar_token.ps1"
 ROLLBACK = ROOT / "scripts" / "rollback_deploy.ps1"
+PUBLICATION = ROOT / "scripts" / "publicar.ps1"
 PRICE_UPDATE = ROOT / "scripts" / "atualizar_precos.py"
 
 
@@ -55,6 +56,23 @@ def test_deploy_uses_validated_tracked_manifest() -> None:
     assert "Get-FileHash" in source
     assert "sha256sum" in source
     assert "Invoke-RemoteRollback" in source
+
+
+def test_guided_publication_confirms_commit_push_and_production_deploy() -> None:
+    source = read(PUBLICATION)
+
+    assert "git -C $PROJECT_DIR add --all" in source
+    assert "git diff --cached --check" in source
+    assert "-m pytest tests/ -q" in source
+    assert r"\.env(?:\.[^/]*)?|oracle\.key|data|logs" in source
+    assert 'return (Read-Host "$Message Digite SIM para continuar") -ceq "SIM"' in source
+    assert "git -C $PROJECT_DIR push $remoteName $upstreamBranch" in source
+    assert "rev-list --count \"HEAD..$upstream\"" in source
+    assert "rev-list --count \"$upstream..HEAD\"" in source
+    assert "$fullCommit" in source
+    assert "-ConfirmedByUser" in source
+    assert "scripts/atualizar_precos.py" not in source
+    assert "scripts/atualizar_token.ps1" not in source
 
 
 def test_root_deploy_wrapper_forwards_arguments() -> None:
@@ -197,7 +215,7 @@ def test_price_embeds_use_compact_fields_within_discord_limits() -> None:
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell indisponivel")
 @pytest.mark.parametrize(
     "script",
-    [ROOT / "deploy.ps1", DEPLOY, TOKEN_UPDATE, ROLLBACK],
+    [ROOT / "deploy.ps1", DEPLOY, TOKEN_UPDATE, ROLLBACK, PUBLICATION],
 )
 def test_powershell_scripts_parse_without_errors(script: Path) -> None:
     escaped_path = str(script).replace("'", "''")
