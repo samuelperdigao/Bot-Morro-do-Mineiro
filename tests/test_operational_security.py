@@ -169,6 +169,31 @@ def test_price_confirmation_names_channel_and_destructive_scope(monkeypatch) -> 
     assert "remover as mensagens anteriores" in prompts[0]
 
 
+def test_price_embeds_use_compact_fields_within_discord_limits() -> None:
+    module = load_price_update_module()
+
+    assert len(module.EMBEDS) == 13
+    for item in module.EMBEDS:
+        assert item["title"].startswith("💰 ")
+        assert item["color"] == 0x4F8C9D
+        assert 1 <= len(item["fields"]) <= 25
+        assert all(len(field["name"]) <= 256 for field in item["fields"])
+        assert all(len(field["value"]) <= 1024 for field in item["fields"])
+        assert all(
+            field["inline"] is True
+            for field in item["fields"]
+            if field["name"] != "Observacao"
+        )
+        assert sum(
+            len(item.get(key, ""))
+            for key in ("title", "description")
+        ) + sum(
+            len(field[part])
+            for field in item["fields"]
+            for part in ("name", "value")
+        ) + len(item["footer"]["text"]) <= 6000
+
+
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell indisponivel")
 @pytest.mark.parametrize(
     "script",

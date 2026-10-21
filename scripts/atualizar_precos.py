@@ -57,26 +57,26 @@ def api_request(method: str, path: str, payload: dict | None = None):
     raise RuntimeError("Limite de requisicoes persistiu apos cinco tentativas")
 
 
-def lines(items: list[tuple[str, str]]) -> str:
-    return "\n\n".join(f"**{name}**\n{detail}" for name, detail in items)
-
-
-def embed(title: str, color: int, items: list[tuple[str, str]], note: str | None = None):
+def embed(title: str, items: list[tuple[str, str]], note: str | None = None):
     result = {
-        "title": title,
-        "description": lines(items),
-        "color": color,
+        "title": f"💰 {title}",
+        "fields": [
+            {"name": name, "value": f"**{detail}**", "inline": True}
+            for name, detail in items
+        ],
+        "color": 0x4F8C9D,
         "footer": {"text": "Tabela oficial de precos"},
     }
     if note:
-        result["fields"] = [{"name": "Observacao", "value": note, "inline": False}]
+        result["fields"].append(
+            {"name": "Observacao", "value": note, "inline": False}
+        )
     return result
 
 
 EMBEDS = [
     embed(
         "ITENS | Taxa de 30%",
-        0x4F8C9D,
         [
             ("Drogas", "R$ 60 a R$ 150"),
             ("Camisa de For\u00e7a", "R$ 6.000 a R$ 6.500"),
@@ -99,7 +99,6 @@ EMBEDS = [
     ),
     embed(
         "ITENS | Taxa de 20%",
-        0x76A5AF,
         [
             ("Drogas", "R$ 120 a R$ 150"),
             ("Masterpick", "R$ 2.000 a R$ 2.500"),
@@ -109,7 +108,6 @@ EMBEDS = [
     ),
     embed(
         "MUNI\u00c7\u00d5ES | Taxa de 35%",
-        0xF5B041,
         [
             ("5mm", "R$ 100 a R$ 120 por unidade"),
             ("9mm", "R$ 125 a R$ 150 por unidade"),
@@ -119,7 +117,6 @@ EMBEDS = [
     ),
     embed(
         "ATTACHS | Taxa de 30%",
-        0xFF6D00,
         [
             ("Clip Extendido", "R$ 3.000 a R$ 4.000"),
             ("Supressor", "R$ 3.000 a R$ 4.000"),
@@ -132,7 +129,6 @@ EMBEDS = [
     ),
     embed(
         "ARMAS 1 | Taxa de 45%",
-        0xD65C5C,
         [
             ("Pistola Colt .45", "R$ 25.000 a R$ 35.000"),
             ("Pistola M1911", "R$ 35.000 a R$ 45.000"),
@@ -147,7 +143,6 @@ EMBEDS = [
     ),
     embed(
         "ARMAS ADICIONAIS | Taxa de 30%",
-        0x666666,
         [
             ("Carabina (IA2)", "R$ 130.000"),
             ("SPAS-12", "R$ 120.000"),
@@ -155,7 +150,6 @@ EMBEDS = [
     ),
     embed(
         "ARMAS 2 | Taxa de 45%",
-        0x2ECC71,
         [
             ("Pistola Five-Seven", "R$ 30.000 a R$ 40.000"),
             ("Pistola D-Eagle", "R$ 35.000 a R$ 45.000"),
@@ -170,7 +164,6 @@ EMBEDS = [
     ),
     embed(
         "PRESET SUBS / PISTOLAS 1",
-        0x3498DB,
         [
             ("Pistola Five-Seven", "R$ 30.000 a R$ 40.000"),
             ("Pistola M1911", "R$ 35.000 a R$ 45.000"),
@@ -180,7 +173,6 @@ EMBEDS = [
     ),
     embed(
         "ITENS ADICIONAIS",
-        0xF9E79F,
         [
             ("Pistola AP", "R$ 50.000"),
             ("FN Fal (Taxa 30%)", "R$ 160.000"),
@@ -188,7 +180,6 @@ EMBEDS = [
     ),
     embed(
         "OUTROS",
-        0xE67E22,
         [
             ("FN Fal (Taxa 30%)", "R$ 160.000"),
             ("Arco", "R$ 50.000"),
@@ -199,7 +190,6 @@ EMBEDS = [
     ),
     embed(
         "FLIPPERS | Taxa de 50%",
-        0xF1C40F,
         [
             ("Flipper MK5", "R$ 100.000 | Limite: 2 por grupo\nUso: Central e Paleto"),
             ("Flipper MK4", "R$ 80.000 | Limite: 2 por grupo\nUso: Conce e Merryweather"),
@@ -213,7 +203,6 @@ EMBEDS = [
     ),
     embed(
         "VALORES DE RECICLAGEM",
-        0xE74C3C,
         [
             ("Pistolas", "R$ 10.000"),
             ("Subs", "R$ 20.000"),
@@ -223,7 +212,6 @@ EMBEDS = [
     ),
     embed(
         "ARMAS BRANCAS",
-        0x95A5A6,
         [
             ("Katana", "R$ 5.000"),
             ("P\u00e3o (Arma Branca)", "R$ 3.000"),
