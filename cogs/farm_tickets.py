@@ -8,6 +8,7 @@ import logging
 import re
 import unicodedata
 from datetime import date, timedelta
+from pathlib import Path
 
 import discord
 from discord import app_commands
@@ -74,6 +75,11 @@ from services.set_service import (
 
 log = logging.getLogger("farm")
 PROOF_TIMEOUT = 180.0
+TICKET_LOGO_PATH = Path(__file__).resolve().parent.parent / "assets" / "farm" / "mdm-logo-original.png"
+TICKET_LOGO_FILENAME = "mdm-logo-original.png"
+TICKET_ANIMATED_EMOJI_ID = 1542674742916419644
+TICKET_CENTRAL_EMOJI_NAME = "ChatGPTImage27deagode202620_11_1"
+TICKET_FALLBACK_ANIMATED_EMOJI_IDS = (1541575548357320855, 1541575597438795876)
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 APPROVED_TICKET_PREFIX = "✅-"
 DISCORD_CHANNEL_NAME_LIMIT = 100
@@ -230,6 +236,34 @@ def _progress(ticket, meta) -> tuple[dict[str, float], dict[str, float], float, 
     percentage = (sum(ratios) / len(ratios) * 100) if ratios else 0
     completed = bool(ratios) and all(ratio >= 1 for ratio in ratios)
     return targets, delivered, percentage, completed, launches
+
+
+def _ticket_animated_emoji(guild) -> str | None:
+    """Retorna um emoji realmente animado disponível na guild do ticket."""
+    if guild is None:
+        return None
+    emojis = tuple(getattr(guild, "emojis", ()))
+    animated = {int(item.id): item for item in emojis if getattr(item, "animated", False)}
+    preferred_ids = (TICKET_ANIMATED_EMOJI_ID, *TICKET_FALLBACK_ANIMATED_EMOJI_IDS)
+    emoji = next((animated[item_id] for item_id in preferred_ids if item_id in animated), None)
+    if emoji is None:
+        emoji = next(iter(animated.values()), None)
+    return str(emoji) if emoji is not None else None
+
+
+def _ticket_central_emoji(guild) -> str | None:
+    """Retorna o emoji escolhido para identificar a Central de Farm."""
+    emoji = next(
+        (
+            item
+            for item in getattr(guild, "emojis", ())
+            if int(getattr(item, "id", 0)) == TICKET_ANIMATED_EMOJI_ID
+        ),
+        None,
+    )
+    if emoji is not None:
+        return str(emoji)
+    return f"<:{TICKET_CENTRAL_EMOJI_NAME}:{TICKET_ANIMATED_EMOJI_ID}>"
 
 
 def _payload_approval_origin(payload: dict, action_name: str | None = None) -> str | None:
@@ -563,7 +597,7 @@ class FarmTicketView(discord.ui.View):
         ticket = db_ticket_get_channel(str(interaction.guild_id), str(interaction.channel_id))
         return cog, ticket
 
-    @discord.ui.button(label="Lançar Farm", emoji="📤", style=discord.ButtonStyle.primary, custom_id="farm_ticket:launch", row=0)
+    @discord.ui.button(label="Lançar Farm", emoji="📦", style=discord.ButtonStyle.primary, custom_id="farm_ticket:launch", row=0)
     async def launch(self, interaction: discord.Interaction, button: discord.ui.Button):
         cog, ticket = await self._context(interaction)
         if not cog or not ticket or ticket["status"] not in {"aberto", "revisao"}:
@@ -582,7 +616,7 @@ class FarmTicketView(discord.ui.View):
             return
         await interaction.response.send_modal(FarmTicketLaunchModal(cog, ticket, targets))
 
-    @discord.ui.button(label="Ver Comprovantes", emoji="📎", style=discord.ButtonStyle.secondary, custom_id="farm_ticket:proofs", row=0)
+    @discord.ui.button(label="Comprovantes", emoji="🧾", style=discord.ButtonStyle.secondary, custom_id="farm_ticket:proofs", row=0)
     async def proofs(self, interaction: discord.Interaction, button: discord.ui.Button):
         cog, ticket = await self._context(interaction)
         if not ticket or (str(interaction.user.id) != ticket["user_id"] and not cog.is_admin(interaction.user, ticket["guild_id"])):
@@ -593,7 +627,7 @@ class FarmTicketView(discord.ui.View):
             links.append(f"• [Lançamento #{row['id']}]({row['log_proof_url'] or row['proof_url']}) — {format_datetime_br(row['criado_em'])}")
         await interaction.response.send_message("\n".join(links) or "Nenhum comprovante registrado.", ephemeral=True)
 
-    @discord.ui.button(label="Recolhimento", emoji="📥", style=discord.ButtonStyle.primary, custom_id="farm_ticket:collection", row=0)
+    @discord.ui.button(label="Recolher", emoji="📥", style=discord.ButtonStyle.primary, custom_id="farm_ticket:collection", row=0)
     async def collection(self, interaction: discord.Interaction, button: discord.ui.Button):
         cog, ticket = await self._context(interaction)
         if not cog or not ticket or not cog.is_admin(interaction.user, ticket["guild_id"]):
@@ -618,7 +652,7 @@ class FarmTicketView(discord.ui.View):
             return
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="Assumir Ticket", emoji="👮", style=discord.ButtonStyle.secondary, custom_id="farm_ticket:claim", row=1)
+    @discord.ui.button(label="Assumir", emoji="🤝", style=discord.ButtonStyle.secondary, custom_id="farm_ticket:claim", row=0)
     async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
         cog, ticket = await self._context(interaction)
         if not ticket or not cog.is_admin(interaction.user, ticket["guild_id"]):
@@ -633,7 +667,7 @@ class FarmTicketView(discord.ui.View):
         await cog.refresh_ticket(int(ticket["id"]))
         await interaction.response.send_message("Ticket assumido.", ephemeral=True)
 
-    @discord.ui.button(label="Revisar", emoji="🔎", style=discord.ButtonStyle.secondary, custom_id="farm_ticket:review", row=1)
+    @discord.ui.button(label="Revisar lançamentos", emoji="🔍", style=discord.ButtonStyle.secondary, custom_id="farm_ticket:review", row=1)
     async def review(self, interaction: discord.Interaction, button: discord.ui.Button):
         cog, ticket = await self._context(interaction)
         if not ticket or not cog.is_admin(interaction.user, ticket["guild_id"]):
@@ -716,8 +750,9 @@ def build_ticket_view(
     finalized: bool = False,
     can_approve: bool = True,
     approved: bool = False,
+    guild=None,
 ) -> discord.ui.LayoutView:
-    """Renderiza o painel principal do ticket em Components V2."""
+    """Renderiza o painel de farm em um Container Components V2."""
     targets, delivered, percentage, completed, launches = _progress(ticket, meta)
     general_progress = db_get_progresso(
         ticket["guild_id"], ticket["week_id"], ticket["user_id"]
@@ -726,53 +761,75 @@ def build_ticket_view(
     approval_origin = _approval_origin(ticket) if approved else None
     status = ticket["status"]
     if status == "finalizado":
-        color, status_text = discord.Color.blue(), "🔒 Finalizado"
+        color, status_text = discord.Color.from_rgb(91, 110, 130), "🔒 FINALIZADO"
     elif status == "revisao":
-        color, status_text = discord.Color.red(), "⚠️ Em revisão"
-    elif approval_origin is not None:
-        color, status_text = discord.Color.green(), "✅ Meta aprovada automaticamente"
+        color, status_text = discord.Color.from_rgb(226, 74, 92), "⚠️ EM REVISÃO"
     elif approved:
-        color, status_text = discord.Color.green(), "✅ Meta aprovada pela liderança"
+        color, status_text = discord.Color.from_rgb(73, 190, 145), "✓ META APROVADA"
     elif completed:
-        color, status_text = discord.Color.green(), "✅ Meta atingida · aguardando finalização"
+        color, status_text = discord.Color.from_rgb(73, 190, 145), "✓ META ATINGIDA"
     else:
-        color, status_text = discord.Color.orange(), "🔄 Em andamento"
+        color, status_text = discord.Color.from_rgb(35, 175, 220), "OPERAÇÃO ATIVA"
 
     meta_type = db_meta_tipo_efetivo(meta)
     type_label = {"dinheiro": "Dinheiro", "colete": "Materiais de Colete", "itens": "Kit Desmanche"}.get(meta_type, meta_type.title())
     money = meta_type == "dinheiro"
-    bar = "🟩" * min(round(percentage / 10), 10) + "⬜" * (10 - min(round(percentage / 10), 10))
+    animated_icon = _ticket_animated_emoji(guild)
+    central_icon = _ticket_central_emoji(guild) or "🎯"
+    bar_width = 42
+    filled = min(round(percentage * bar_width / 100), bar_width)
+    bar = f"`{'▰' * filled}{'▱' * (bar_width - filled)}`"
     slot = ticket["folder_slot"]
+    member_label = (
+        _row_get(ticket, "folder_nickname")
+        or _row_get(ticket, "member_name")
+        or member.display_name
+    )
     header = [
-        "# Controle de Farm Semanal",
-        f"{member.mention} · {member.display_name} · ID `{member.id}`",
+        f"# {central_icon} CENTRAL DE FARM",
+        f"**Membro**  ·  {member_label}",
     ]
     if slot is not None:
         header.append(
-            f"Pasta `{int(slot):02d}` · **{ticket['folder_nickname'] or ticket['member_name']}** · Jogo `{ticket['game_id']}`"
+            f"`PASTA {int(slot):02d}`  ·  **ID do jogo** `{ticket['game_id']}`"
         )
-    header.append(f"**{status_text}**")
-    avatar = getattr(member.display_avatar, "url", None)
+    elif _row_get(ticket, "game_id"):
+        header.append(f"**ID do jogo** `{ticket['game_id']}`")
+    header.append(f"**{animated_icon + ' ' if animated_icon else '◉ '}{status_text}**")
     header_text = discord.ui.TextDisplay("\n".join(header))
-    header_section = (
-        discord.ui.Section(header_text, accessory=discord.ui.Thumbnail(avatar))
-        if avatar
-        else header_text
+    header_section = discord.ui.Section(
+        header_text,
+        accessory=discord.ui.Thumbnail(
+            str(member.display_avatar.url),
+            description=f"Foto de perfil de {member_label}",
+        ),
     )
 
     progress_section = (
-        f"## Progresso · {percentage:.0f}%\n{bar}\n"
-        f"Semana **{format_date_br(ticket['week_id'])}** · {type_label}"
+        ">>> ## 01  /  PROGRESSO DA SEMANA\n"
+        f"**{percentage:.0f}% CONCLUÍDO**\n"
+        f"{bar}\n"
+        f"-# {format_date_br(ticket['week_id'])}  ·  {type_label}"
     )
+
     material_lines = []
     for name, target in targets.items():
         current = delivered.get(name, 0)
         remaining = max(target - current, 0)
-        marker = "✅" if current >= target else "▫️"
+        item_percentage = min(current / target * 100, 100) if target > 0 else 0
+        marker = "✅" if current >= target else "🔸"
+        item_bar_width = 12
+        item_filled = min(round(item_percentage * item_bar_width / 100), item_bar_width)
+        item_bar = f"`{'▰' * item_filled}{'▱' * (item_bar_width - item_filled)}`"
         material_lines.append(
-            f"{marker} **{name}**  `{_fmt_value(current, money)}` / `{_fmt_value(target, money)}`  ·  faltam `{_fmt_value(remaining, money)}`"
+            f"{marker} **{name}**  ·  `{_fmt_value(current, money)}` / `{_fmt_value(target, money)}`  ·  **{item_percentage:.0f}%**\n"
+            f"{item_bar}  restante `{_fmt_value(remaining, money)}`"
         )
-    materials_section = "## Materiais e entregas\n" + ("\n".join(material_lines) or "Meta não configurada.")
+    materials_section = (
+        ">>> ## 02  /  ENTREGAS DA SEMANA\n"
+        "-# REALIZADO / META  ·  PROGRESSO  ·  SALDO\n\n"
+        + ("\n\n".join(material_lines) or "Meta não configurada.")
+    )
 
     if approval_origin == APROVACAO_ORIGEM_META:
         approval = "✅ Aprovada automaticamente ao atingir 100% da meta"
@@ -789,29 +846,32 @@ def build_ticket_view(
     assigned = f"<@{ticket['assigned_to']}>" if ticket["assigned_to"] else "Não assumido"
     folder = f"<#{ticket['folder_channel_id']}>" if ticket["folder_channel_id"] else "—"
     operations = (
-        "## Acompanhamento\n"
-        f"**Lançamentos:** {len(launches)}  ·  **Responsável:** {assigned}\n"
-        f"**Aprovação:** {approval}\n"
-        f"**Pasta individual:** {folder}"
+        ">>> ## 03  /  ACOMPANHAMENTO\n"
+        f"**Lançamentos** `{len(launches)}`  ·  **Responsável** {assigned}\n"
+        f"**Aprovação** {approval}\n"
+        f"**Pasta individual** {folder}"
     )
 
     history = []
-    for launch in launches[-5:][::-1]:
+    for index, launch in enumerate(launches[-5:][::-1], start=1):
         values = db_evento_itens(launch)
         text = ", ".join(f"+{_fmt_value(float(value), money)} {name}" for name, value in values.items())
-        history.append(f"• {text} — {format_datetime_br(launch['criado_em'])}")
+        history.append(
+            f"**LANÇAMENTO {index:02d}**  ·  {text}\n"
+            f"-# {format_datetime_br(launch['criado_em'])}"
+        )
     footer = (
-        "## Últimos lançamentos\n"
-        + ("\n".join(history) or "Nenhum lançamento no ticket.")
-        + f"\nAtualizado {format_datetime_br(ticket['atualizado_em'])} · Prazo: domingo às 23:59"
+        f">>> ## 04  /  HISTÓRICO RECENTE  ·  {len(history)} REGISTROS\n"
+        + ("\n\n".join(history) or "Nenhum lançamento registrado até agora.")
+        + f"\n-# TICKET #{ticket['id']}  ·  Atualizado {format_datetime_br(ticket['atualizado_em'])}  ·  Prazo: domingo, 23:59"
     )
 
     legacy_view = FarmTicketView(
-        finalized=finalized or status == "finalizado",
+        finalized=finalized or ticket["status"] == "finalizado",
         can_approve=can_approve,
         approved=approved,
     )
-    buttons = []
+    buttons_by_row: dict[int, list[discord.ui.Button]] = {}
     for item in legacy_view.children:
         button = discord.ui.Button(
             label=item.label,
@@ -822,22 +882,31 @@ def build_ticket_view(
             row=item.row,
         )
         button.callback = item.callback
-        buttons.append(button)
+        buttons_by_row.setdefault(int(item.row or 0), []).append(button)
 
     layout = discord.ui.LayoutView(timeout=None)
     layout.add_item(
         discord.ui.Container(
             header_section,
-            discord.ui.Separator(spacing=discord.SeparatorSpacing.small),
+            discord.ui.Separator(spacing=discord.SeparatorSpacing.large),
             discord.ui.TextDisplay(progress_section),
-            discord.ui.Separator(spacing=discord.SeparatorSpacing.small),
+            discord.ui.Separator(spacing=discord.SeparatorSpacing.large),
             discord.ui.TextDisplay(materials_section),
-            discord.ui.Separator(spacing=discord.SeparatorSpacing.small),
+            discord.ui.Separator(spacing=discord.SeparatorSpacing.large),
             discord.ui.TextDisplay(operations),
-            discord.ui.Separator(spacing=discord.SeparatorSpacing.small),
+            discord.ui.Separator(spacing=discord.SeparatorSpacing.large),
             discord.ui.TextDisplay(footer),
-            discord.ui.ActionRow(*buttons[:3]),
-            discord.ui.ActionRow(*buttons[3:]),
+            discord.ui.Separator(spacing=discord.SeparatorSpacing.small),
+            discord.ui.MediaGallery(
+                discord.MediaGalleryItem(
+                    f"attachment://{TICKET_LOGO_FILENAME}",
+                    description="Logo original do Morro do Mineiro",
+                )
+            ),
+            discord.ui.Separator(spacing=discord.SeparatorSpacing.small),
+            discord.ui.TextDisplay("### AÇÕES DO TICKET"),
+            discord.ui.ActionRow(*buttons_by_row[0]),
+            discord.ui.ActionRow(*buttons_by_row[1]),
             accent_color=color,
         )
     )
@@ -1631,10 +1700,13 @@ class FarmTicketsCog(commands.Cog):
             member = guild.get_member(int(ticket["user_id"])) or await guild.fetch_member(int(ticket["user_id"]))
             meta = db_get_meta(ticket["guild_id"], ticket["week_id"])
             approved = bool(progress and progress["aprovada"])
+            attachments = list(message.attachments)
+            if not any(item.filename == TICKET_LOGO_FILENAME for item in attachments):
+                attachments.append(discord.File(TICKET_LOGO_PATH, filename=TICKET_LOGO_FILENAME))
             await message.edit(
                 content=None,
                 embed=None,
-                attachments=[],
+                attachments=attachments,
                 view=build_ticket_view(
                     ticket,
                     member,
@@ -1642,6 +1714,7 @@ class FarmTicketsCog(commands.Cog):
                     finalized=ticket["status"] == "finalizado",
                     can_approve=ticket["status"] != "revisao",
                     approved=approved,
+                    guild=guild,
                 ),
             )
         except (discord.NotFound, discord.Forbidden):
@@ -1918,7 +1991,8 @@ class FarmTicketsCog(commands.Cog):
             provisional["channel_id"] = str(channel.id)
             provisional["status"] = "aberto"
             message = await channel.send(
-                view=build_ticket_view(provisional, owner, meta),
+                view=build_ticket_view(provisional, owner, meta, guild=guild),
+                file=discord.File(TICKET_LOGO_PATH, filename=TICKET_LOGO_FILENAME),
                 allowed_mentions=discord.AllowedMentions(users=[owner]),
             )
             try:
@@ -2300,7 +2374,10 @@ class FarmTicketsCog(commands.Cog):
             provisional["channel_id"] = str(channel.id)
             provisional["status"] = "aberto"
             message = await channel.send(
-                view=build_ticket_view(provisional, interaction.user, meta),
+                view=build_ticket_view(
+                    provisional, interaction.user, meta, guild=interaction.guild
+                ),
+                file=discord.File(TICKET_LOGO_PATH, filename=TICKET_LOGO_FILENAME),
                 allowed_mentions=discord.AllowedMentions(users=[interaction.user]),
             )
             try:

@@ -30,6 +30,9 @@ from cogs.farm_tickets import (
     _payload_approval_origin,
     _progress,
     _ticket_sort_key,
+    TICKET_ANIMATED_EMOJI_ID,
+    TICKET_LOGO_FILENAME,
+    TICKET_LOGO_PATH,
     approved_ticket_channel_name,
 )
 from services.db_service import (
@@ -184,40 +187,65 @@ class FarmTicketDatabaseTests(unittest.TestCase):
             db.db_get_meta("1", "2026-06-15"),
             approved=approved,
         )
-        return view, "\n".join(
-            child.content
-            for item in view.children
-            for child in item.children
-            if isinstance(child, discord.ui.TextDisplay)
-        )
 
-    def test_ticket_panel_v2_shows_zero_partial_and_complete_progress(self):
+        return view, self._view_text(view)
+
+    @staticmethod
+    def _view_text(view):
+        parts = []
+
+        def collect_text(component):
+            if isinstance(component, discord.ui.TextDisplay):
+                parts.append(component.content)
+            for child in getattr(component, "children", ()):
+                collect_text(child)
+
+        for item in view.children:
+            collect_text(item)
+        return "\n".join(parts)
+
+    def test_ticket_panel_container_shows_zero_partial_and_complete_progress(self):
         db.db_set_meta("1", "2026-06-15", {"Ferro": 100}, "99")
         ticket = self._create_ticket()
 
         view, text = self._ticket_panel()
         self.assertIsInstance(view, discord.ui.LayoutView)
-        self.assertIn("Progresso · 0%", text)
-        self.assertIn("faltam `100`", text)
+        self.assertIn("CENTRAL DE FARM", text)
+        self.assertIn(
+            "# <:ChatGPTImage27deagode202620_11_1:1542674742916419644> CENTRAL DE FARM",
+            text,
+        )
+        self.assertIn("OPERAÇÃO ATIVA", text)
+        self.assertIn(">>> ## 01  /  PROGRESSO DA SEMANA", text)
+        self.assertIn(">>> ## 02  /  ENTREGAS DA SEMANA", text)
+        self.assertIn(">>> ## 03  /  ACOMPANHAMENTO", text)
+        self.assertIn(">>> ## 04  /  HISTÓRICO RECENTE", text)
+        self.assertIn("**0% CONCLUÍDO**", text)
+        self.assertIn(f"`{'▱' * 42}`", text)
+        self.assertIn("restante `100`", text)
 
         db.db_ticket_launch(
             int(ticket["id"]), "10", {"Ferro": 50},
             "100", "300", "https://cdn.example/proof.png", None,
         )
         view, text = self._ticket_panel()
-        self.assertIn("Progresso · 50%", text)
+        self.assertIn("**50% CONCLUÍDO**", text)
         self.assertIn("`50` / `100`", text)
+        self.assertIn("LANÇAMENTO 01", text)
 
         db.db_ticket_launch(
             int(ticket["id"]), "10", {"Ferro": 50},
             "101", "301", "https://cdn.example/proof2.png", None,
         )
         view, text = self._ticket_panel()
-        self.assertIn("Progresso · 100%", text)
+        self.assertIn("**100% CONCLUÍDO**", text)
+        self.assertIn(f"`{'▰' * 42}`", text)
         self.assertIn("✅ **Ferro**", text)
+        self.assertIn("✓ META ATINGIDA", text)
 
         db.db_aprovar("1", "2026-06-15", "10", "99")
         view, text = self._ticket_panel(approved=True)
+        self.assertIn("✓ META APROVADA", text)
         self.assertIn("Aprovada por <@99>", text)
         db.db_ticket_add_action(
             int(ticket["id"]),
@@ -231,7 +259,28 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         view, text = self._ticket_panel(approved=True)
         self.assertIn("Aprovada automaticamente ao atingir", text)
 
-    def test_ticket_panel_v2_preserves_action_ids_and_disabled_states(self):
+        ticket = dict(db.db_ticket_get(int(ticket["id"])))
+        ticket["status"] = "revisao"
+        member = SimpleNamespace(
+            id=10,
+            display_name="Membro",
+            mention="<@10>",
+            display_avatar=SimpleNamespace(url="https://cdn.example/avatar.png"),
+        )
+        view = build_ticket_view(
+            ticket,
+            member,
+            db.db_get_meta("1", "2026-06-15"),
+        )
+        self.assertIn("⚠️ EM REVISÃO", self._view_text(view))
+
+        ticket["status"] = "finalizado"
+        view = build_ticket_view(
+            ticket, member, db.db_get_meta("1", "2026-06-15")
+        )
+        self.assertIn("🔒 FINALIZADO", self._view_text(view))
+
+    def test_ticket_panel_container_preserves_action_ids_and_disabled_states(self):
         ticket = self._create_ticket()
         member = SimpleNamespace(
             id=10,
@@ -241,7 +290,39 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         )
         meta = db.db_get_meta("1", "2026-06-15")
         active = build_ticket_view(ticket, member, meta)
-        items = [child for row in active.children[0].children if isinstance(row, discord.ui.ActionRow) for child in row.children]
+        container_items = active.children[0].children
+        self.assertIsInstance(active.children[0], discord.ui.Container)
+        header = container_items[0]
+        self.assertIsInstance(header, discord.ui.Section)
+        self.assertIsInstance(header.accessory, discord.ui.Thumbnail)
+        self.assertEqual(header.accessory.media.url, "https://cdn.example/avatar.png")
+        self.assertEqual(header.accessory.description, "Foto de perfil de Membro")
+        self.assertTrue(TICKET_LOGO_PATH.is_file())
+        galleries = [child for child in container_items if isinstance(child, discord.ui.MediaGallery)]
+        self.assertEqual(len(galleries), 1)
+        self.assertEqual(
+            galleries[0].items[0].media.url,
+            f"attachment://{TICKET_LOGO_FILENAME}",
+        )
+        action_rows = [child for child in container_items if isinstance(child, discord.ui.ActionRow)]
+        self.assertEqual(len(action_rows), 2)
+        self.assertEqual([len(row.children) for row in action_rows], [4, 3])
+        self.assertEqual(container_items[-2:], action_rows)
+        self.assertIn("AÇÕES DO TICKET", container_items[-3].content)
+        separators = [child for child in container_items if isinstance(child, discord.ui.Separator)]
+        self.assertEqual(
+            [child.spacing for child in separators],
+            [discord.SeparatorSpacing.large] * 4 + [discord.SeparatorSpacing.small] * 2,
+        )
+        quoted_displays = [
+            child.content
+            for child in container_items
+            if isinstance(child, discord.ui.TextDisplay)
+        ]
+        self.assertEqual(len(quoted_displays), 5)
+        self.assertTrue(all(content.startswith(">>> ") for content in quoted_displays[:4]))
+        self.assertTrue(quoted_displays[4].startswith("### AÇÕES DO TICKET"))
+        items = [child for row in container_items if isinstance(row, discord.ui.ActionRow) for child in row.children]
         expected = {item.custom_id for item in FarmTicketView().children}
         self.assertEqual({item.custom_id for item in items}, expected)
 
@@ -253,6 +334,184 @@ class FarmTicketDatabaseTests(unittest.TestCase):
         items = [child for row in view.children[0].children if isinstance(row, discord.ui.ActionRow) for child in row.children]
         self.assertTrue(all(item.disabled for item in items if item.custom_id != "farm_ticket:proofs"))
         self.assertFalse(next(item for item in items if item.custom_id == "farm_ticket:proofs").disabled)
+
+    def test_ticket_panel_uses_server_animated_emoji_in_section_titles(self):
+        ticket = self._create_ticket()
+        member = SimpleNamespace(
+            id=10,
+            display_name="Membro",
+            mention="<@10>",
+            display_avatar=SimpleNamespace(url="https://cdn.example/avatar.png"),
+        )
+
+        class AnimatedEmoji:
+            id = TICKET_ANIMATED_EMOJI_ID
+            name = "mdm_animado"
+            animated = True
+
+            def __str__(self):
+                return f"<a:{self.name}:{self.id}>"
+
+        view = build_ticket_view(
+            ticket,
+            member,
+            db.db_get_meta("1", "2026-06-15"),
+            guild=SimpleNamespace(emojis=[AnimatedEmoji()]),
+        )
+
+        text = self._view_text(view)
+        self.assertEqual(
+            text.count(f"<a:mdm_animado:{TICKET_ANIMATED_EMOJI_ID}>"),
+            2,
+        )
+        self.assertIn(">>> ## 01  /  PROGRESSO DA SEMANA", text)
+
+    def test_ticket_panel_uses_requested_emoji_in_central_title_even_when_static(self):
+        self.assertEqual(TICKET_ANIMATED_EMOJI_ID, 1542674742916419644)
+        ticket = self._create_ticket()
+        member = SimpleNamespace(
+            id=10,
+            display_name="Membro",
+            mention="<@10>",
+            display_avatar=SimpleNamespace(url="https://cdn.example/avatar.png"),
+        )
+
+        class CentralEmoji:
+            id = TICKET_ANIMATED_EMOJI_ID
+            name = "central_farm"
+            animated = False
+
+            def __str__(self):
+                return f"<:{self.name}:{self.id}>"
+
+        view = build_ticket_view(
+            ticket,
+            member,
+            db.db_get_meta("1", "2026-06-15"),
+            guild=SimpleNamespace(emojis=[CentralEmoji()]),
+        )
+
+        self.assertIn(
+            f"# <:central_farm:{TICKET_ANIMATED_EMOJI_ID}> CENTRAL DE FARM",
+            self._view_text(view),
+        )
+
+    def test_ticket_panel_formats_member_folder_and_game_id_without_duplicates(self):
+        ticket = dict(self._create_ticket())
+        ticket["folder_slot"] = 0
+        ticket["folder_nickname"] = "Mineiro"
+        ticket["game_id"] = "6627"
+        member = SimpleNamespace(
+            id=10,
+            display_name="[LÍDER] Mineiro | 6627",
+            mention="<@10>",
+            display_avatar=SimpleNamespace(url="https://cdn.example/avatar.png"),
+        )
+
+        view = build_ticket_view(
+            ticket,
+            member,
+            db.db_get_meta("1", "2026-06-15"),
+        )
+        text = self._view_text(view)
+
+        self.assertIn("**Membro**  ·  Mineiro", text)
+        self.assertIn("`PASTA 00`  ·  **ID do jogo** `6627`", text)
+        self.assertNotIn("<@10>", text)
+        self.assertNotIn("ID `10`", text)
+        self.assertNotIn("[LÍDER] Mineiro | 6627", text)
+
+    def test_ticket_panel_uses_an_available_animated_emoji_when_preferred_one_is_static(self):
+        ticket = self._create_ticket()
+        member = SimpleNamespace(
+            id=10,
+            display_name="Membro",
+            mention="<@10>",
+            display_avatar=SimpleNamespace(url="https://cdn.example/avatar.png"),
+        )
+
+        class StaticEmoji:
+            id = TICKET_ANIMATED_EMOJI_ID
+            animated = False
+
+        class AvailableAnimatedEmoji:
+            id = 1541575597438795876
+            name = "download4"
+            animated = True
+
+            def __str__(self):
+                return f"<a:{self.name}:{self.id}>"
+
+        view = build_ticket_view(
+            ticket,
+            member,
+            db.db_get_meta("1", "2026-06-15"),
+            guild=SimpleNamespace(emojis=[StaticEmoji(), AvailableAnimatedEmoji()]),
+        )
+
+        self.assertEqual(
+            self._view_text(view).count("<a:download4:1541575597438795876>"),
+            1,
+        )
+
+    def test_refresh_ticket_keeps_existing_files_and_adds_original_logo(self):
+        ticket = {
+            "id": 1,
+            "guild_id": "1",
+            "channel_id": "200",
+            "panel_message_id": "300",
+            "user_id": "10",
+            "week_id": "2026-06-15",
+            "status": "aberto",
+        }
+        proof_attachment = SimpleNamespace(filename="proof.png")
+        message = SimpleNamespace(
+            attachments=[proof_attachment],
+            edit=AsyncMock(),
+        )
+        channel = SimpleNamespace(fetch_message=AsyncMock(return_value=message))
+        member = SimpleNamespace(id=10)
+        guild = SimpleNamespace(
+            get_channel=lambda channel_id: channel,
+            get_member=lambda member_id: member,
+            fetch_member=AsyncMock(),
+        )
+        cog = FarmTicketsCog.__new__(FarmTicketsCog)
+        cog.bot = SimpleNamespace(get_guild=lambda guild_id: guild)
+
+        with unittest.mock.patch(
+            "cogs.farm_tickets.db_ticket_get", return_value=ticket
+        ), unittest.mock.patch(
+            "cogs.farm_tickets.db_get_progresso", return_value=None
+        ), unittest.mock.patch(
+            "cogs.farm_tickets.db_get_meta", return_value={}
+        ), unittest.mock.patch(
+            "cogs.farm_tickets.build_ticket_view", return_value=object()
+        ):
+            asyncio.run(cog.refresh_ticket(1))
+
+        message.edit.assert_awaited_once()
+        attachments = message.edit.await_args.kwargs["attachments"]
+        self.assertIs(attachments[0], proof_attachment)
+        self.assertEqual(attachments[1].filename, TICKET_LOGO_FILENAME)
+        self.assertEqual(attachments[1].fp.name, str(TICKET_LOGO_PATH))
+        attachments[1].close()
+
+        existing_logo = SimpleNamespace(filename=TICKET_LOGO_FILENAME)
+        message.attachments = [proof_attachment, existing_logo]
+        with unittest.mock.patch(
+            "cogs.farm_tickets.db_ticket_get", return_value=ticket
+        ), unittest.mock.patch(
+            "cogs.farm_tickets.db_get_progresso", return_value=None
+        ), unittest.mock.patch(
+            "cogs.farm_tickets.db_get_meta", return_value={}
+        ), unittest.mock.patch(
+            "cogs.farm_tickets.build_ticket_view", return_value=object()
+        ):
+            asyncio.run(cog.refresh_ticket(1))
+
+        second_attachments = message.edit.await_args.kwargs["attachments"]
+        self.assertEqual(second_attachments, [proof_attachment, existing_logo])
 
     def _create_log_cog(self):
         db.db_set_system_config("1", "farm", None, "900")
