@@ -93,6 +93,7 @@ def normalize_role_name(name: str) -> str:
 
 
 def is_allowed_member_folder_manager_role(role) -> bool:
+    """Return whether a role may operate member-folder tickets."""
     return (
         getattr(role, "id", None) in MEMBER_FOLDER_MANAGER_ROLE_IDS
         or normalize_role_name(getattr(role, "name", "")) in MEMBER_FOLDER_MANAGER_ROLE_NAMES
@@ -121,14 +122,12 @@ def member_folder_access_roles(guild: discord.Guild, role_ids: list[int]) -> lis
         role = guild.get_role(int(role_id))
         if role is None:
             continue
-        if is_manager_role(role) and not is_allowed_member_folder_manager_role(role):
-            continue
         roles.append(role)
 
     roles.extend(
         role
         for role in getattr(guild, "roles", [])
-        if is_allowed_member_folder_manager_role(role)
+        if is_manager_role(role)
     )
     return _dedupe_roles(roles)
 
@@ -232,7 +231,7 @@ async def sync_member_folder_manager_overwrites(
     allowed_roles = [
         role
         for role in member_folder_access_roles(guild, approver_role_ids)
-        if is_allowed_member_folder_manager_role(role)
+        if is_manager_role(role)
     ]
     allowed_ids = {role.id for role in allowed_roles}
 

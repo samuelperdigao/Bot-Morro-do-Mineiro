@@ -6,9 +6,12 @@ O bot é um processo Python baseado em `discord.py`. `main.py` cria o bot,
 configura intents, inicializa o banco, registra views persistentes, carrega as
 extensões de `core/extensions.py` e sincroniza comandos globais.
 
-No evento `on_ready`, o bot sincroniza permissões de pastas de membros quando
-configuradas e remove comandos por guild para manter somente os comandos
-globais ativos.
+No evento `on_ready`, o bot sincroniza as permissões das pastas de membros
+quando a categoria está configurada. Nessa sincronização, todos os cargos cujo
+nome contém `gerente` recebem `view_channel`, `send_messages` e
+`read_message_history` nas pastas; cargos de operação de tickets continuam
+seguindo sua regra própria. Depois disso, o bot remove comandos por guild para
+manter somente os comandos globais ativos.
 
 ## Estrutura
 
