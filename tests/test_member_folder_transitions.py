@@ -47,7 +47,8 @@ class MemberFolderTransitionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.member_role = FakeRole(2, "| Membro")
         self.manager_role = FakeRole(3, "| Gerente de Farm")
-        self.guild = FakeGuild(roles=[self.member_role, self.manager_role])
+        self.vice_role = FakeRole(1474869320684146846, "| 02")
+        self.guild = FakeGuild(roles=[self.member_role, self.manager_role, self.vice_role])
         self.bot = SimpleNamespace(guilds=[self.guild])
         self.cog = MembrosCog(self.bot)
 
@@ -71,9 +72,32 @@ class MemberFolderTransitionTests(unittest.IsolatedAsyncioTestCase):
             self.guild,
             after,
             "10",
-            reason="Pasta individual liberada ao promover a gerente",
+            reason="Pasta individual liberada ao promover cargo de lideranca",
         )
         pending_delete.assert_called_once_with("10", "20")
+
+    async def test_promotion_to_vice_also_releases_member_folder(self):
+        before = FakeMember(20, self.guild, [self.member_role], "[MBR] Jo | 123")
+        after = FakeMember(
+            20,
+            self.guild,
+            [self.member_role, self.vice_role],
+            "[VICE] Jo | 123",
+        )
+        release = AsyncMock(return_value=True)
+
+        with (
+            patch("cogs.membros.liberar_pasta", release),
+            patch("cogs.membros.db_pending_member_folder_delete"),
+        ):
+            await self.cog.on_member_update(before, after)
+
+        release.assert_awaited_once_with(
+            self.guild,
+            after,
+            "10",
+            reason="Pasta individual liberada ao promover cargo de lideranca",
+        )
 
     async def test_demotion_assigns_folder_and_records_channel_map(self):
         before = FakeMember(
@@ -114,6 +138,28 @@ class MemberFolderTransitionTests(unittest.IsolatedAsyncioTestCase):
         )
         map_set.assert_called_once_with("10", "20", 50)
         pending_delete.assert_called_once_with("10", "20")
+
+    async def test_demotion_from_vice_assigns_member_folder(self):
+        before = FakeMember(20, self.guild, [self.member_role, self.vice_role], "[VICE] Jo | 123")
+        after = FakeMember(20, self.guild, [self.member_role], "[MBR] Jo | 123")
+        folder = SimpleNamespace(id=51, name="┃📁-8-jo-123")
+
+        with (
+            patch("cogs.membros.db_pending_member_folder_set"),
+            patch("cogs.membros.db_pending_member_folder_exists", return_value=True),
+            patch("cogs.membros.db_channel_map_get", return_value=None),
+            patch(
+                "cogs.membros.db_get_guild_config",
+                return_value={"member_role_id": "2", "private_category_id": "40"},
+            ),
+            patch("cogs.membros.db_get_approver_role_ids", return_value=[]),
+            patch("cogs.membros.criar_pasta", new=AsyncMock(return_value=folder)),
+            patch("cogs.membros.db_channel_map_set") as map_set,
+            patch("cogs.membros.db_pending_member_folder_delete"),
+        ):
+            await self.cog.on_member_update(before, after)
+
+        map_set.assert_called_once_with("10", "20", 51)
 
     async def test_missing_game_id_stays_pending_then_retries_on_nickname_change(self):
         before = FakeMember(
@@ -206,7 +252,7 @@ class MemberFolderTransitionTests(unittest.IsolatedAsyncioTestCase):
             self.guild,
             manager,
             "10",
-            reason="Pasta individual liberada na reconciliacao de gerente",
+            reason="Pasta individual liberada na reconciliacao de cargo de lideranca",
         )
         create.assert_awaited_once()
         map_set.assert_called_once_with("10", "22", 52)
@@ -247,7 +293,7 @@ class MemberFolderTransitionTests(unittest.IsolatedAsyncioTestCase):
             "10",
             user_id="20",
             channel_id=60,
-            reason="Pasta individual liberada na reconciliacao de gerente",
+            reason="Pasta individual liberada na reconciliacao de cargo de lideranca",
         )
 
 

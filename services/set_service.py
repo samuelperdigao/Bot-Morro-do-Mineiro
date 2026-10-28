@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 import discord
 
+from core.settings import LEGACY_FIXED_IDS
 from services.db_service import (
     db_channel_map_get,
     db_channel_map_delete,
@@ -38,6 +39,7 @@ MEMBER_FOLDER_MANAGER_ROLE_NAMES = frozenset(
 # Cargo do Gerente de Recrutamento: acesso a todas as pastas individuais,
 # mesmo que o cargo não esteja entre os cargos aprovadores configurados.
 MEMBER_FOLDER_MANAGER_ROLE_IDS = frozenset({1474869320684146841})
+MEMBER_FOLDER_VICE_ROLE_ID = LEGACY_FIXED_IDS["hierarchy_vice_role"]
 
 
 @dataclass(frozen=True)
@@ -102,6 +104,13 @@ def is_allowed_member_folder_manager_role(role) -> bool:
 
 def is_manager_role(role) -> bool:
     return "gerente" in normalize_role_name(getattr(role, "name", ""))
+
+
+def is_vice_role(role) -> bool:
+    return (
+        getattr(role, "id", None) == MEMBER_FOLDER_VICE_ROLE_ID
+        or getattr(role, "name", "") == "| 02"
+    )
 
 
 def _dedupe_roles(roles: list[discord.Role]) -> list[discord.Role]:

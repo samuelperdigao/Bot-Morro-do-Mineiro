@@ -16,7 +16,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from core.date_utils import format_date_br, format_datetime_br
-from core.nickname import TAG_GERENTE, strip_tag
+from core.nickname import TAG_GERENTE, TAG_VICE, strip_tag
 from core.role_sync import find_role_by_names
 from services.db_service import (
     APROVACAO_ORIGEM_EXPIRACAO,
@@ -73,6 +73,7 @@ from services.set_service import (
     MemberFolderError,
     is_manager_role,
     is_allowed_member_folder_manager_role,
+    is_vice_role,
     resolve_member_folder,
 )
 
@@ -101,10 +102,14 @@ class FarmTicketFolderIdentity:
     slot: int | None
     nickname: str
     game_id: str | None
+    role_label: str | None = None
 
 
-def _manager_ticket_identity(owner: discord.Member) -> FarmTicketFolderIdentity | None:
-    if not any(is_manager_role(role) for role in getattr(owner, "roles", [])):
+def _staff_ticket_identity(owner: discord.Member) -> FarmTicketFolderIdentity | None:
+    roles = getattr(owner, "roles", [])
+    is_vice = any(is_vice_role(role) for role in roles)
+    is_manager = any(is_manager_role(role) for role in roles)
+    if not is_vice and not is_manager:
         return None
 
     display = strip_tag(getattr(owner, "nick", None) or owner.display_name)
@@ -114,11 +119,14 @@ def _manager_ticket_identity(owner: discord.Member) -> FarmTicketFolderIdentity 
     display = display.strip()
     if not display:
         display = owner.name
+    role_tag = TAG_VICE if is_vice else TAG_GERENTE
+    role_label = "Vice" if is_vice else "Gerente"
     return FarmTicketFolderIdentity(
         channel_id=None,
         slot=None,
-        nickname=f"{TAG_GERENTE} {display}",
+        nickname=f"{role_tag} {display}",
         game_id=None,
+        role_label=role_label,
     )
 
 
@@ -137,9 +145,9 @@ async def _resolve_ticket_folder_identity(
     owner: discord.Member,
     private_category_id: int,
 ) -> FarmTicketFolderIdentity:
-    manager_identity = _manager_ticket_identity(owner)
-    if manager_identity is not None:
-        return manager_identity
+    staff_identity = _staff_ticket_identity(owner)
+    if staff_identity is not None:
+        return staff_identity
     folder = await resolve_member_folder(
         guild,
         guild_id,
@@ -151,6 +159,7 @@ async def _resolve_ticket_folder_identity(
         slot=folder.slot,
         nickname=folder.nickname,
         game_id=folder.game_id,
+        role_label=None,
     )
 
 
@@ -1378,7 +1387,7 @@ class FarmTicketsCog(commands.Cog):
 
     def ticket_log_thread_name(self, ticket) -> str:
         name = ticket["folder_nickname"] or ticket["member_name"] or f"ticket-{ticket['id']}"
-        if ticket["folder_slot"] is None and str(name).startswith(TAG_GERENTE):
+        if ticket["folder_slot"] is None and str(name).startswith((TAG_GERENTE, TAG_VICE)):
             return f"ticket-farm-{_slug(name)}"[:100]
         slot = (
             f"{int(ticket['folder_slot']):02d}"
@@ -2079,7 +2088,7 @@ class FarmTicketsCog(commands.Cog):
                 payload=action_payload,
             )
             detail = (
-                f"Semana {format_date_br(ticket['week_id'])} | Gerente"
+                f"Semana {format_date_br(ticket['week_id'])} | {folder.role_label or 'Gerente'}"
                 if slot_label is None
                 else f"Semana {format_date_br(ticket['week_id'])} | Pasta {slot_label} | ID {folder.game_id}"
             )
@@ -2465,7 +2474,7 @@ class FarmTicketsCog(commands.Cog):
             await self.send_action_log(
                 db_ticket_get(int(ticket["id"])), action_id, "Ticket aberto", interaction.user,
                 (
-                    f"Semana {format_date_br(ticket['week_id'])} • Gerente"
+                    f"Semana {format_date_br(ticket['week_id'])} • {folder.role_label or 'Gerente'}"
                     if slot_label is None
                     else f"Semana {format_date_br(ticket['week_id'])} • Pasta {slot_label} • ID {folder.game_id}"
                 ),

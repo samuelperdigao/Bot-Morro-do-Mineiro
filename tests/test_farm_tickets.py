@@ -34,7 +34,7 @@ from cogs.farm_tickets import (
     TICKET_LOGO_FILENAME,
     TICKET_LOGO_PATH,
     _farm_ticket_channel_base,
-    _manager_ticket_identity,
+    _staff_ticket_identity,
     _resolve_ticket_folder_identity,
     approved_ticket_channel_name,
 )
@@ -1773,13 +1773,31 @@ class ManagerFarmTicketIdentityTests(unittest.IsolatedAsyncioTestCase):
             display_name="[GRT] João Silva | 1234",
         )
 
-        identity = _manager_ticket_identity(manager)
+        identity = _staff_ticket_identity(manager)
 
         self.assertIsNone(identity.channel_id)
         self.assertIsNone(identity.slot)
         self.assertIsNone(identity.game_id)
         self.assertEqual(identity.nickname, "[GRT] João Silva")
         self.assertEqual(_farm_ticket_channel_base(identity), "farm-grt-joao-silva")
+
+    async def test_vice_ticket_uses_vice_tag_and_name_without_slot_or_game_id(self):
+        vice = SimpleNamespace(
+            id=102,
+            name="Joao Silva",
+            roles=[SimpleNamespace(id=1474869320684146846, name="| 02")],
+            nick="[VICE] João Silva | 1234",
+            display_name="[VICE] João Silva | 1234",
+        )
+
+        identity = _staff_ticket_identity(vice)
+
+        self.assertIsNone(identity.channel_id)
+        self.assertIsNone(identity.slot)
+        self.assertIsNone(identity.game_id)
+        self.assertEqual(identity.role_label, "Vice")
+        self.assertEqual(identity.nickname, "[VICE] João Silva")
+        self.assertEqual(_farm_ticket_channel_base(identity), "farm-vice-joao-silva")
 
     async def test_manager_ticket_identity_does_not_require_member_folder(self):
         manager = SimpleNamespace(
@@ -1800,6 +1818,27 @@ class ManagerFarmTicketIdentityTests(unittest.IsolatedAsyncioTestCase):
 
         resolve_folder.assert_not_awaited()
         self.assertEqual(identity.nickname, "[GRT] João Silva")
+
+    async def test_vice_ticket_identity_does_not_require_member_folder(self):
+        vice = SimpleNamespace(
+            id=102,
+            name="Joao Silva",
+            roles=[SimpleNamespace(id=1474869320684146846, name="| 02")],
+            nick="[VICE] João Silva | 1234",
+            display_name="[VICE] João Silva | 1234",
+        )
+
+        with unittest.mock.patch(
+            "cogs.farm_tickets.resolve_member_folder",
+            new=AsyncMock(side_effect=AssertionError("vice folder lookup should be skipped")),
+        ) as resolve_folder:
+            identity = await _resolve_ticket_folder_identity(
+                SimpleNamespace(), "guild-1", vice, 40
+            )
+
+        resolve_folder.assert_not_awaited()
+        self.assertEqual(identity.nickname, "[VICE] João Silva")
+        self.assertEqual(identity.role_label, "Vice")
 
     def test_regular_ticket_keeps_the_member_slot_and_game_id_in_name(self):
         folder = SimpleNamespace(slot=7, nickname="Joao Silva", game_id="1234")

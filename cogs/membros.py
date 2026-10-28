@@ -26,6 +26,7 @@ from services.set_service import (
     MemberFolderError,
     criar_pasta,
     is_manager_role,
+    is_vice_role,
     liberar_pasta,
     parse_member_folder,
 )
@@ -57,8 +58,11 @@ class MembrosCog(commands.Cog):
         self._locks_pastas_membro: dict[tuple[int, int], asyncio.Lock] = {}
 
     @staticmethod
-    def _is_manager(member: discord.Member) -> bool:
-        return any(is_manager_role(role) for role in getattr(member, "roles", []))
+    def _is_folder_staff(member: discord.Member) -> bool:
+        return any(
+            is_manager_role(role) or is_vice_role(role)
+            for role in getattr(member, "roles", [])
+        )
 
     @staticmethod
     def _has_member_role(member: discord.Member, cfg) -> bool:
@@ -95,7 +99,7 @@ class MembrosCog(commands.Cog):
         guild_id = str(guild.id)
         user_id = str(member.id)
         async with self._folder_lock(guild.id, member.id):
-            if self._is_manager(member):
+            if self._is_folder_staff(member):
                 db_pending_member_folder_delete(guild_id, user_id)
                 return False
 
@@ -166,13 +170,13 @@ class MembrosCog(commands.Cog):
                 member = guild.get_member(int(user_id_str))
                 if member is None:
                     liberado = await liberar_pasta(guild, None, guild_id, user_id=user_id_str)
-                elif self._is_manager(member):
+                elif self._is_folder_staff(member):
                     db_pending_member_folder_delete(guild_id, user_id_str)
                     liberado = await liberar_pasta(
                         guild,
                         member,
                         guild_id,
-                        reason="Pasta individual liberada na reconciliacao de gerente",
+                        reason="Pasta individual liberada na reconciliacao de cargo de lideranca",
                     )
                 else:
                     liberado = False
@@ -211,7 +215,7 @@ class MembrosCog(commands.Cog):
                         member = guild.get_member(member_id) if member_id is not None else None
                         if member is None and hasattr(target, "roles"):
                             member = target
-                        if member is not None and self._is_manager(member):
+                        if member is not None and self._is_folder_staff(member):
                             manager_owner = member
                             break
                     if manager_owner is None:
@@ -223,7 +227,7 @@ class MembrosCog(commands.Cog):
                         guild_id,
                         user_id=str(manager_owner.id),
                         channel_id=channel.id,
-                        reason="Pasta individual liberada na reconciliacao de gerente",
+                        reason="Pasta individual liberada na reconciliacao de cargo de lideranca",
                     )
                     if liberado:
                         liberadas += 1
@@ -246,28 +250,30 @@ class MembrosCog(commands.Cog):
     async def on_member_update(self, before: discord.Member, after: discord.Member):
         guild_id = str(after.guild.id)
         user_id = str(after.id)
-        was_manager = self._is_manager(before)
-        is_manager = self._is_manager(after)
+        was_folder_staff = self._is_folder_staff(before)
+        is_folder_staff = self._is_folder_staff(after)
 
-        if not was_manager and is_manager:
+        if not was_folder_staff and is_folder_staff:
             db_pending_member_folder_delete(guild_id, user_id)
             released = await liberar_pasta(
                 after.guild,
                 after,
                 guild_id,
-                reason="Pasta individual liberada ao promover a gerente",
+                reason="Pasta individual liberada ao promover cargo de lideranca",
             )
             if released:
-                log.info("Pasta de membro liberada ao promover %s (%s) a gerente.", after, after.id)
+                log.info("Pasta de membro liberada ao promover %s (%s) a cargo de lideranca.", after, after.id)
             return
 
-        if was_manager and not is_manager:
+        if was_folder_staff and not is_folder_staff:
             db_pending_member_folder_set(guild_id, user_id)
 
         pending = db_pending_member_folder_exists(guild_id, user_id)
         nickname_changed = getattr(before, "nick", None) != getattr(after, "nick", None)
         roles_changed = set(getattr(before, "roles", [])) != set(getattr(after, "roles", []))
-        if pending and not is_manager and (was_manager or nickname_changed or roles_changed):
+        if pending and not is_folder_staff and (
+            was_folder_staff or nickname_changed or roles_changed
+        ):
             await self._atribuir_ou_adiar_pasta_membro(after)
 
     @commands.Cog.listener()
