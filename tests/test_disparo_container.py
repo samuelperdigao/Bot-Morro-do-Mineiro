@@ -4,11 +4,26 @@ from unittest.mock import AsyncMock
 
 import discord
 
-from cogs.disparo import build_broadcast_embed
+from cogs.disparo import BROADCAST_CATEGORY_ID, build_broadcast_embed, is_valid_member_channel
 from ui.views.disparo import BROADCAST_CONTAINER_CUSTOM_IDS, BroadcastContainerView
 
 
 class BroadcastContainerViewTests(unittest.IsolatedAsyncioTestCase):
+    def test_shared_category_still_selects_member_folders_for_broadcasts(self):
+        class FakeTextChannel:
+            def __init__(self, category_id, name):
+                self.category_id = category_id
+                self.name = name
+
+        with unittest.mock.patch("cogs.disparo.discord.TextChannel", FakeTextChannel):
+            valid_folder = FakeTextChannel(BROADCAST_CATEGORY_ID, "┃📁-7-mineiro-123")
+            free_folder = FakeTextChannel(BROADCAST_CATEGORY_ID, "┃📁-7-livre")
+            other_category = FakeTextChannel(1, "┃📁-7-mineiro-123")
+
+            self.assertTrue(is_valid_member_channel(valid_folder))
+            self.assertFalse(is_valid_member_channel(free_folder))
+            self.assertFalse(is_valid_member_channel(other_category))
+
     def test_view_uses_components_v2_and_preserves_panel_content(self):
         view = BroadcastContainerView()
         embed = build_broadcast_embed()

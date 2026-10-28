@@ -22,9 +22,14 @@ class SchemaMigrationTests(unittest.TestCase):
                     "SELECT version FROM schema_migrations ORDER BY version"
                 )
             ]
+            pending_table = conn.execute(
+                """SELECT COUNT(*) FROM sqlite_master
+                   WHERE type='table' AND name='pending_member_folders'"""
+            ).fetchone()[0]
             conn.close()
 
-            self.assertEqual(versions, [1, 2, 3])
+            self.assertEqual(versions, [1, 2, 3, 4])
+            self.assertEqual(pending_table, 1)
 
     def test_legacy_farm_ticket_data_is_preserved_without_table_recreation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -109,6 +114,18 @@ class GuildSettingsTests(unittest.TestCase):
             db.db_get_guild_config("guild-1")["approval_channel_id"],
             "123",
         )
+
+    def test_pending_member_folder_state_is_idempotent_and_removable(self):
+        db.db_pending_member_folder_set("guild-1", "user-1")
+        db.db_pending_member_folder_set("guild-1", "user-1")
+
+        self.assertTrue(db.db_pending_member_folder_exists("guild-1", "user-1"))
+        self.assertEqual(db.db_pending_member_folders_all("guild-1"), ["user-1"])
+
+        db.db_pending_member_folder_delete("guild-1", "user-1")
+
+        self.assertFalse(db.db_pending_member_folder_exists("guild-1", "user-1"))
+        self.assertEqual(db.db_pending_member_folders_all("guild-1"), [])
 
 
 if __name__ == "__main__":

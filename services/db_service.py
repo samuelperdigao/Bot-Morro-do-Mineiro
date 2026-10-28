@@ -409,6 +409,41 @@ def db_channel_map_all(guild_id: str) -> list[tuple[str, int]]:
     return [(r["user_id"], int(r["channel_id"])) for r in rows]
 
 
+def db_pending_member_folder_set(guild_id: str, user_id: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        """INSERT OR IGNORE INTO pending_member_folders (guild_id, user_id)
+           VALUES (?, ?)""",
+        (guild_id, user_id),
+    )
+    conn.commit()
+
+
+def db_pending_member_folder_delete(guild_id: str, user_id: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        "DELETE FROM pending_member_folders WHERE guild_id=? AND user_id=?",
+        (guild_id, user_id),
+    )
+    conn.commit()
+
+
+def db_pending_member_folder_exists(guild_id: str, user_id: str) -> bool:
+    row = get_conn().execute(
+        "SELECT 1 FROM pending_member_folders WHERE guild_id=? AND user_id=?",
+        (guild_id, user_id),
+    ).fetchone()
+    return row is not None
+
+
+def db_pending_member_folders_all(guild_id: str) -> list[str]:
+    rows = get_conn().execute(
+        "SELECT user_id FROM pending_member_folders WHERE guild_id=? ORDER BY created_at",
+        (guild_id,),
+    ).fetchall()
+    return [row["user_id"] for row in rows]
+
+
 # ── Ausências (substitui ausencias.json) ──────────────────────────────────────
 
 def db_ausencia_get(guild_id: str, user_id: str) -> sqlite3.Row | None:

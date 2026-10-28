@@ -345,6 +345,7 @@ async def criar_pasta(
     approver_role_ids: list[int],
     id_jogo: str = "",
     membro_nome: str = "",
+    reason: str | None = None,
 ) -> discord.TextChannel | None:
     category = guild.get_channel(private_cat_id)
     if not category:
@@ -373,6 +374,7 @@ async def criar_pasta(
 
     safe_name = safe_channel_name(membro_nome or member.display_name)
     sufixo    = f"-{id_jogo}" if id_jogo else ""
+    audit_reason = reason or f"Set aprovado por {approver}"
 
     async with _pasta_lock:
         pasta_livre = encontrar_pasta_livre(guild, private_cat_id)
@@ -384,7 +386,7 @@ async def criar_pasta(
                 await pasta_livre.edit(
                     name=novo_nome,
                     overwrites=overwrites,
-                    reason=f"Pasta reutilizada — Set aprovado por {approver}",
+                    reason=f"Pasta reutilizada — {audit_reason}",
                 )
                 log.info(f"Pasta reutilizada: {pasta_livre.name} → {novo_nome} ({pasta_livre.id})")
                 return pasta_livre
@@ -398,7 +400,7 @@ async def criar_pasta(
                 name=channel_name,
                 category=category,
                 overwrites=overwrites,
-                reason=f"Set aprovado por {approver}",
+                reason=audit_reason,
             )
             log.info(f"Canal privado criado: {channel.name} ({channel.id})")
             return channel

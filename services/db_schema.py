@@ -582,10 +582,23 @@ def _apply_farm_active_ticket_index(conn: sqlite3.Connection, log: logging.Logge
     return True
 
 
+def _apply_pending_member_folders(conn: sqlite3.Connection) -> bool:
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS pending_member_folders (
+               guild_id TEXT NOT NULL,
+               user_id TEXT NOT NULL,
+               created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+               PRIMARY KEY (guild_id, user_id)
+           )"""
+    )
+    return True
+
+
 VERSIONED_MIGRATIONS = (
     (1, "ensure legacy columns", _apply_legacy_columns),
     (2, "ensure persistent set requests", _apply_set_request_schema),
     (3, "ensure active farm ticket index", _apply_farm_active_ticket_index),
+    (4, "ensure pending member folders", _apply_pending_member_folders),
 )
 
 
