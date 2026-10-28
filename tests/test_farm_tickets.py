@@ -33,6 +33,9 @@ from cogs.farm_tickets import (
     TICKET_ANIMATED_EMOJI_ID,
     TICKET_LOGO_FILENAME,
     TICKET_LOGO_PATH,
+    _farm_ticket_channel_base,
+    _manager_ticket_identity,
+    _resolve_ticket_folder_identity,
     approved_ticket_channel_name,
 )
 from services.db_service import (
@@ -1758,6 +1761,50 @@ class FarmTicketDatabaseTests(unittest.TestCase):
             custom_ids,
             {"farm_painel:lancar", "farm_painel:lancar_dinheiro"},
         )
+
+
+class ManagerFarmTicketIdentityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_manager_ticket_uses_tag_and_name_without_slot_or_game_id(self):
+        manager = SimpleNamespace(
+            id=101,
+            name="Joao Silva",
+            roles=[SimpleNamespace(name="| Gerente de Farm")],
+            nick="[GRT] João Silva | 1234",
+            display_name="[GRT] João Silva | 1234",
+        )
+
+        identity = _manager_ticket_identity(manager)
+
+        self.assertIsNone(identity.channel_id)
+        self.assertIsNone(identity.slot)
+        self.assertIsNone(identity.game_id)
+        self.assertEqual(identity.nickname, "[GRT] João Silva")
+        self.assertEqual(_farm_ticket_channel_base(identity), "farm-grt-joao-silva")
+
+    async def test_manager_ticket_identity_does_not_require_member_folder(self):
+        manager = SimpleNamespace(
+            id=101,
+            name="Joao Silva",
+            roles=[SimpleNamespace(name="| Gerente Geral")],
+            nick="[GRT] João Silva | 1234",
+            display_name="[GRT] João Silva | 1234",
+        )
+
+        with unittest.mock.patch(
+            "cogs.farm_tickets.resolve_member_folder",
+            new=AsyncMock(side_effect=AssertionError("manager folder lookup should be skipped")),
+        ) as resolve_folder:
+            identity = await _resolve_ticket_folder_identity(
+                SimpleNamespace(), "guild-1", manager, 40
+            )
+
+        resolve_folder.assert_not_awaited()
+        self.assertEqual(identity.nickname, "[GRT] João Silva")
+
+    def test_regular_ticket_keeps_the_member_slot_and_game_id_in_name(self):
+        folder = SimpleNamespace(slot=7, nickname="Joao Silva", game_id="1234")
+
+        self.assertEqual(_farm_ticket_channel_base(folder), "farm-07-joao-silva-1234")
 
 
 if __name__ == "__main__":

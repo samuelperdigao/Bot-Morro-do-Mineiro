@@ -14,16 +14,21 @@ seguindo sua regra própria. Depois disso, o bot remove comandos por guild para
 manter somente os comandos globais ativos.
 
 O cog `cogs.membros` reconcilia os vínculos de pastas no startup: libera pastas
-de membros vinculadas a contas que já possuem cargo de gerente e retoma
-atribuições pendentes de membros rebaixados. Ao receber o último cargo de
-gerente, a pasta individual é liberada pelo fluxo padrão, que limpa as
-mensagens e remove o vínculo. Ao perder o último cargo de gerente e possuir o
-cargo configurado de membro, a conta recebe uma pasta livre ou uma nova pasta;
-nome e ID de jogo são lidos do apelido no formato `Nome | ID`. Sem ID válido,
-a atribuição fica registrada no SQLite e é tentada novamente após correção do
-apelido ou reinício. As permissões gerais dos cargos gerente permanecem como
-acima. A central de disparo continua usando sua configuração própria mesmo
-quando seleciona canais da mesma categoria.
+de membros vinculadas a contas que já possuem cargo de gerente e também procura,
+na categoria configurada, pastas válidas com permissão individual explícita para
+uma conta gerente sem vínculo no mapa. Retoma ainda atribuições pendentes de
+membros rebaixados. Ao receber o último cargo de gerente, a pasta individual é
+liberada pelo fluxo padrão, que limpa as mensagens e remove o vínculo. Ao perder
+o último cargo de gerente e possuir o cargo configurado de membro, a conta recebe
+uma pasta livre ou uma nova pasta; nome e ID de jogo são lidos do apelido no
+formato `Nome | ID`. Sem ID válido, a atribuição fica registrada no SQLite e é
+tentada novamente após correção do apelido ou reinício. As permissões gerais dos
+cargos gerente permanecem como acima. A central de disparo continua usando sua
+configuração própria mesmo quando seleciona canais da mesma categoria.
+
+Tickets de farm abertos pelo próprio gerente usam sua identidade `[GRT] Nome`,
+sem pasta individual, slot ou ID de jogo. O canal usa o padrão `farm-grt-nome`;
+os tickets de membros continuam usando `farm-{slot}-{nome}-{ID}`.
 
 ## Estrutura
 

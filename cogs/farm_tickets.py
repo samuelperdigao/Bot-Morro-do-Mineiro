@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import unicodedata
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from core.date_utils import format_date_br, format_datetime_br
+from core.nickname import TAG_GERENTE, strip_tag
 from core.role_sync import find_role_by_names
 from services.db_service import (
     APROVACAO_ORIGEM_EXPIRACAO,
@@ -69,6 +71,7 @@ from services.db_service import (
 from services.log_service import send_log
 from services.set_service import (
     MemberFolderError,
+    is_manager_role,
     is_allowed_member_folder_manager_role,
     resolve_member_folder,
 )
@@ -90,6 +93,65 @@ GERENTE_PRODUCAO_NAMES = (
     "Gerente de Producao",
 )
 GERENTE_PRODUTOS_NAMES = ("| Gerente de Produtos", "Gerente de Produtos")
+
+
+@dataclass(frozen=True)
+class FarmTicketFolderIdentity:
+    channel_id: int | None
+    slot: int | None
+    nickname: str
+    game_id: str | None
+
+
+def _manager_ticket_identity(owner: discord.Member) -> FarmTicketFolderIdentity | None:
+    if not any(is_manager_role(role) for role in getattr(owner, "roles", [])):
+        return None
+
+    display = strip_tag(getattr(owner, "nick", None) or owner.display_name)
+    name, separator, game_id = display.rpartition(" | ")
+    if separator and game_id.strip().isdigit():
+        display = name
+    display = display.strip()
+    if not display:
+        display = owner.name
+    return FarmTicketFolderIdentity(
+        channel_id=None,
+        slot=None,
+        nickname=f"{TAG_GERENTE} {display}",
+        game_id=None,
+    )
+
+
+def _farm_ticket_channel_base(folder: FarmTicketFolderIdentity) -> str:
+    if folder.slot is None:
+        return f"farm-{_slug(folder.nickname)}"
+    return (
+        f"farm-{int(folder.slot):02d}-{_slug(folder.nickname)}-"
+        f"{folder.game_id or ''}"
+    ).rstrip("-")
+
+
+async def _resolve_ticket_folder_identity(
+    guild: discord.Guild,
+    guild_id: str,
+    owner: discord.Member,
+    private_category_id: int,
+) -> FarmTicketFolderIdentity:
+    manager_identity = _manager_ticket_identity(owner)
+    if manager_identity is not None:
+        return manager_identity
+    folder = await resolve_member_folder(
+        guild,
+        guild_id,
+        owner,
+        private_category_id,
+    )
+    return FarmTicketFolderIdentity(
+        channel_id=folder.channel_id,
+        slot=folder.slot,
+        nickname=folder.nickname,
+        game_id=folder.game_id,
+    )
 
 
 class _SistemaActor:
@@ -1315,8 +1377,14 @@ class FarmTicketsCog(commands.Cog):
         return embed
 
     def ticket_log_thread_name(self, ticket) -> str:
-        slot = f"{int(ticket['folder_slot']):02d}" if ticket["folder_slot"] is not None else str(ticket["id"])
         name = ticket["folder_nickname"] or ticket["member_name"] or f"ticket-{ticket['id']}"
+        if ticket["folder_slot"] is None and str(name).startswith(TAG_GERENTE):
+            return f"ticket-farm-{_slug(name)}"[:100]
+        slot = (
+            f"{int(ticket['folder_slot']):02d}"
+            if ticket["folder_slot"] is not None
+            else str(ticket["id"])
+        )
         return f"ticket-farm-{slot}-{_slug(name)}"[:100]
 
     async def farm_log_channel(self, guild: discord.Guild):
@@ -1897,7 +1965,7 @@ class FarmTicketsCog(commands.Cog):
         if not guild_config or not guild_config["private_category_id"]:
             return TicketProvisionResult("no_private_category")
         try:
-            folder = await resolve_member_folder(
+            folder = await _resolve_ticket_folder_identity(
                 guild,
                 guild_id,
                 owner,
@@ -1918,7 +1986,9 @@ class FarmTicketsCog(commands.Cog):
             week_id,
             str(owner.id),
             owner.display_name,
-            folder_channel_id=str(folder.channel_id),
+            folder_channel_id=(
+                str(folder.channel_id) if folder.channel_id is not None else None
+            ),
             folder_slot=folder.slot,
             game_id=folder.game_id,
             folder_nickname=folder.nickname,
@@ -1972,8 +2042,8 @@ class FarmTicketsCog(commands.Cog):
                         manage_messages=True,
                     )
 
-            slot_label = f"{folder.slot:02d}"
-            base_name = f"farm-{slot_label}-{_slug(folder.nickname)}-{folder.game_id}"
+            slot_label = f"{folder.slot:02d}" if folder.slot is not None else None
+            base_name = _farm_ticket_channel_base(folder)
             existing_names = {item.name for cat in categories for item in cat.text_channels}
             channel_name = base_name if base_name not in existing_names else f"{base_name[:75]}-{str(owner.id)[-4:]}"
             reason = (
@@ -2008,7 +2078,11 @@ class FarmTicketsCog(commands.Cog):
                 str(getattr(executor, "id", "")),
                 payload=action_payload,
             )
-            detail = f"Semana {format_date_br(ticket['week_id'])} | Pasta {slot_label} | ID {folder.game_id}"
+            detail = (
+                f"Semana {format_date_br(ticket['week_id'])} | Gerente"
+                if slot_label is None
+                else f"Semana {format_date_br(ticket['week_id'])} | Pasta {slot_label} | ID {folder.game_id}"
+            )
             if administrative:
                 detail += f" | Aberto para {owner.mention}"
             await self.send_action_log(
@@ -2311,7 +2385,7 @@ class FarmTicketsCog(commands.Cog):
             )
             return
         try:
-            folder = await resolve_member_folder(
+            folder = await _resolve_ticket_folder_identity(
                 interaction.guild,
                 guild_id,
                 interaction.user,
@@ -2331,7 +2405,9 @@ class FarmTicketsCog(commands.Cog):
             week_id,
             str(interaction.user.id),
             interaction.user.display_name,
-            folder_channel_id=str(folder.channel_id),
+            folder_channel_id=(
+                str(folder.channel_id) if folder.channel_id is not None else None
+            ),
             folder_slot=folder.slot,
             game_id=folder.game_id,
             folder_nickname=folder.nickname,
@@ -2365,8 +2441,8 @@ class FarmTicketsCog(commands.Cog):
             for role in admin_roles:
                 if role:
                     overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
-            slot_label = f"{folder.slot:02d}"
-            base_name = f"farm-{slot_label}-{_slug(folder.nickname)}-{folder.game_id}"
+            slot_label = f"{folder.slot:02d}" if folder.slot is not None else None
+            base_name = _farm_ticket_channel_base(folder)
             existing_names = {channel.name for cat in categories for channel in cat.text_channels}
             channel_name = base_name if base_name not in existing_names else f"{base_name[:75]}-{str(interaction.user.id)[-4:]}"
             channel = await interaction.guild.create_text_channel(channel_name, category=category, overwrites=overwrites, reason="Ticket semanal de farm")
@@ -2388,7 +2464,11 @@ class FarmTicketsCog(commands.Cog):
             action_id = db_ticket_add_action(int(ticket["id"]), "abertura", str(interaction.user.id))
             await self.send_action_log(
                 db_ticket_get(int(ticket["id"])), action_id, "Ticket aberto", interaction.user,
-                f"Semana {format_date_br(ticket['week_id'])} • Pasta {slot_label} • ID {folder.game_id}",
+                (
+                    f"Semana {format_date_br(ticket['week_id'])} • Gerente"
+                    if slot_label is None
+                    else f"Semana {format_date_br(ticket['week_id'])} • Pasta {slot_label} • ID {folder.game_id}"
+                ),
             )
             await interaction.followup.send("Ticket criado com sucesso.", view=TicketLinkView(channel.jump_url), ephemeral=True)
         except Exception as exc:

@@ -417,15 +417,18 @@ async def liberar_pasta(
     guild_id: str,
     user_id: str | None = None,
     limpar_mensagens: bool = True,
+    channel_id: int | None = None,
+    reason: str | None = None,
 ) -> bool:
     """
     Libera a pasta privada de um membro.
 
     Pode ser chamada com `member` (evento normal) ou apenas `user_id`
     (reconciliacao pos-restart, quando o membro ja nao esta no servidor).
+    `channel_id` permite reconciliar uma permissao individual antiga sem mapa.
     """
     uid = user_id if user_id else str(member.id)
-    ch_id = db_channel_map_get(guild_id, uid)
+    ch_id = channel_id or db_channel_map_get(guild_id, uid)
     if not ch_id:
         return False
 
@@ -446,7 +449,7 @@ async def liberar_pasta(
             overwrites.pop(discord.Object(id=int(uid)), None)
             if member:
                 overwrites.pop(member, None)
-            razao = f"Membro {member or uid} saiu do servidor"
+            razao = reason or f"Membro {member or uid} saiu do servidor"
             nome_antigo = canal.name
             await canal.edit(name=novo_nome, overwrites=overwrites, reason=razao)
             log.info("Pasta liberada: %s -> %s (%s)", nome_antigo, novo_nome, canal.id)
@@ -455,7 +458,8 @@ async def liberar_pasta(
             return False
 
         if limpar_mensagens:
-            await limpar_mensagens_pasta(canal, f"Limpeza automatica apos saida do membro {member or uid}")
+            motivo_limpeza = reason or f"Limpeza automatica apos saida do membro {member or uid}"
+            await limpar_mensagens_pasta(canal, motivo_limpeza)
 
     db_channel_map_delete(guild_id, uid)
     return True

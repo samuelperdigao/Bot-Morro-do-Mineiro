@@ -22,7 +22,13 @@ from services.db_service import (
     db_pending_member_folders_all,
     db_pending_member_folder_set,
 )
-from services.set_service import criar_pasta, is_manager_role, liberar_pasta
+from services.set_service import (
+    MemberFolderError,
+    criar_pasta,
+    is_manager_role,
+    liberar_pasta,
+    parse_member_folder,
+)
 
 log = get_logger("bot", "bot.log")
 
@@ -162,11 +168,65 @@ class MembrosCog(commands.Cog):
                     liberado = await liberar_pasta(guild, None, guild_id, user_id=user_id_str)
                 elif self._is_manager(member):
                     db_pending_member_folder_delete(guild_id, user_id_str)
-                    liberado = await liberar_pasta(guild, member, guild_id)
+                    liberado = await liberar_pasta(
+                        guild,
+                        member,
+                        guild_id,
+                        reason="Pasta individual liberada na reconciliacao de gerente",
+                    )
                 else:
                     liberado = False
                 if liberado:
                     liberadas += 1
+
+            cfg = db_get_guild_config(guild_id)
+            category_id = (
+                cfg["private_category_id"]
+                if cfg and "private_category_id" in cfg.keys()
+                else None
+            )
+            category = guild.get_channel(int(category_id)) if category_id else None
+            if category is None and category_id:
+                try:
+                    category = await guild.fetch_channel(int(category_id))
+                except (discord.Forbidden, discord.HTTPException):
+                    log.exception(
+                        "Nao foi possivel buscar a categoria de pastas da guild %s.",
+                        guild_id,
+                    )
+            if category is not None and hasattr(category, "text_channels"):
+                for channel in list(category.text_channels):
+                    if "livre" in channel.name.casefold():
+                        continue
+                    try:
+                        parse_member_folder(channel.name, channel.id)
+                    except MemberFolderError:
+                        continue
+
+                    manager_owner = None
+                    for target, overwrite in channel.overwrites.items():
+                        if overwrite.view_channel is not True:
+                            continue
+                        member_id = getattr(target, "id", None)
+                        member = guild.get_member(member_id) if member_id is not None else None
+                        if member is None and hasattr(target, "roles"):
+                            member = target
+                        if member is not None and self._is_manager(member):
+                            manager_owner = member
+                            break
+                    if manager_owner is None:
+                        continue
+
+                    liberado = await liberar_pasta(
+                        guild,
+                        manager_owner,
+                        guild_id,
+                        user_id=str(manager_owner.id),
+                        channel_id=channel.id,
+                        reason="Pasta individual liberada na reconciliacao de gerente",
+                    )
+                    if liberado:
+                        liberadas += 1
 
             for user_id_str in db_pending_member_folders_all(guild_id):
                 member = guild.get_member(int(user_id_str))
@@ -191,7 +251,12 @@ class MembrosCog(commands.Cog):
 
         if not was_manager and is_manager:
             db_pending_member_folder_delete(guild_id, user_id)
-            released = await liberar_pasta(after.guild, after, guild_id)
+            released = await liberar_pasta(
+                after.guild,
+                after,
+                guild_id,
+                reason="Pasta individual liberada ao promover a gerente",
+            )
             if released:
                 log.info("Pasta de membro liberada ao promover %s (%s) a gerente.", after, after.id)
             return
