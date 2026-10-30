@@ -1,24 +1,32 @@
 """
 cogs/ausencia.py - Sistema de ausências (multi-server).
 
-Ausências migradas de ausencias.json para a tabela 'ausencias' no SQLite.
+Ausências ficam na tabela 'ausencias_historico', com um registro por ausência.
 Canal de ausências lido da tabela guild_config por guild.
 """
+
+import sqlite3
+from pathlib import Path
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
+from core.config import AUSENCIAS_FILE, BASE_DIR
 from core.logger import get_logger
 from core.command_config import is_enabled as _cmd_enabled, get_cog_config as _cog_cfg
 from services.log_service import send_log
 from services.db_service import (
     db_get_guild_config,
+    db_set_guild_config,
     db_is_ausencia_configured,
+    db_ausencia_parse_data,
+    db_ausencia_remover,
     db_ausencia_set,
     db_ausencias_ativos,
-    db_ausencias_todos,
+    db_ausencias_importar_json,
+    db_ausencias_vencidas_sem_aviso,
     db_ausencia_marcar_avisado,
     db_ausencia_atualizar_message_id,
     db_all_configured_guilds,
@@ -26,6 +34,52 @@ from services.db_service import (
 
 log = get_logger("ausencia", "ausencia.log")
 COR_EMBED = 0xF0A500
+CANAL_LEGADO_ID = 1474869321187459147
+
+
+def migrar_canal_legado(guilds) -> None:
+    """Preenche o canal de ausências das guilds sem configuração que têm o canal legado."""
+    for guild in guilds:
+        if guild.get_channel(CANAL_LEGADO_ID) is None:
+            continue
+        cfg = db_get_guild_config(str(guild.id))
+        if cfg and cfg["canal_ausencias_id"]:
+            continue
+        db_set_guild_config(str(guild.id), canal_ausencias_id=str(CANAL_LEGADO_ID))
+        log.info("Canal legado de ausências configurado na guild %s", guild.id)
+
+
+def _guild_do_json_legado(guilds):
+    guilds = list(guilds)
+    guild = next((g for g in guilds if g.get_channel(CANAL_LEGADO_ID) is not None), None)
+    if guild is None and len(guilds) == 1:
+        guild = next(iter(guilds))
+    return guild
+
+
+def migrar_json_legado(guilds, arquivos: tuple[Path, ...] | None = None) -> None:
+    """Importa os ausencias.json encontrados e os renomeia para .migrated."""
+    for arquivo in arquivos or (BASE_DIR / "ausencias.json", AUSENCIAS_FILE):
+        if not arquivo.exists():
+            continue
+        guild = _guild_do_json_legado(guilds)
+        if guild is None:
+            log.warning("%s não migrado: não foi possível determinar a guild.", arquivo)
+            continue
+        try:
+            importadas = db_ausencias_importar_json(str(guild.id), arquivo)
+        except (OSError, ValueError, sqlite3.Error) as e:
+            log.error("Erro ao migrar %s: %s", arquivo, e)
+            continue
+        log.info("%s: %s ausência(s) importada(s) para a guild %s", arquivo, importadas, guild.id)
+        destino = arquivo.with_name(f"{arquivo.name}.migrated")
+        if destino.exists():
+            log.warning("%s mantido: %s já existe.", arquivo, destino)
+            continue
+        try:
+            arquivo.rename(destino)
+        except OSError as e:
+            log.error("Não foi possível renomear %s: %s", arquivo, e)
 
 
 class AusenciaModal(discord.ui.Modal, title="📋 Registrar Ausência"):
@@ -69,9 +123,16 @@ class AusenciaModal(discord.ui.Modal, title="📋 Registrar Ausência"):
             )
             return
 
+        cfg = db_get_guild_config(guild_id)
+        canal_id = int(cfg["canal_ausencias_id"]) if cfg and cfg["canal_ausencias_id"] else None
+        canal    = interaction.guild.get_channel(canal_id) if canal_id else None
+        if canal is None:
+            await interaction.followup.send("❌ Canal de ausências não encontrado. Avise um admin.", ephemeral=True)
+            return
+
         motivo_texto = self.motivo.value.strip() or "Não informado"
         alerta_pd    = dias_int > 3
-        inicio       = datetime.utcnow()
+        inicio       = datetime.now(timezone.utc)
         fim          = inicio + timedelta(days=dias_int)
         user_id      = str(interaction.user.id)
 
@@ -83,20 +144,14 @@ class AusenciaModal(discord.ui.Modal, title="📋 Registrar Ausência"):
             "fim":    fim.isoformat(),
             "avisado":    False,
             "message_id": None,
+            "canal_id":   str(canal.id),
         }
-        db_ausencia_set(guild_id, user_id, dados)
+        ausencia_id = db_ausencia_set(guild_id, user_id, dados)
 
         aviso_pd = (
             "\n\n⚠️ **Atenção:** você está no limite. Se ultrapassar **7 dias sem novo aviso**, receberá **PD automático**."
             if alerta_pd else ""
         )
-
-        cfg = db_get_guild_config(guild_id)
-        canal_id = int(cfg["canal_ausencias_id"]) if cfg and cfg["canal_ausencias_id"] else None
-        canal    = interaction.guild.get_channel(canal_id) if canal_id else None
-        if canal is None:
-            await interaction.followup.send("❌ Canal de ausências não encontrado. Avise um admin.", ephemeral=True)
-            return
 
         embed = discord.Embed(title="🏖️ Registro de Ausência", color=COR_EMBED, timestamp=inicio)
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
@@ -109,8 +164,12 @@ class AusenciaModal(discord.ui.Modal, title="📋 Registrar Ausência"):
         embed.add_field(name="📝 Motivo",    value=motivo_texto,                    inline=False)
         embed.set_footer(text="Sistema de Ausências • Cidade")
 
-        msg = await canal.send(embed=embed)
-        db_ausencia_atualizar_message_id(guild_id, user_id, str(msg.id))
+        try:
+            msg = await canal.send(embed=embed)
+        except Exception:
+            db_ausencia_remover(ausencia_id)
+            raise
+        db_ausencia_atualizar_message_id(ausencia_id, str(msg.id))
         await interaction.followup.send(f"✅ Ausência registrada! Confira em {canal.mention}.", ephemeral=True)
 
         log_embed = discord.Embed(
@@ -208,14 +267,14 @@ class Ausencia(commands.Cog):
             return
         await interaction.response.defer(ephemeral=False)
         ativos = db_ausencias_ativos(guild_id)
-        agora  = datetime.utcnow()
+        agora  = datetime.now(timezone.utc)
         if not ativos:
             await interaction.followup.send("✅ Nenhum jogador ausente no momento.")
             return
         embed = discord.Embed(title="📋 Jogadores em Ausência", color=COR_EMBED, timestamp=agora)
         embed.set_footer(text="Sistema de Ausências • Cidade")
         for row in ativos:
-            fim_dt = datetime.fromisoformat(row["fim"])
+            fim_dt = db_ausencia_parse_data(row["fim"])
             restam = max((fim_dt - agora).days + 1, 0)
             embed.add_field(
                 name=f"👤 {row['nome']}",
@@ -226,34 +285,40 @@ class Ausencia(commands.Cog):
 
     @tasks.loop(hours=1)
     async def verificar_ausencias(self):
-        agora = datetime.utcnow()
+        await self._avisar_vencidas()
+
+    async def _avisar_vencidas(self):
         for guild_id_str in db_all_configured_guilds():
             if not db_is_ausencia_configured(guild_id_str):
                 continue
             guild = self.bot.get_guild(int(guild_id_str))
             if not guild:
                 continue
-            todos = db_ausencias_todos(guild_id_str)
-            for row in todos:
-                if row["avisado"]:
-                    continue
-                fim_dt = datetime.fromisoformat(row["fim"])
-                if agora >= fim_dt:
-                    membro = guild.get_member(int(row["user_id"]))
-                    if membro:
-                        try:
-                            await membro.send(
-                                f"⏰ **Sua ausência venceu hoje ({fim_dt.strftime('%d/%m/%Y')}).**\n"
-                                f"Se precisar de mais tempo, registre uma nova ausência pelo painel.\n"
-                                f"Lembre-se: mais de **7 dias sem aviso** resulta em **PD automático**."
-                            )
-                        except discord.Forbidden:
-                            pass
-                    db_ausencia_marcar_avisado(guild_id_str, row["user_id"])
+            ausentes = {row["user_id"] for row in db_ausencias_ativos(guild_id_str)}
+            for row in db_ausencias_vencidas_sem_aviso(guild_id_str):
+                # Quem já registrou outra ausência ainda ativa não precisa do lembrete.
+                membro = None if row["user_id"] in ausentes else guild.get_member(int(row["user_id"]))
+                if membro:
+                    fim_dt = db_ausencia_parse_data(row["fim"])
+                    try:
+                        await membro.send(
+                            f"⏰ **Sua ausência venceu hoje ({fim_dt.strftime('%d/%m/%Y')}).**\n"
+                            f"Se precisar de mais tempo, registre uma nova ausência pelo painel.\n"
+                            f"Lembre-se: mais de **7 dias sem aviso** resulta em **PD automático**."
+                        )
+                    except discord.Forbidden:
+                        pass
+                db_ausencia_marcar_avisado(row["id"])
 
     @verificar_ausencias.before_loop
     async def _before_verificar(self):
         await self.bot.wait_until_ready()
+        # Fica aqui porque bot.guilds ainda está vazio durante o cog_load.
+        try:
+            migrar_canal_legado(self.bot.guilds)
+            migrar_json_legado(self.bot.guilds)
+        except Exception:
+            log.exception("Erro na migração automática de ausências")
 
 
 async def setup(bot: commands.Bot):

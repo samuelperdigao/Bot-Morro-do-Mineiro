@@ -91,6 +91,10 @@ corresponder a um template.
 - Banco principal: `data/farm.db`, configurável por `ARQUIVO_BANCO_FARM`.
 - Banco separado do Baú: `bau.db`, usado pelo domínio de Baú.
 - Configuração por servidor: tabelas `guild_config` e `system_config`.
+- Ausências: `ausencias_historico`, com um registro por ausência. A tabela
+  `ausencias` deixou de receber gravações e só permanece para rollback de código.
+  `ausencias.json`, se existir, é importado no startup e renomeado para
+  `.migrated`.
 - Dados locais auxiliares: JSONs em `data/`, não versionados.
 - Segredos e caminhos de operação: `.env` e `oracle.key`, não versionados.
 - Logs: arquivos por sistema em `logs/`, não versionados.
