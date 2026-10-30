@@ -16,6 +16,9 @@ TOKEN_UPDATE = ROOT / "scripts" / "atualizar_token.ps1"
 ROLLBACK = ROOT / "scripts" / "rollback_deploy.ps1"
 PUBLICATION = ROOT / "scripts" / "publicar.ps1"
 PRICE_UPDATE = ROOT / "scripts" / "atualizar_precos.py"
+ROOT_BACKUP = ROOT / "backup.ps1"
+ROOT_SAFE_DEPLOY = ROOT / "deploy_seguro.ps1"
+ROOT_ROLLBACK = ROOT / "rollback.ps1"
 
 
 def read(path: Path) -> str:
@@ -30,7 +33,10 @@ def load_price_update_module():
     return module
 
 
-@pytest.mark.parametrize("script", [DEPLOY, TOKEN_UPDATE, ROLLBACK])
+@pytest.mark.parametrize(
+    "script",
+    [DEPLOY, TOKEN_UPDATE, ROLLBACK, ROOT_BACKUP, ROOT_SAFE_DEPLOY, ROOT_ROLLBACK],
+)
 def test_operational_scripts_require_host_key_validation(script: Path) -> None:
     source = read(script)
     assert "StrictHostKeyChecking=yes" in source
@@ -56,6 +62,26 @@ def test_deploy_uses_validated_tracked_manifest() -> None:
     assert "Get-FileHash" in source
     assert "sha256sum" in source
     assert "Invoke-RemoteRollback" in source
+
+
+def test_safe_deploy_delegates_upload_to_tracked_manifest() -> None:
+    source = read(ROOT_SAFE_DEPLOY)
+
+    assert 'scripts\\deploy.ps1' in source
+    assert "backup.ps1" in source
+    assert "Get-ChildItem -Path $LOCAL_DIR -Recurse" not in source
+    assert "scp " not in source
+
+
+def test_root_backup_keeps_secrets_out_of_code_archive() -> None:
+    source = read(ROOT_BACKUP)
+
+    for pattern in ("--exclude='.env'", "--exclude='.env.*'", "--exclude='*.key'"):
+        assert pattern in source
+
+
+def test_root_rollback_does_not_restore_operational_data() -> None:
+    assert "--exclude='./data'" in read(ROOT_ROLLBACK)
 
 
 def test_guided_publication_confirms_commit_push_and_production_deploy() -> None:
@@ -215,7 +241,16 @@ def test_price_embeds_use_compact_fields_within_discord_limits() -> None:
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell indisponivel")
 @pytest.mark.parametrize(
     "script",
-    [ROOT / "deploy.ps1", DEPLOY, TOKEN_UPDATE, ROLLBACK, PUBLICATION],
+    [
+        ROOT / "deploy.ps1",
+        DEPLOY,
+        TOKEN_UPDATE,
+        ROLLBACK,
+        PUBLICATION,
+        ROOT_BACKUP,
+        ROOT_SAFE_DEPLOY,
+        ROOT_ROLLBACK,
+    ],
 )
 def test_powershell_scripts_parse_without_errors(script: Path) -> None:
     escaped_path = str(script).replace("'", "''")

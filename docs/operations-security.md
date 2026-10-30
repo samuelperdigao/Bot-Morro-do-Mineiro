@@ -102,6 +102,22 @@ depende de validação prévia da unidade `systemd` em produção.
 O backup não é removido automaticamente. A retenção e a exclusão posterior
 exigem uma operação separada e confirmada.
 
+## Deploy com backup dos bancos
+
+`scripts/deploy.ps1` preserva arquivos de código, mas não copia os bancos. Quando
+a release altera schema, use os atalhos da raiz, executados pelo operador:
+
+```powershell
+.\deploy_seguro.ps1   # backup.ps1 + scripts/deploy.ps1 + conferência do log
+.\rollback.ps1        # volta o código ao último backup; -Banco volta os bancos
+```
+
+`backup.ps1` copia os bancos com a API de backup do SQLite para `backups/`, local
+e remoto, e deixa `.env`, `.env.*` e `*.key` fora do arquivo de código. O envio
+continua sendo feito somente por `scripts/deploy.ps1`, com o manifesto rastreado.
+`rollback.ps1` não altera `data/`; com `-Banco`, descarta o que foi lançado depois
+do backup. Esses scripts seguem as mesmas exigências de confirmação e host key.
+
 ## Rollback
 
 Use apenas após confirmar o identificador informado pelo deploy:
