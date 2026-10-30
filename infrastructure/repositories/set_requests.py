@@ -7,6 +7,7 @@ class SetRequestRepository:
     create = staticmethod(db_service.db_set_request_create)
     attach_message = staticmethod(db_service.db_set_request_attach_message)
     get = staticmethod(db_service.db_set_request_get)
+    get_by_message = staticmethod(db_service.db_set_request_get_by_message)
     pending_for_user = staticmethod(db_service.db_set_request_pending_for_user)
     recoverable = staticmethod(db_service.db_set_request_list_recoverable)
     recover_interrupted = staticmethod(db_service.db_set_request_recover_interrupted)

@@ -102,7 +102,8 @@ e não devem ser removidos sem confirmação e testes específicos.
 
 `main.py` chama `register_persistent_views`. O registro inclui o painel de Set,
 os painéis Container ativos e um fallback de `ApprovalView`; solicitações
-recuperáveis são carregadas do banco com seus `message_id`. Os contratos de
+recuperáveis são carregadas do banco com seus `message_id`, e o fallback resgata
+pelo embed os pedidos antigos sem linha no banco. Os contratos de
 `custom_id` estão caracterizados nos testes e devem ser tratados como API.
 
 ## Limite operacional

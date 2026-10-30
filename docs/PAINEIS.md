@@ -90,9 +90,14 @@ Os painéis de Operações e Set sobrevivem a reinícios do bot. As views são r
 As solicitações de Set recuperáveis são carregadas por
 `register_persistent_views` a partir do banco e registradas com o
 `message_id`. Portanto, solicitações persistidas podem continuar funcionando
-após reinício. Mensagens antigas sem dados suficientes para recuperação usam
-um fallback controlado e podem não permitir aprovação; isso não é a mesma
-coisa que a `ApprovalView` deixar de ser registrada.
+após reinício. Mensagens sem view vinculada caem em um fallback: se já existe
+linha em `set_requests` para a mensagem, ele segue essa linha e nunca a recria;
+sem linha, tenta reconstruir o pedido pelo embed (ID no Jogo, Nome e ID do
+Solicitante entre crases). Sem esses dados, pede que o membro refaça o Set; isso
+não é a mesma coisa que a `ApprovalView` deixar de ser registrada.
+
+Se a aprovação falhar depois da reivindicação, o pedido volta a `pending` e os
+botões permanecem na mensagem para a decisão ser repetida.
 
 ---
 
