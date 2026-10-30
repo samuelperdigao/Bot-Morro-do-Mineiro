@@ -671,8 +671,8 @@ class EditarUltimoModal(discord.ui.Modal, title="Editar Último Lançamento"):
         self._inputs: list[discord.ui.TextInput] = []
         for nome, val in itens.items():
             ti = discord.ui.TextInput(
-                label=nome,
-                placeholder="Novo valor total",
+                label=f"{nome[:26]} (deste lançamento)",
+                placeholder="Quantidade correta deste lançamento",
                 required=False,
                 default=str(val) if val else "0",
             )
@@ -690,7 +690,6 @@ class EditarUltimoModal(discord.ui.Modal, title="Editar Último Lançamento"):
         except ValueError:
             await interaction.response.send_message("❌ Valores inválidos.", ephemeral=True)
             return
-        prog_antes = db_get_progresso(self.guild_id, self.week_id, self.user_id)
         if self.event_id is None:
             ok = db_editar_ultimo_evento(self.guild_id, self.week_id, self.user_id, valores)
         else:
@@ -700,16 +699,19 @@ class EditarUltimoModal(discord.ui.Modal, title="Editar Último Lançamento"):
                 "❌ Nenhum lançamento encontrado para editar.", ephemeral=True
             )
             return
-        db_verificar_conclusao(self.guild_id, self.week_id, self.user_id)
-        prog_depois = db_get_progresso(self.guild_id, self.week_id, self.user_id)
+        resultado = db_verificar_conclusao(self.guild_id, self.week_id, self.user_id)
         _farm_audit("EDICAO", interaction.user.id, int(self.user_id), event_id=self.event_id, valores=str(valores))
         alvo_msg = "" if str(interaction.user.id) == self.user_id else f" de <@{self.user_id}>"
-        await interaction.response.send_message(f"✅ Lançamento{alvo_msg} editado!", ephemeral=True)
+        aviso = "\n⚠️ A meta voltou para em andamento e a aprovação foi zerada." if resultado == "reabriu" else ""
+        await interaction.response.send_message(f"✅ Lançamento{alvo_msg} editado!{aviso}", ephemeral=True)
         await self.cog._atualizar_painel(self.guild_id, self.week_id, self.user_id)
         await self.cog._atualizar_ranking_fixo(self.guild_id)
-        status_antes = prog_antes["status"] if prog_antes else "em_andamento"
-        if status_antes != "concluida" and prog_depois and prog_depois["status"] == "concluida":
+        if resultado == "concluiu":
             await self.cog._notificar_conclusao(interaction.guild, self.user_id, self.week_id)
+        elif resultado == "reabriu":
+            ticket_cog = interaction.client.get_cog("FarmTicketsCog")
+            if ticket_cog:
+                await ticket_cog.refresh_week(self.guild_id, self.week_id)
 
     async def on_error(self, interaction, error):
         log.error(f"Erro no EditarUltimoModal: {error}", exc_info=True)

@@ -15,6 +15,7 @@ from core.date_utils import format_datetime_br
 from services.db_schema import GUILD_CONFIG_FIELDS, ensure_schema
 
 log = logging.getLogger("farm")
+audit_log = logging.getLogger("audit")
 
 TZ = ZoneInfo(TZ_STR)
 PRODUTOS     = ["Folha", "Ópio", "Seringa", "Agulha"]
@@ -121,6 +122,42 @@ def classificar_resultado(meta_itens: dict, prog_itens: dict) -> str:
         return "meta_batida"
     # Entregou qualquer coisa (total > 0) → mínimo é parcial
     return "parcial"
+
+
+def calcular_pct_meta(alvos: dict, entregue: dict) -> float:
+    """Média de min(entregue/alvo, 1) sobre os alvos > 0, em percentual."""
+    razoes = [
+        min(float(entregue.get(nome, 0) or 0) / float(alvo), 1)
+        for nome, alvo in alvos.items()
+        if float(alvo or 0) > 0
+    ]
+    if not razoes:
+        return 0
+    return round(sum(razoes) / len(razoes) * 100, 1)
+
+
+def _concluida_em_ordem(concluida_em: str | None) -> float:
+    """Chave de desempate: conclusão mais cedo primeiro, sem conclusão por último."""
+    if not concluida_em:
+        return float("inf")
+    try:
+        return datetime.fromisoformat(concluida_em).timestamp()
+    except (TypeError, ValueError):
+        return float("inf")
+
+
+def ordenar_ranking(linhas: list[dict]) -> list[dict]:
+    """Ordena por classificação, percentual e data de conclusão."""
+    ordem = {"elite": 4, "meta_batida": 3, "parcial": 2, "zero": 1}
+    return sorted(
+        linhas,
+        key=lambda linha: (
+            -ordem.get(linha["classificacao"], 0),
+            -linha["pct"],
+            _concluida_em_ordem(linha.get("concluida_em")),
+            linha["user_id"],
+        ),
+    )
 
 
 CLASSIFICACAO_LABEL = {
@@ -599,6 +636,7 @@ def db_set_meta(
           legacy["folha"], legacy["opio"], legacy["seringa"], legacy["agulha"],
           definido_por, now_tz().isoformat()))
     conn.commit()
+    _db_recalcular_conclusoes_semana(guild_id, week_id)
 
 def db_set_meta_dinheiro(guild_id: str, week_id: str, valores: dict | float, definido_por: str):
     """Salva a meta de dinheiro em R$, com suporte a sujo/limpo separados."""
@@ -630,6 +668,7 @@ def db_set_meta_dinheiro(guild_id: str, week_id: str, valores: dict | float, def
           legacy["folha"], legacy["opio"], legacy["seringa"], legacy["agulha"],
           definido_por, now_tz().isoformat()))
     conn.commit()
+    _db_recalcular_conclusoes_semana(guild_id, week_id)
 
 
 # ── Progresso ─────────────────────────────────────────────────────────────────
@@ -758,13 +797,12 @@ def db_editar_evento(guild_id: str, week_id: str, user_id: str, event_id: int, v
     conn.commit()
     return True
 
-def db_verificar_conclusao(guild_id: str, week_id: str, user_id: str):
+def db_verificar_conclusao(guild_id: str, week_id: str, user_id: str) -> str | None:
+    """Alinha o status à meta atual. Retorna "concluiu", "reabriu" ou None."""
     meta = db_get_meta(guild_id, week_id)
     prog = db_get_progresso(guild_id, week_id, user_id)
     if not meta or not prog:
-        return
-    if prog["status"] == "concluida":
-        return
+        return None
 
     meta_tipo = db_meta_tipo_efetivo(meta)
     meta_itens = db_meta_itens_ativos(meta)
@@ -774,7 +812,7 @@ def db_verificar_conclusao(guild_id: str, week_id: str, user_id: str):
 
     if meta_tipo == "dinheiro":
         if meta_valor <= 0:
-            return
+            return None
         if meta_dinheiro_itens:
             concluido = all(
                 prog_itens.get(nome, 0) >= qtd
@@ -784,19 +822,49 @@ def db_verificar_conclusao(guild_id: str, week_id: str, user_id: str):
             concluido = sum(prog_itens.get(nome, 0) for nome in DINHEIRO_ITEMS) >= meta_valor
     else:
         if not meta_itens:
-            return
+            return None
         concluido = all(
             prog_itens.get(nome, 0) >= qtd
             for nome, qtd in meta_itens.items()
         )
 
+    ja_concluida = prog["status"] == "concluida"
+    if concluido == ja_concluida:
+        return None
+
+    conn = get_conn()
     if concluido:
-        conn = get_conn()
         conn.execute(
             "UPDATE progresso SET status='concluida', concluida_em=? WHERE guild_id=? AND week_id=? AND user_id=?",
             (now_tz().isoformat(), guild_id, week_id, user_id)
         )
         conn.commit()
+        return "concluiu"
+
+    conn.execute(
+        """UPDATE progresso SET status='em_andamento', concluida_em=NULL,
+               aprovada=0, aprovada_por=NULL, aprovada_em=NULL,
+               aprovacao_antecipada=0, aprovacao_nivel=NULL
+           WHERE guild_id=? AND week_id=? AND user_id=?""",
+        (guild_id, week_id, user_id),
+    )
+    conn.commit()
+    audit_log.info(
+        "action=META_REABERTA | guild=%s | week=%s | target=%s | aprovada_antes=%s",
+        guild_id, week_id, user_id, prog["aprovada"],
+    )
+    return "reabriu"
+
+
+def _db_recalcular_conclusoes_semana(guild_id: str, week_id: str) -> None:
+    """Reavalia o status de todos os progressos da semana após mudança de meta."""
+    rows = get_conn().execute(
+        "SELECT user_id FROM progresso WHERE guild_id=? AND week_id=?",
+        (guild_id, week_id),
+    ).fetchall()
+    for row in rows:
+        db_verificar_conclusao(guild_id, week_id, row["user_id"])
+
 
 def db_salvar_painel(guild_id: str, week_id: str, user_id: str, ch_id: str, msg_id: str):
     db_ensure_progresso(guild_id, week_id, user_id)
@@ -868,7 +936,7 @@ def db_ranking_semana(guild_id: str, week_id: str, user_ids: list[str] | None = 
     meta_tipo = db_meta_tipo_efetivo(meta)
     meta_itens = db_meta_itens_ativos(meta)
     meta_dinheiro = db_meta_dinheiro_ativo(meta)
-    total_meta = (meta_dinheiro if meta_tipo == "dinheiro" else sum(meta_itens.values())) or 1
+    _, alvos = db_meta_alvos_ativos(meta)
 
     rows = get_conn().execute(
         "SELECT * FROM progresso WHERE guild_id=? AND week_id=?",
@@ -879,9 +947,6 @@ def db_ranking_semana(guild_id: str, week_id: str, user_ids: list[str] | None = 
     if user_ids:
         ranking_user_ids.update(str(uid) for uid in user_ids)
 
-    # Ordem de classificação para ordenar o ranking
-    _ordem = {"elite": 4, "meta_batida": 3, "parcial": 2, "zero": 1}
-
     result = []
     for user_id in ranking_user_ids:
         row = rows_by_uid.get(str(user_id))
@@ -889,18 +954,21 @@ def db_ranking_semana(guild_id: str, week_id: str, user_ids: list[str] | None = 
         total_itens = sum(prog_itens.get(nome, 0) for nome in meta_itens)
         total_dinheiro = sum(prog_itens.get(nome, 0) for nome in DINHEIRO_ITEMS)
         total_prog = total_dinheiro if meta_tipo == "dinheiro" else total_itens
-        pct        = round(total_prog / total_meta * 100, 1)
+        entregue   = {**prog_itens, "Dinheiro": total_dinheiro}
+        pct        = calcular_pct_meta(alvos, entregue)
 
         # Aprovação antecipada com nível escolhido → usar esse nível diretamente
         if row and row["aprovacao_antecipada"] and row["aprovacao_nivel"]:
             classificacao = row["aprovacao_nivel"]
         elif meta_tipo == "dinheiro":
             meta_dinheiro_itens = db_meta_dinheiro_itens_ativos(meta)
+            # O percentual exibido tem teto; Elite depende do valor bruto.
+            pct_bruto = round(total_prog / (meta_dinheiro or 1) * 100, 1)
             if meta_dinheiro_itens:
                 classificacao = classificar_resultado(meta_dinheiro_itens, prog_itens)
-            elif pct >= 130:
+            elif pct_bruto >= 130:
                 classificacao = "elite"
-            elif pct >= 100:
+            elif pct_bruto >= 100:
                 classificacao = "meta_batida"
             elif total_prog > 0:
                 classificacao = "parcial"
@@ -916,10 +984,10 @@ def db_ranking_semana(guild_id: str, week_id: str, user_ids: list[str] | None = 
             "pct":           pct,
             "classificacao": classificacao,
             "total":         total_prog,
+            "concluida_em":  row["concluida_em"] if row else None,
         })
 
-    result.sort(key=lambda x: (_ordem.get(x["classificacao"], 0), x["pct"]), reverse=True)
-    return result
+    return ordenar_ranking(result)
 
 
 def db_get_painel_ranking(guild_id: str) -> tuple[str | None, str | None, str | None]:
@@ -2470,17 +2538,10 @@ def db_ticket_mark_corrected(ticket_id: int, event_id: int, admin_id: str, motiv
 
 
 def db_ticket_recalculate_completion(ticket_id: int) -> None:
-    """Reabre somente o progresso ligado ao ticket antes de recalcular a meta."""
+    """Recalcula somente o progresso ligado ao ticket após uma correção."""
     ticket = db_ticket_get(ticket_id)
     if not ticket:
         return
-    conn = get_conn()
-    conn.execute(
-        """UPDATE progresso SET status='em_andamento', concluida_em=NULL
-           WHERE guild_id=? AND week_id=? AND user_id=?""",
-        (ticket["guild_id"], ticket["week_id"], ticket["user_id"]),
-    )
-    conn.commit()
     db_verificar_conclusao(ticket["guild_id"], ticket["week_id"], ticket["user_id"])
 
 
