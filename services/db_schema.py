@@ -59,6 +59,24 @@ CREATE TABLE IF NOT EXISTS ausencias (
     PRIMARY KEY (guild_id, user_id)
 );
 
+CREATE TABLE IF NOT EXISTS ausencias_historico (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id   TEXT NOT NULL,
+    user_id    TEXT NOT NULL,
+    nome       TEXT,
+    dias       INTEGER,
+    motivo     TEXT,
+    inicio     TEXT,
+    fim        TEXT,
+    avisado    INTEGER DEFAULT 0,
+    message_id TEXT,
+    canal_id   TEXT,
+    criado_em  TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ausencias_historico_usuario
+ON ausencias_historico (guild_id, user_id, id);
+
 CREATE TABLE IF NOT EXISTS metas (
     guild_id     TEXT NOT NULL,
     week_id      TEXT NOT NULL,
@@ -594,11 +612,30 @@ def _apply_pending_member_folders(conn: sqlite3.Connection) -> bool:
     return True
 
 
+def _apply_ausencias_historico(conn: sqlite3.Connection) -> bool:
+    # A tabela antiga fica intacta: o código anterior continua funcionando em um
+    # rollback sem restaurar o banco.
+    conn.execute(
+        """INSERT INTO ausencias_historico
+               (guild_id, user_id, nome, dias, motivo, inicio, fim, avisado, message_id)
+           SELECT a.guild_id, a.user_id, a.nome, a.dias, a.motivo, a.inicio, a.fim,
+                  a.avisado, a.message_id
+           FROM ausencias a
+           WHERE NOT EXISTS (
+               SELECT 1 FROM ausencias_historico h
+               WHERE h.guild_id = a.guild_id AND h.user_id = a.user_id
+                 AND h.inicio IS a.inicio AND h.fim IS a.fim
+           )"""
+    )
+    return True
+
+
 VERSIONED_MIGRATIONS = (
     (1, "ensure legacy columns", _apply_legacy_columns),
     (2, "ensure persistent set requests", _apply_set_request_schema),
     (3, "ensure active farm ticket index", _apply_farm_active_ticket_index),
     (4, "ensure pending member folders", _apply_pending_member_folders),
+    (5, "copy absences to history table", _apply_ausencias_historico),
 )
 
 

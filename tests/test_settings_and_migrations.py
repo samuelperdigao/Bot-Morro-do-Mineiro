@@ -28,8 +28,42 @@ class SchemaMigrationTests(unittest.TestCase):
             ).fetchone()[0]
             conn.close()
 
-            self.assertEqual(versions, [1, 2, 3, 4])
+            self.assertEqual(versions, [1, 2, 3, 4, 5])
             self.assertEqual(pending_table, 1)
+
+    def test_absences_are_copied_to_history_and_legacy_table_is_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ausencias.db"
+            conn = sqlite3.connect(path)
+            conn.executescript(
+                """
+                CREATE TABLE ausencias (
+                    guild_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    nome TEXT,
+                    dias INTEGER,
+                    motivo TEXT,
+                    inicio TEXT,
+                    fim TEXT,
+                    avisado INTEGER DEFAULT 0,
+                    message_id TEXT,
+                    PRIMARY KEY (guild_id, user_id)
+                );
+                INSERT INTO ausencias VALUES ('guild-1', 'user-1', 'Membro', 2, 'Viagem',
+                    '2026-10-01T10:00:00', '2026-10-03T10:00:00', 1, '55');
+                """
+            )
+            ensure_schema(conn, path, logging.getLogger("test"))
+            conn.execute("DELETE FROM schema_migrations WHERE version = 5")
+            ensure_schema(conn, path, logging.getLogger("test"))
+            history = conn.execute(
+                "SELECT guild_id, user_id, nome, avisado, message_id FROM ausencias_historico"
+            ).fetchall()
+            legacy_count = conn.execute("SELECT COUNT(*) FROM ausencias").fetchone()[0]
+            conn.close()
+
+            self.assertEqual(history, [("guild-1", "user-1", "Membro", 1, "55")])
+            self.assertEqual(legacy_count, 1)
 
     def test_legacy_farm_ticket_data_is_preserved_without_table_recreation(self):
         with tempfile.TemporaryDirectory() as directory:
