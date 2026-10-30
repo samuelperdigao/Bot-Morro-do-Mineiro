@@ -51,6 +51,9 @@ class SetRequestService:
     def release(self, request_id: str) -> bool:
         return set_request_repository.release(request_id)
 
+    def discard_unposted(self, request_id: str) -> bool:
+        return set_request_repository.discard_unposted(request_id)
+
     def recover_interrupted(self) -> int:
         return set_request_repository.recover_interrupted()
 

@@ -61,9 +61,6 @@ if (-not $reaproveitou) {
 Write-Host ""
 Write-Host "[2/3] Publicando (testes, manifesto, confirmacao e restart)..." -ForegroundColor Yellow
 
-$inicio = "$(ssh @SSH_OPTS $REMOTE "date '+%Y-%m-%d %H:%M:%S'")".Trim()
-if ($LASTEXITCODE -ne 0 -or -not $inicio) { Falhar "Nao consegui consultar o servidor antes de publicar." }
-
 & (Join-Path $LOCAL_DIR "scripts\deploy.ps1")
 if ($LASTEXITCODE -ne 0) {
     Falhar "A publicacao nao foi concluida (veja acima). O backup foi mantido para a proxima tentativa."
@@ -72,6 +69,10 @@ if ($LASTEXITCODE -ne 0) {
 # -- 3. Verificacao ----------------------------------------------------------
 Write-Host ""
 Write-Host "[3/3] Conferindo se o bot subiu (ate 30s)..." -ForegroundColor Yellow
+
+# Le o log a partir deste restart, para nao confundir com o processo antigo
+$inicio = "$(ssh @SSH_OPTS $REMOTE "systemctl show farmbot -p ActiveEnterTimestamp --value")".Trim()
+if (-not $inicio) { $inicio = "-5min" }
 
 $online = $false
 $status = ""

@@ -666,7 +666,10 @@ class AcaoParticipantesView(discord.ui.View):
         acao_row = self._load(interaction)
         if not acao_row:
             await interaction.response.send_message("❌ Painel indisponível.", ephemeral=True)
-            if interaction.message:
+            # A linha é gravada logo depois de publicar: painel recém-criado mantém os botões.
+            criado_em = getattr(interaction.message, "created_at", None)
+            recem_criado = criado_em and (discord.utils.utcnow() - criado_em).total_seconds() < 30
+            if interaction.message and not recem_criado:
                 try:
                     await interaction.message.edit(view=None)
                 except discord.HTTPException as exc:

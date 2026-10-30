@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import services.db_service as db
-from cogs.farm import EditarUltimoModal
+from cogs.farm import EditarUltimoModal, FarmCog, _aviso_recalculo_meta
 
 GUILD = "1"
 WEEK = "2026-06-15"
@@ -63,7 +63,7 @@ class VerificarConclusaoTests(ReaberturaBase):
 
     def test_editing_below_the_goal_clears_approval(self):
         self._concluir()
-        db.db_aprovar(GUILD, WEEK, USER, "42", antecipada=True, nivel="elite")
+        db.db_aprovar(GUILD, WEEK, USER, "42")
         db.db_editar_ultimo_evento(GUILD, WEEK, USER, {**META, "Folha": 50})
 
         db.db_verificar_conclusao(GUILD, WEEK, USER)
@@ -72,9 +72,19 @@ class VerificarConclusaoTests(ReaberturaBase):
         self.assertEqual(progresso["aprovada"], 0)
         self.assertIsNone(progresso["aprovada_por"])
         self.assertIsNone(progresso["aprovada_em"])
-        self.assertEqual(progresso["aprovacao_antecipada"], 0)
-        self.assertIsNone(progresso["aprovacao_nivel"])
         self.assertEqual(db.db_ranking_semana(GUILD, WEEK)[0]["classificacao"], "parcial")
+
+    def test_reopening_keeps_early_approval_given_by_leadership(self):
+        self._concluir()
+        db.db_aprovar(GUILD, WEEK, USER, "42", antecipada=True, nivel="elite")
+        db.db_editar_ultimo_evento(GUILD, WEEK, USER, {**META, "Folha": 50})
+
+        self.assertEqual(db.db_verificar_conclusao(GUILD, WEEK, USER), "reabriu")
+
+        progresso = self._progresso()
+        self.assertEqual(progresso["status"], "em_andamento")
+        self.assertEqual(progresso["aprovada"], 1)
+        self.assertEqual(progresso["aprovacao_nivel"], "elite")
 
     def test_reopening_is_audited(self):
         self._concluir()
@@ -113,11 +123,51 @@ class MudancaDeMetaTests(ReaberturaBase):
     def test_lowering_the_goal_concludes_whoever_now_covers_it(self):
         db.db_lancar(GUILD, WEEK, USER, {nome: 50 for nome in META})
 
-        db.db_set_meta(GUILD, WEEK, {nome: 50 for nome in META}, "99")
+        resultados = db.db_set_meta(GUILD, WEEK, {nome: 50 for nome in META}, "99")
 
+        self.assertEqual(resultados, {USER: "concluiu"})
         progresso = self._progresso()
         self.assertEqual(progresso["status"], "concluida")
         self.assertIsNotNone(progresso["concluida_em"])
+
+    def test_raising_the_goal_does_not_reopen_finalized_ticket(self):
+        ticket, _created = db.db_ticket_reserve(GUILD, WEEK, USER, "Membro")
+        self._concluir()
+        db.db_aprovar(GUILD, WEEK, USER, "42")
+        db.get_conn().execute(
+            "UPDATE farm_tickets SET status='finalizado' WHERE id=?", (ticket["id"],)
+        )
+
+        resultados = db.db_set_meta(GUILD, WEEK, {nome: 200 for nome in META}, "99")
+
+        self.assertEqual(resultados, {})
+        progresso = self._progresso()
+        self.assertEqual(progresso["status"], "concluida")
+        self.assertEqual(progresso["aprovada"], 1)
+
+    def test_leadership_notice_counts_reopened_and_completed_members(self):
+        aviso = _aviso_recalculo_meta({"1": "reabriu", "2": "reabriu", "3": "concluiu"})
+
+        self.assertIn("**2** membro(s) deixaram de cobrir", aviso)
+        self.assertIn("**1** membro(s) passaram a cobrir", aviso)
+        self.assertEqual(_aviso_recalculo_meta({}), "")
+
+    def test_recalculation_notifies_and_reapproves_only_who_completed(self):
+        ticket, _created = db.db_ticket_reserve(GUILD, WEEK, USER, "Membro")
+        ticket_cog = SimpleNamespace(auto_approve_if_completed=AsyncMock(return_value=True))
+        cog = FarmCog.__new__(FarmCog)
+        cog.bot = SimpleNamespace(get_cog=lambda name: ticket_cog)
+        cog._notificar_conclusao = AsyncMock()
+        guild = SimpleNamespace()
+
+        asyncio.run(
+            cog._aplicar_recalculo_meta(
+                guild, GUILD, WEEK, {USER: "concluiu", "11": "reabriu"}
+            )
+        )
+
+        cog._notificar_conclusao.assert_awaited_once_with(guild, USER, WEEK)
+        ticket_cog.auto_approve_if_completed.assert_awaited_once_with(ticket["id"], guild=guild)
 
     def test_money_goal_change_recalculates_the_week(self):
         db.db_set_meta_dinheiro(GUILD, WEEK, {db.DINHEIRO_SUJO_ITEM: 100}, "99")

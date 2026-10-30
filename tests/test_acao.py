@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import discord
+
 import services.db_service as db
 from cogs.acao import (
     AcaoParticipantesView,
@@ -216,6 +218,15 @@ class AcaoPanelInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Painel indisponível", args[0])
         self.assertTrue(kwargs["ephemeral"])
         interaction.message.edit.assert_awaited_once_with(view=None)
+
+    async def test_panel_just_published_keeps_its_view_while_row_is_being_saved(self):
+        interaction = _fake_interaction(11, message_id=999)
+        interaction.message.created_at = discord.utils.utcnow()
+
+        await AcaoParticipantesView.entrar(AcaoParticipantesView(), interaction, None)
+
+        self.assertIn("Painel indisponível", interaction.response.send_message.await_args.args[0])
+        interaction.message.edit.assert_not_awaited()
 
     async def test_selector_requires_leadership_to_create_a_panel(self):
         view = AcaoSelectView("21:00", "fuga", "30/06/2026", "10")

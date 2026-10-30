@@ -36,6 +36,7 @@ class FarmService:
     editar_evento = staticmethod(db_service.db_editar_evento)
     editar_ultimo_evento = staticmethod(db_service.db_editar_ultimo_evento)
     verificar_conclusao = staticmethod(db_service.db_verificar_conclusao)
+    ticket_ativo_semana = staticmethod(db_service.db_ticket_get_week)
     salvar_painel = staticmethod(db_service.db_salvar_painel)
     limpar_painel = staticmethod(db_service.db_limpar_painel)
     aprovar = staticmethod(db_service.db_aprovar)

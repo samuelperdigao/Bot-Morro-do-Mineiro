@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 # core.config exige estas variáveis no import; os testes não dependem do .env.
 os.environ.setdefault("DISCORD_TOKEN", "token-de-teste")
@@ -143,6 +143,35 @@ class DatabaseTestCase(unittest.IsolatedAsyncioTestCase):
 
     def pedidos(self):
         return db.get_conn().execute("SELECT * FROM set_requests").fetchall()
+
+
+class PedidoNaoPublicadoTests(DatabaseTestCase):
+    async def test_falha_ao_publicar_nao_prende_o_membro(self):
+        request_id = set_request_service.create(
+            str(GUILD_ID), str(USER_ID), "Fulano", "12345", str(CHANNEL_ID)
+        )
+
+        self.assertTrue(set_request_service.discard_unposted(request_id))
+
+        self.assertFalse(set_request_service.pending_for_user(str(GUILD_ID), str(USER_ID)))
+
+    async def test_pedido_ja_publicado_nao_e_descartado(self):
+        request_id = self.criar_pedido()
+
+        self.assertFalse(set_request_service.discard_unposted(request_id))
+        self.assertEqual(set_request_service.get(request_id)["status"], "pending")
+
+
+class InteracaoExpiradaTests(unittest.IsolatedAsyncioTestCase):
+    async def test_falha_no_defer_nao_deixa_o_painel_preso(self):
+        view = ApprovalView(0, "", None)
+        erro = discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "expirada")
+        interaction = SimpleNamespace(response=SimpleNamespace(defer=AsyncMock(side_effect=erro)))
+
+        with self.assertRaises(discord.NotFound):
+            await view._reservar(interaction)
+
+        self.assertFalse(view._processando)
 
 
 class RestartTests(DatabaseTestCase):

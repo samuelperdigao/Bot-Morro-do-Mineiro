@@ -90,7 +90,7 @@ def _truncar_base(base: str, disponivel: int) -> str:
     """Corta o nome preservando o sufixo ' | ID' quando ele existe."""
 
     nome, sep, sufixo = base.rpartition(_SUFIXO_ID)
-    if not sep:
+    if not sep or not sufixo.strip().isdigit():
         return base[:disponivel].strip()
 
     sufixo_completo = f"{_SUFIXO_ID}{sufixo}"

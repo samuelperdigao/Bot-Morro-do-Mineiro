@@ -24,6 +24,9 @@ Após o endurecimento operacional, a suíte local registrou:
 270 passed, 11 warnings, 21 subtests passed in 7.23s
 ```
 
+`tests/conftest.py` define credenciais fictícias e aponta o Baú para um banco
+temporário, então a suíte não depende do `.env` nem do `bau.db` locais.
+
 O teste foi executado na venv do projeto, sem conexão ao Discord, sem produção
 e sem deploy. O plugin de cache do pytest foi desabilitado nessa auditoria para
 evitar gerar cache adicional.

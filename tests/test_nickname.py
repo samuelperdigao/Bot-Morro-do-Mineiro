@@ -156,5 +156,13 @@ class DesiredNickTests(unittest.TestCase):
         self.assertIsNone(desired_nick(member, tag_for_member(member)))
 
 
+class SufixoSemIdTests(unittest.TestCase):
+    def test_non_numeric_suffix_does_not_erase_the_name(self):
+        nick = build_nick("Mestre | Comandante Supremo da Favela do Morro", "[GRT]")
+
+        self.assertEqual(nick, "[GRT] Mestre | Comandante Suprem")
+        self.assertLessEqual(len(nick), 32)
+
+
 if __name__ == "__main__":
     unittest.main()

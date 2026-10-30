@@ -693,7 +693,7 @@ def db_set_meta(
           legacy["folha"], legacy["opio"], legacy["seringa"], legacy["agulha"],
           definido_por, now_tz().isoformat()))
     conn.commit()
-    _db_recalcular_conclusoes_semana(guild_id, week_id)
+    return _db_recalcular_conclusoes_semana(guild_id, week_id)
 
 def db_set_meta_dinheiro(guild_id: str, week_id: str, valores: dict | float, definido_por: str):
     """Salva a meta de dinheiro em R$, com suporte a sujo/limpo separados."""
@@ -725,7 +725,7 @@ def db_set_meta_dinheiro(guild_id: str, week_id: str, valores: dict | float, def
           legacy["folha"], legacy["opio"], legacy["seringa"], legacy["agulha"],
           definido_por, now_tz().isoformat()))
     conn.commit()
-    _db_recalcular_conclusoes_semana(guild_id, week_id)
+    return _db_recalcular_conclusoes_semana(guild_id, week_id)
 
 
 # ── Progresso ─────────────────────────────────────────────────────────────────
@@ -854,7 +854,9 @@ def db_editar_evento(guild_id: str, week_id: str, user_id: str, event_id: int, v
     conn.commit()
     return True
 
-def db_verificar_conclusao(guild_id: str, week_id: str, user_id: str) -> str | None:
+def db_verificar_conclusao(
+    guild_id: str, week_id: str, user_id: str, *, permitir_reabrir: bool = True
+) -> str | None:
     """Alinha o status à meta atual. Retorna "concluiu", "reabriu" ou None."""
     meta = db_get_meta(guild_id, week_id)
     prog = db_get_progresso(guild_id, week_id, user_id)
@@ -898,13 +900,24 @@ def db_verificar_conclusao(guild_id: str, week_id: str, user_id: str) -> str | N
         conn.commit()
         return "concluiu"
 
-    conn.execute(
-        """UPDATE progresso SET status='em_andamento', concluida_em=NULL,
-               aprovada=0, aprovada_por=NULL, aprovada_em=NULL,
-               aprovacao_antecipada=0, aprovacao_nivel=NULL
-           WHERE guild_id=? AND week_id=? AND user_id=?""",
-        (guild_id, week_id, user_id),
-    )
+    if not permitir_reabrir:
+        return None
+
+    # A aprovação antecipada é decisão da liderança e não depende da meta.
+    if prog["aprovacao_antecipada"]:
+        conn.execute(
+            """UPDATE progresso SET status='em_andamento', concluida_em=NULL
+               WHERE guild_id=? AND week_id=? AND user_id=?""",
+            (guild_id, week_id, user_id),
+        )
+    else:
+        conn.execute(
+            """UPDATE progresso SET status='em_andamento', concluida_em=NULL,
+                   aprovada=0, aprovada_por=NULL, aprovada_em=NULL,
+                   aprovacao_nivel=NULL
+               WHERE guild_id=? AND week_id=? AND user_id=?""",
+            (guild_id, week_id, user_id),
+        )
     conn.commit()
     audit_log.info(
         "action=META_REABERTA | guild=%s | week=%s | target=%s | aprovada_antes=%s",
@@ -913,14 +926,34 @@ def db_verificar_conclusao(guild_id: str, week_id: str, user_id: str) -> str | N
     return "reabriu"
 
 
-def _db_recalcular_conclusoes_semana(guild_id: str, week_id: str) -> None:
-    """Reavalia o status de todos os progressos da semana após mudança de meta."""
-    rows = get_conn().execute(
+def _db_recalcular_conclusoes_semana(guild_id: str, week_id: str) -> dict[str, str]:
+    """Reavalia a semana após mudança de meta e devolve {user_id: resultado}.
+
+    Ticket finalizado não reabre: a entrega já foi encerrada e o próprio ticket
+    não aceita mais lançamento nem aprovação.
+    """
+    conn = get_conn()
+    rows = conn.execute(
         "SELECT user_id FROM progresso WHERE guild_id=? AND week_id=?",
         (guild_id, week_id),
     ).fetchall()
+    finalizados = {
+        row["user_id"]
+        for row in conn.execute(
+            """SELECT user_id FROM farm_tickets
+               WHERE guild_id=? AND week_id=? AND status='finalizado' AND excluido_em IS NULL""",
+            (guild_id, week_id),
+        ).fetchall()
+    }
+    resultados = {}
     for row in rows:
-        db_verificar_conclusao(guild_id, week_id, row["user_id"])
+        user_id = row["user_id"]
+        resultado = db_verificar_conclusao(
+            guild_id, week_id, user_id, permitir_reabrir=user_id not in finalizados
+        )
+        if resultado:
+            resultados[user_id] = resultado
+    return resultados
 
 
 def db_salvar_painel(guild_id: str, week_id: str, user_id: str, ch_id: str, msg_id: str):
@@ -1451,6 +1484,19 @@ def db_set_request_complete(request_id: str, status: str) -> bool:
            SET status=?, completed_at=?, processing_started_at=NULL
            WHERE request_id=? AND status='processing'""",
         (status, now_tz().isoformat(), request_id),
+    )
+    conn.commit()
+    return bool(cur.rowcount)
+
+
+def db_set_request_discard_unposted(request_id: str) -> bool:
+    """Cancela o pedido cuja mensagem de aprovação nunca chegou a ser vinculada."""
+    conn = get_conn()
+    cur = conn.execute(
+        """UPDATE set_requests
+           SET status='cancelled', completed_at=?
+           WHERE request_id=? AND status='pending' AND approval_message_id IS NULL""",
+        (now_tz().isoformat(), request_id),
     )
     conn.commit()
     return bool(cur.rowcount)

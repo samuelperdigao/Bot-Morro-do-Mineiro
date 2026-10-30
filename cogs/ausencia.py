@@ -294,10 +294,11 @@ class Ausencia(commands.Cog):
             guild = self.bot.get_guild(int(guild_id_str))
             if not guild:
                 continue
-            ausentes = {row["user_id"] for row in db_ausencias_ativos(guild_id_str)}
+            # Quem já registrou outra ausência ainda ativa não precisa do lembrete,
+            # e cada membro recebe no máximo um por ciclo.
+            sem_lembrete = {row["user_id"] for row in db_ausencias_ativos(guild_id_str)}
             for row in db_ausencias_vencidas_sem_aviso(guild_id_str):
-                # Quem já registrou outra ausência ainda ativa não precisa do lembrete.
-                membro = None if row["user_id"] in ausentes else guild.get_member(int(row["user_id"]))
+                membro = None if row["user_id"] in sem_lembrete else guild.get_member(int(row["user_id"]))
                 if membro:
                     fim_dt = db_ausencia_parse_data(row["fim"])
                     try:
@@ -308,7 +309,16 @@ class Ausencia(commands.Cog):
                         )
                     except discord.Forbidden:
                         pass
+                    except discord.HTTPException as exc:
+                        # Falha temporária: tenta de novo no próximo ciclo.
+                        log.warning("Falha ao avisar ausência %s: %s", row["id"], exc)
+                        continue
+                    sem_lembrete.add(row["user_id"])
                 db_ausencia_marcar_avisado(row["id"])
+
+    @verificar_ausencias.error
+    async def _verificar_ausencias_error(self, error: Exception):
+        log.error("Task de ausências interrompida: %s", error, exc_info=error)
 
     @verificar_ausencias.before_loop
     async def _before_verificar(self):

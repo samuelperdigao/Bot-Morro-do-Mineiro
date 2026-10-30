@@ -219,6 +219,7 @@ db_lancar = farm_service.lancar
 db_editar_evento = farm_service.editar_evento
 db_editar_ultimo_evento = farm_service.editar_ultimo_evento
 db_verificar_conclusao = farm_service.verificar_conclusao
+db_ticket_get_week = farm_service.ticket_ativo_semana
 db_salvar_painel = farm_service.salvar_painel
 db_limpar_painel = farm_service.limpar_painel
 db_aprovar = farm_service.aprovar
@@ -302,7 +303,7 @@ class DefinirMetasModal(discord.ui.Modal):
             )
             return
 
-        db_set_meta(
+        resultados = db_set_meta(
             self.guild_id,
             self.week_id,
             valores,
@@ -322,7 +323,12 @@ class DefinirMetasModal(discord.ui.Modal):
             if nome in valores
         )
         await interaction.response.send_message(
-            f"✅ Metas da semana `{format_date_br(self.week_id)}` definidas:\n{resumo}", ephemeral=True
+            f"✅ Metas da semana `{format_date_br(self.week_id)}` definidas:\n{resumo}"
+            f"{_aviso_recalculo_meta(resultados)}",
+            ephemeral=True,
+        )
+        await self.cog._aplicar_recalculo_meta(
+            interaction.guild, self.guild_id, self.week_id, resultados
         )
         await self.cog._atualizar_ranking_fixo(self.guild_id)
         ticket_cog = interaction.client.get_cog("FarmTicketsCog")
@@ -396,7 +402,7 @@ class DefinirMetasDinheiroModal(discord.ui.Modal, title="Definir Meta — Dinhei
             )
             return
 
-        db_set_meta_dinheiro(self.guild_id, self.week_id, valores, str(interaction.user.id))
+        resultados = db_set_meta_dinheiro(self.guild_id, self.week_id, valores, str(interaction.user.id))
         _farm_audit("META_DINHEIRO_DEFINIDA", interaction.user.id, week_id=self.week_id, valores=str(valores))
 
         resumo = "\n".join(
@@ -404,8 +410,12 @@ class DefinirMetasDinheiroModal(discord.ui.Modal, title="Definir Meta — Dinhei
             for nome, valor in valores.items()
         )
         await interaction.response.send_message(
-            f"✅ Meta de dinheiro da semana `{format_date_br(self.week_id)}` definida:\n{resumo}",
+            f"✅ Meta de dinheiro da semana `{format_date_br(self.week_id)}` definida:\n{resumo}"
+            f"{_aviso_recalculo_meta(resultados)}",
             ephemeral=True,
+        )
+        await self.cog._aplicar_recalculo_meta(
+            interaction.guild, self.guild_id, self.week_id, resultados
         )
         await self.cog._atualizar_ranking_fixo(self.guild_id)
         ticket_cog = interaction.client.get_cog("FarmTicketsCog")
@@ -646,6 +656,21 @@ class LancarDinheiroModal(discord.ui.Modal, title="💵 Lançar Dinheiro"):
         await _safe_respond(interaction, "❌ Erro ao lançar dinheiro sujo.")
 
 
+def _aviso_recalculo_meta(resultados: dict[str, str]) -> str:
+    """Resume para a liderança o efeito da nova meta sobre quem já lançou."""
+    reabertos = sum(1 for resultado in resultados.values() if resultado == "reabriu")
+    concluidos = sum(1 for resultado in resultados.values() if resultado == "concluiu")
+    aviso = ""
+    if reabertos:
+        aviso += (
+            f"\n⚠️ **{reabertos}** membro(s) deixaram de cobrir a meta e voltaram para "
+            "em andamento. A aprovação deles foi zerada, salvo as antecipadas."
+        )
+    if concluidos:
+        aviso += f"\n🏆 **{concluidos}** membro(s) passaram a cobrir a meta."
+    return aviso
+
+
 class EditarUltimoModal(discord.ui.Modal, title="Editar Último Lançamento"):
     """
     Modal dinâmico para editar o último lançamento.
@@ -857,7 +882,6 @@ class ResultadoView(discord.ui.View):
             await interaction.response.send_message("Nenhum participante.", ephemeral=True)
             return
         await interaction.response.defer()
-        db_verificar_conclusao(self.guild_id, self.week_id, user_id)
         prog   = db_get_progresso(self.guild_id, self.week_id, user_id)
         meta   = db_get_meta(self.guild_id, self.week_id)
         member = interaction.guild.get_member(int(user_id)) or await _safe_fetch_member(interaction.guild, int(user_id))
@@ -1212,6 +1236,22 @@ class FarmCog(commands.Cog):
 
         canal = guild.get_channel(pasta.channel_id) or await _safe_fetch_channel(guild, pasta.channel_id)
         return canal if isinstance(canal, discord.TextChannel) else None
+
+    async def _aplicar_recalculo_meta(
+        self, guild: discord.Guild, guild_id: str, week_id: str, resultados: dict[str, str]
+    ) -> None:
+        """Notifica e reaprova quem passou a cobrir a meta depois da mudança."""
+        ticket_cog = self.bot.get_cog("FarmTicketsCog")
+        for user_id, resultado in resultados.items():
+            if resultado != "concluiu":
+                continue
+            try:
+                await self._notificar_conclusao(guild, user_id, week_id)
+                ticket = db_ticket_get_week(guild_id, week_id, user_id)
+                if ticket_cog and ticket:
+                    await ticket_cog.auto_approve_if_completed(ticket["id"], guild=guild)
+            except Exception:
+                log.exception("Falha ao aplicar mudança de meta ao membro %s", user_id)
 
     async def _notificar_conclusao(self, guild: discord.Guild, user_id: str, week_id: str):
         """

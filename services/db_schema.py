@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 SCHEMA_SQL = """
@@ -614,18 +615,20 @@ def _apply_pending_member_folders(conn: sqlite3.Connection) -> bool:
 
 def _apply_ausencias_historico(conn: sqlite3.Connection) -> bool:
     # A tabela antiga fica intacta: o código anterior continua funcionando em um
-    # rollback sem restaurar o banco.
+    # rollback sem restaurar o banco. Ausência já vencida entra como avisada para
+    # não gerar lembrete atrasado.
     conn.execute(
         """INSERT INTO ausencias_historico
                (guild_id, user_id, nome, dias, motivo, inicio, fim, avisado, message_id)
            SELECT a.guild_id, a.user_id, a.nome, a.dias, a.motivo, a.inicio, a.fim,
-                  a.avisado, a.message_id
+                  CASE WHEN a.fim <= ? THEN 1 ELSE a.avisado END, a.message_id
            FROM ausencias a
            WHERE NOT EXISTS (
                SELECT 1 FROM ausencias_historico h
                WHERE h.guild_id = a.guild_id AND h.user_id = a.user_id
                  AND h.inicio IS a.inicio AND h.fim IS a.fim
-           )"""
+           )""",
+        (datetime.now(timezone.utc).isoformat(),),
     )
     return True
 
@@ -656,5 +659,7 @@ def ensure_schema(conn: sqlite3.Connection, db_path: Path, log: logging.Logger) 
                VALUES (?, ?, CURRENT_TIMESTAMP)""",
             (version, name),
         )
+    # Recupera ausências gravadas pelo código antigo durante um rollback.
+    _apply_ausencias_historico(conn)
     conn.commit()
     log.info("Banco inicializado: %s", db_path)

@@ -267,6 +267,27 @@ class AvisoVencidasTests(AusenciaDbTestCase, unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(db.db_ausencia_get("1", "10")["avisado"], 1)
 
+    async def test_falha_temporaria_de_dm_tenta_de_novo_no_proximo_ciclo(self):
+        db.db_set_guild_config("1", canal_ausencias_id="1")
+        db.db_ausencia_set("1", "10", _ausencia(_iso(-1)))
+        erro = discord.HTTPException(SimpleNamespace(status=503, reason="Indisponível"), "erro")
+        membro = SimpleNamespace(send=AsyncMock(side_effect=erro))
+
+        await self._cog(_guild(1, membros={10: membro}))._avisar_vencidas()
+
+        self.assertEqual(db.db_ausencia_get("1", "10")["avisado"], 0)
+
+    async def test_duas_vencidas_no_mesmo_ciclo_geram_uma_dm(self):
+        db.db_set_guild_config("1", canal_ausencias_id="1")
+        db.db_ausencia_set("1", "10", _ausencia(_iso(-2)))
+        db.db_ausencia_set("1", "10", _ausencia(_iso(-1)))
+        membro = SimpleNamespace(send=AsyncMock())
+
+        await self._cog(_guild(1, membros={10: membro}))._avisar_vencidas()
+
+        membro.send.assert_awaited_once()
+        self.assertEqual(db.db_ausencias_vencidas_sem_aviso("1"), [])
+
     async def test_ausencia_substituida_por_outra_ativa_nao_gera_dm(self):
         db.db_set_guild_config("1", canal_ausencias_id="1")
         vencida = db.db_ausencia_set("1", "10", _ausencia(_iso(-1)))

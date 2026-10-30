@@ -92,7 +92,7 @@ if [ "$RESTORE_DB" = "1" ]; then
     echo "ERRO: pasta de backup $SRC nao existe no servidor"
     exit 1
   fi
-  sudo systemctl stop farmbot
+  sudo systemctl stop farmbot || exit 1
   for f in "$SRC"/*.db; do
     [ -e "$f" ] || continue
     name="$(basename "$f")"

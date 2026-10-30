@@ -49,21 +49,30 @@ class SchemaMigrationTests(unittest.TestCase):
                     message_id TEXT,
                     PRIMARY KEY (guild_id, user_id)
                 );
-                INSERT INTO ausencias VALUES ('guild-1', 'user-1', 'Membro', 2, 'Viagem',
-                    '2026-10-01T10:00:00', '2026-10-03T10:00:00', 1, '55');
+                INSERT INTO ausencias VALUES ('guild-1', 'user-1', 'Vencida', 2, 'Viagem',
+                    '2020-10-01T10:00:00', '2020-10-03T10:00:00', 0, '55');
+                INSERT INTO ausencias VALUES ('guild-1', 'user-2', 'Ativa', 2, 'Viagem',
+                    '2020-10-01T10:00:00', '2999-10-03T10:00:00', 0, '56');
                 """
             )
             ensure_schema(conn, path, logging.getLogger("test"))
-            conn.execute("DELETE FROM schema_migrations WHERE version = 5")
+            # Linha gravada pelo código antigo durante um rollback.
+            conn.execute(
+                """INSERT INTO ausencias VALUES ('guild-1', 'user-3', 'Rollback', 1, 'Viagem',
+                       '2020-11-01T10:00:00', '2999-11-02T10:00:00', 0, '57')"""
+            )
             ensure_schema(conn, path, logging.getLogger("test"))
             history = conn.execute(
-                "SELECT guild_id, user_id, nome, avisado, message_id FROM ausencias_historico"
+                "SELECT nome, avisado, message_id FROM ausencias_historico ORDER BY user_id"
             ).fetchall()
             legacy_count = conn.execute("SELECT COUNT(*) FROM ausencias").fetchone()[0]
             conn.close()
 
-            self.assertEqual(history, [("guild-1", "user-1", "Membro", 1, "55")])
-            self.assertEqual(legacy_count, 1)
+            self.assertEqual(
+                history,
+                [("Vencida", 1, "55"), ("Ativa", 0, "56"), ("Rollback", 0, "57")],
+            )
+            self.assertEqual(legacy_count, 3)
 
     def test_legacy_farm_ticket_data_is_preserved_without_table_recreation(self):
         with tempfile.TemporaryDirectory() as directory:

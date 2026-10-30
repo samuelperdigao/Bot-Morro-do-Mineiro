@@ -188,7 +188,7 @@ class SetModal(discord.ui.Modal, title="Solicitação de Set"):
         try:
             msg = await approval_channel.send(embed=embed, view=view)
         except Exception:
-            set_request_service.release(request_id)
+            set_request_service.discard_unposted(request_id)
             _clear_pending(solicitante.id)
             raise
         view.message = msg
@@ -204,7 +204,7 @@ class SetModal(discord.ui.Modal, title="Solicitação de Set"):
         log.error(f"Erro no SetModal: {error}", exc_info=True)
         _clear_pending(interaction.user.id)
         if getattr(self, "_request_id", None):
-            set_request_service.release(self._request_id)
+            set_request_service.discard_unposted(self._request_id)
         try:
             if not interaction.response.is_done():
                 await interaction.response.send_message("❌ Erro interno. Tente novamente.", ephemeral=True)
@@ -253,8 +253,7 @@ class ApprovalView(discord.ui.View):
         if self._processando:
             await interaction.response.send_message("⏳ Já sendo processado...", ephemeral=True)
             return
-        self._processando = True
-        await interaction.response.defer()
+        await self._reservar(interaction)
         await self._processar(interaction, aprovado=True)
 
     @discord.ui.button(label="❌ Reprovar", style=discord.ButtonStyle.danger, custom_id="approval:reprovar")
@@ -265,9 +264,17 @@ class ApprovalView(discord.ui.View):
         if self._processando:
             await interaction.response.send_message("⏳ Já sendo processado...", ephemeral=True)
             return
-        self._processando = True
-        await interaction.response.defer()
+        await self._reservar(interaction)
         await self._processar(interaction, aprovado=False)
+
+    async def _reservar(self, interaction: discord.Interaction):
+        """Marca o processamento sem deixá-lo preso se a interação já expirou."""
+        self._processando = True
+        try:
+            await interaction.response.defer()
+        except Exception:
+            self._processando = False
+            raise
 
     async def _processar_sem_vinculo(self, interaction: discord.Interaction, aprovado: bool):
         """Resolve o clique recebido pelo fallback, que atende qualquer mensagem."""

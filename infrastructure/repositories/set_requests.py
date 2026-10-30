@@ -14,6 +14,7 @@ class SetRequestRepository:
     claim = staticmethod(db_service.db_set_request_claim)
     complete = staticmethod(db_service.db_set_request_complete)
     release = staticmethod(db_service.db_set_request_release)
+    discard_unposted = staticmethod(db_service.db_set_request_discard_unposted)
 
 
 set_request_repository = SetRequestRepository()
