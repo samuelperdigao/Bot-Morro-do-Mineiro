@@ -6,6 +6,7 @@ segura por outros cogs (ex: cogs.paineis).
 """
 
 import logging
+import re
 import time
 
 import discord
@@ -81,6 +82,38 @@ def _get_flanelinha_role(guild: discord.Guild, cfg) -> discord.Role | None:
 
 def _get_pedir_set_role(guild: discord.Guild) -> discord.Role | None:
     return find_role_by_names(guild, ("| Pedir Set", "Pedir Set")) or guild.get_role(PEDIR_SET_ROLE_ID)
+
+
+async def _avisar_apelido_bloqueado(log_channel, member) -> None:
+    """Avisa a liderança sem interromper uma aprovação que já aplicou os cargos."""
+    try:
+        await log_channel.send(
+            f"⚠️ Sem permissão para alterar apelido de {member.mention} (`{member.id}`).",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    except Exception as e:
+        log.warning(f"Não foi possível avisar sobre o apelido de {member.id}: {e}")
+
+
+def parse_set_embed(embed) -> dict | None:
+    """Lê do embed de um pedido antigo os dados necessários para decidi-lo."""
+
+    def valor(trecho: str) -> str:
+        for field in getattr(embed, "fields", None) or ():
+            if trecho in (field.name or "").casefold():
+                return (field.value or "").strip()
+        return ""
+
+    id_jogo = valor("id no jogo").strip("`").strip()
+    nome = valor("nome")
+    solicitante = re.search(r"`([0-9]+)`", valor("solicitante"))
+    if not (nome and solicitante and re.fullmatch(r"[0-9]+", id_jogo)):
+        return None
+    return {
+        "requester_user_id": solicitante.group(1),
+        "target_name": nome,
+        "id_jogo": id_jogo,
+    }
 
 
 class SetModal(discord.ui.Modal, title="Solicitação de Set"):
@@ -236,14 +269,59 @@ class ApprovalView(discord.ui.View):
         await interaction.response.defer()
         await self._processar(interaction, aprovado=False)
 
-    async def _processar(self, interaction: discord.Interaction, aprovado: bool):
-        if not self.request_id:
+    async def _processar_sem_vinculo(self, interaction: discord.Interaction, aprovado: bool):
+        """Resolve o clique recebido pelo fallback, que atende qualquer mensagem."""
+        message = getattr(interaction, "message", None)
+        guild_id = str(interaction.guild_id)
+        channel_id = str(interaction.channel_id)
+        try:
+            row = None
+            if message is not None:
+                row = set_request_service.get_by_message(guild_id, channel_id, str(message.id))
+                if row is None and message.embeds:
+                    dados = parse_set_embed(message.embeds[0])
+                    if dados:
+                        request_id = set_request_service.create(
+                            guild_id,
+                            dados["requester_user_id"],
+                            dados["target_name"],
+                            dados["id_jogo"],
+                            channel_id,
+                        )
+                        set_request_service.attach_message(request_id, str(message.id))
+                        row = set_request_service.get(request_id)
+            view = _view_from_row(row) if row is not None else None
+        except Exception as e:
+            log.error(f"Erro ao recuperar painel antigo de Set: {e}", exc_info=True)
             await interaction.followup.send(
-                "Este painel antigo não pôde ser recuperado com segurança. "
-                "Solicite um novo Set se necessário.",
+                "❌ Não foi possível recuperar esta solicitação. Tente novamente.",
                 ephemeral=True,
             )
-            self._processando = False
+            return
+
+        if view is None:
+            await interaction.followup.send(
+                "Este painel antigo não pôde ser recuperado com segurança. "
+                "Peça para o membro refazer o Set.",
+                ephemeral=True,
+            )
+            return
+        if row["status"] != "pending":
+            await interaction.followup.send(
+                f"Esta solicitação já foi processada ou está indisponível (status: {row['status']}).",
+                ephemeral=True,
+            )
+            return
+
+        view.message = message
+        await view._processar(interaction, aprovado)
+
+    async def _processar(self, interaction: discord.Interaction, aprovado: bool):
+        if not self.request_id:
+            try:
+                await self._processar_sem_vinculo(interaction, aprovado)
+            finally:
+                self._processando = False
             return
 
         decision = "approved" if aprovado else "rejected"
@@ -258,22 +336,19 @@ class ApprovalView(discord.ui.View):
             return
 
         try:
-            await self._processar_impl(interaction, aprovado)
+            concluido = await self._processar_impl(interaction, aprovado)
         except Exception:
             set_request_service.release(self.request_id)
+            await self._restaurar_botoes(interaction)
             self._processando = False
             raise
-        else:
+        if concluido:
             set_request_service.complete(self.request_id, decision)
-            self._processando = False
+        else:
+            set_request_service.release(self.request_id)
+        self._processando = False
 
-    async def _processar_impl(self, interaction: discord.Interaction, aprovado: bool):
-        if not self.request_id:
-            return
-        guild    = interaction.guild
-        guild_id = str(guild.id)
-        approver = interaction.user
-
+    async def _remover_botoes(self, interaction: discord.Interaction):
         message = self.message or getattr(interaction, "message", None)
         if message:
             try:
@@ -281,9 +356,24 @@ class ApprovalView(discord.ui.View):
             except Exception as e:
                 log.warning(f"Não foi possível remover view: {e}")
 
-        _clear_pending(self.requester.id if self.requester else 0)
+    async def _restaurar_botoes(self, interaction: discord.Interaction):
+        message = self.message or getattr(interaction, "message", None)
+        if message:
+            try:
+                await message.edit(view=self)
+            except Exception as e:
+                log.warning(f"Não foi possível restaurar view: {e}")
+
+    async def _processar_impl(self, interaction: discord.Interaction, aprovado: bool) -> bool:
+        """Devolve False quando a decisão não foi aplicada e o pedido deve seguir pendente."""
+        guild    = interaction.guild
+        guild_id = str(guild.id)
+        approver = interaction.user
+
+        _clear_pending(self.target_user_id)
 
         if not aprovado:
+            await self._remover_botoes(interaction)
             cfg = db_get_guild_config(guild_id)
             log_ch_id = int(cfg["log_channel_id"]) if cfg and cfg["log_channel_id"] else None
             log_channel = None
@@ -303,19 +393,21 @@ class ApprovalView(discord.ui.View):
                 await log_channel.send(embed=log_embed)
 
             _audit("SET_REPROVADO", approver.id, self.target_user_id)
-            return
+            return True
 
         try:
             member = guild.get_member(self.target_user_id) or await guild.fetch_member(self.target_user_id)
         except discord.NotFound:
-            set_request_service.release(self.request_id)
             await interaction.followup.send(f"❌ Membro `{self.target_user_id}` não encontrado.", ephemeral=True)
-            return
+            return False
         except Exception as e:
-            set_request_service.release(self.request_id)
             log.error(f"Erro ao buscar membro: {e}")
             await interaction.followup.send("❌ Erro ao buscar membro.", ephemeral=True)
-            return
+            return False
+
+        # Só sai da tela depois de confirmar o membro: uma falha aqui precisa
+        # manter os botões para a decisão poder ser repetida.
+        await self._remover_botoes(interaction)
 
         cfg               = db_get_guild_config(guild_id)
         log_ch_id         = int(cfg["log_channel_id"]) if cfg and cfg["log_channel_id"] else None
@@ -366,10 +458,12 @@ class ApprovalView(discord.ui.View):
                     db_channel_map_set(guild_id, str(self.target_user_id), pasta.id)
 
             novo_nick = build_nick_from_parts(self.target_name, self.id_jogo, TAG_MEMBRO)
+            apelido_bloqueado = False
             if novo_nick:
                 try:
                     await member.edit(nick=novo_nick, reason=f"Set aprovado por {approver}")
                 except discord.Forbidden:
+                    apelido_bloqueado = True
                     log.warning(f"Sem permissão para alterar apelido de {member.id}")
                 except Exception as e:
                     log.error(f"Erro ao alterar apelido: {e}")
@@ -379,6 +473,8 @@ class ApprovalView(discord.ui.View):
             log_channel = guild.get_channel(log_ch_id) or await safe_fetch_channel(guild, log_ch_id)
 
         if log_channel:
+            if apelido_bloqueado:
+                await _avisar_apelido_bloqueado(log_channel, member)
             log_embed = discord.Embed(title="✅ Set Aprovado", color=discord.Color.green(), timestamp=discord.utils.utcnow())
             log_embed.set_thumbnail(url=member.display_avatar.url)
             log_embed.add_field(name="👤 Membro",        value=f"{member.mention}\n`{member.id}`",     inline=True)
@@ -454,7 +550,17 @@ class ApprovalView(discord.ui.View):
             await pasta.send(embed=farm_embed)
 
         _audit("SET_APROVADO", approver.id, member.id, id_jogo=self.id_jogo, canal=pasta.id if pasta else "N/A")
+        return True
 
+
+def _view_from_row(row) -> ApprovalView:
+    return ApprovalView(
+        target_user_id=int(row["requester_user_id"]),
+        target_name=row["target_name"],
+        requester=None,
+        id_jogo=row["id_jogo"],
+        request_id=row["request_id"],
+    )
 
 
 def register_persistent_views(bot: discord.Client) -> None:
@@ -469,20 +575,13 @@ def register_persistent_views(bot: discord.Client) -> None:
     bot.add_view(SetContainerPanelView())
     bot.add_view(SetContainerPanelView(custom_id=SET_CONTAINER_TEST_CUSTOM_ID))
 
-    # Painéis anteriores à persistência não carregam dados suficientes para
-    # aprovar alguém; o fallback responde de forma controlada sem descartá-los.
+    # O fallback atende mensagens sem view vinculada: painéis anteriores à
+    # persistência são resgatados pelo embed; os demais recebem resposta controlada.
     bot.add_view(ApprovalView(0, "", None))
 
     for row in set_request_service.recoverable():
         try:
-            view = ApprovalView(
-                target_user_id=int(row["requester_user_id"]),
-                target_name=row["target_name"],
-                requester=None,
-                id_jogo=row["id_jogo"],
-                request_id=row["request_id"],
-            )
-            bot.add_view(view, message_id=int(row["approval_message_id"]))
+            bot.add_view(_view_from_row(row), message_id=int(row["approval_message_id"]))
         except (TypeError, ValueError):
             log.warning(
                 "Solicitação de Set %s ignorada na recuperação: IDs inválidos",

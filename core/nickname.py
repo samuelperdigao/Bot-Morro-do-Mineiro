@@ -95,9 +95,10 @@ def _truncar_base(base: str, disponivel: int) -> str:
 
     sufixo_completo = f"{_SUFIXO_ID}{sufixo}"
     espaco_nome = disponivel - len(sufixo_completo)
-    if espaco_nome <= 0:
-        return base[:disponivel].strip()
-    return f"{nome[:espaco_nome].strip()}{sufixo_completo}"
+    nome_cortado = nome[:espaco_nome].strip() if espaco_nome > 0 else ""
+    if not nome_cortado:
+        return sufixo.strip()[:disponivel]
+    return f"{nome_cortado}{sufixo_completo}"
 
 
 def build_nick(base: str, tag: str | None) -> str:
@@ -105,12 +106,12 @@ def build_nick(base: str, tag: str | None) -> str:
 
     base = (base or "").strip()
     if not tag:
-        return base[:NICK_MAX].strip()
+        return base if len(base) <= NICK_MAX else _truncar_base(base, NICK_MAX)
 
     prefixo = f"{tag} "
     disponivel = NICK_MAX - len(prefixo)
     if disponivel <= 0:
-        return base[:NICK_MAX].strip()
+        return _truncar_base(base, NICK_MAX)
     if len(base) <= disponivel:
         return f"{prefixo}{base}"
     return f"{prefixo}{_truncar_base(base, disponivel)}"
@@ -121,7 +122,7 @@ def build_nick_from_parts(nome: str, id_jogo: str | None, tag: str | None) -> st
 
     nome = (nome or "").strip()
     id_jogo = str(id_jogo or "").strip()
-    base = f"{nome}{_SUFIXO_ID}{id_jogo}" if id_jogo else nome
+    base = f"{nome}{_SUFIXO_ID}{id_jogo}" if nome and id_jogo else nome or id_jogo
     return build_nick(base, tag)
 
 

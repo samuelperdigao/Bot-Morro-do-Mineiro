@@ -32,6 +32,13 @@ class SetRequestService:
     def get(self, request_id: str):
         return set_request_repository.get(request_id)
 
+    def get_by_message(self, guild_id: str, approval_channel_id: str, approval_message_id: str):
+        return set_request_repository.get_by_message(
+            guild_id,
+            approval_channel_id,
+            approval_message_id,
+        )
+
     def pending_for_user(self, guild_id: str, user_id: str):
         return set_request_repository.pending_for_user(guild_id, user_id)
 

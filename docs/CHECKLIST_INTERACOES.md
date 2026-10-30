@@ -169,6 +169,8 @@ Pontos de atencao no codigo:
 | [ ] | Reconciliação de pastas | Libera pasta de gerente ou vice encontrada pelo mapa ou pela permissão individual explícita; mantém permissões gerais dos cargos gerente. |
 | [ ] | Ticket próprio de gerente/vice | Abre ticket sem pasta/slot, com canal `farm-grt-nome`/`farm-vice-nome` e tag correspondente. |
 | [ ] | `ApprovalView > Reprovar` | Marca reprovado e loga. |
+| [ ] | `ApprovalView` em pedido anterior à persistência | Resgata pelo embed e decide normalmente; sem dados, pede que o membro refaça o Set. |
+| [ ] | `ApprovalView` sem permissão para trocar apelido | Aprova e avisa no canal de log. |
 | [ ] | `ApprovalView` sem permissao | Responde erro ephemeral. |
 
 ## Acao
