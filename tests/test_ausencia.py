@@ -208,6 +208,18 @@ class MigracaoJsonTests(AusenciaDbTestCase):
                 self.assertTrue(arquivo.exists())
                 self.assertEqual(db.db_ausencias_todos("1"), [])
 
+    def test_lista_sem_id_de_usuario_so_gera_aviso(self):
+        # Formato real encontrado na raiz do servidor: não dá para saber de quem é.
+        conteudo = json.dumps([{"nome": "Membro", "motivo": "Viagem", "inicio": _iso(-2), "fim": _iso(-1)}])
+        arquivo = self._escrever_json(conteudo=conteudo)
+
+        with self.assertLogs("ausencia", level="WARNING") as logs:
+            migrar_json_legado([_guild()], (arquivo,))
+
+        self.assertEqual([record.levelname for record in logs.records], ["WARNING"])
+        self.assertTrue(arquivo.exists())
+        self.assertEqual(db.db_ausencias_todos("1"), [])
+
     def test_db_migrate_from_json_usa_a_tabela_nova_e_mantem_o_arquivo(self):
         arquivo = self._escrever_json()
         canal_map = self.dir / "channel_map.json"

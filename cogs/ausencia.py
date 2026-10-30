@@ -68,7 +68,11 @@ def migrar_json_legado(guilds, arquivos: tuple[Path, ...] | None = None) -> None
             continue
         try:
             importadas = db_ausencias_importar_json(str(guild.id), arquivo)
-        except (OSError, ValueError, sqlite3.Error) as e:
+        except ValueError as e:
+            # Arquivo antigo em outro formato fica no lugar e não afeta o bot.
+            log.warning("%s não migrado: %s", arquivo, e)
+            continue
+        except (OSError, sqlite3.Error) as e:
             log.error("Erro ao migrar %s: %s", arquivo, e)
             continue
         log.info("%s: %s ausência(s) importada(s) para a guild %s", arquivo, importadas, guild.id)
