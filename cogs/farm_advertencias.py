@@ -12,6 +12,8 @@ from core.config import BASE_DIR
 from core.date_utils import format_week_range_br
 from core.farm_policy import (
     is_farm_manager,
+    is_farm_leader,
+    is_farm_vice,
     is_farm_warning_eligible,
     member_is_exempt_from_farm,
     previous_farm_week_id,
@@ -1073,6 +1075,11 @@ class FarmAdvertenciasCog(commands.Cog):
         member = interaction.guild.get_member(int(user_id))
         if member is None:
             return {**result, "status": "saiu_do_servidor"}
+
+        if is_farm_vice(member):
+            return {**result, "status": "cargo_vice_isento"}
+        if is_farm_leader(member):
+            return {**result, "status": "cargo_lider_isento"}
 
         if is_farm_manager(member) and not allow_manager:
             return {**result, "status": "gerente_revisao_manual"}

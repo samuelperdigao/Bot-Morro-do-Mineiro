@@ -163,6 +163,9 @@ Pontos de atencao no codigo:
 | [ ] | `SetPanelView > Fazer Set` | Abre `SetModal`. |
 | [ ] | `SetModal` | Envia solicitacao para canal de aprovacao. |
 | [ ] | `ApprovalView > Aprovar` | Aplica cargos, pasta/apelido e log. |
+| [ ] | `Pastas privadas` | Todos os cargos com `gerente` no nome, incluindo Gerente de Produtos, veem e podem enviar mensagens nas pastas da categoria configurada. |
+| [ ] | Reconciliação de pastas | Libera pasta de gerente ou vice encontrada pelo mapa ou pela permissão individual explícita; mantém permissões gerais dos cargos gerente. |
+| [ ] | Ticket próprio de gerente/vice | Abre ticket sem pasta/slot, com canal `farm-grt-nome`/`farm-vice-nome` e tag correspondente. |
 | [ ] | `ApprovalView > Reprovar` | Marca reprovado e loga. |
 | [ ] | `ApprovalView` sem permissao | Responde erro ephemeral. |
 
@@ -219,6 +222,7 @@ Observacao: `/acao` aparece duas vezes em `cogs/acao.py`; validar no startup se 
 | [ ] | Farm advertencias: `/setup_farm_advertencias_painel` | Posta painel. |
 | [ ] | Farm advertencias: `/farm_ausencia` | Registra ausencia de farm. |
 | [ ] | Farm advertencias: painel | Consultar, aplicar previa, remover e cancelar. |
+| [ ] | Farm advertencias: vice e líder | Cargos `| 02` e `| 01 Dono` não aparecem na prévia nem recebem advertência pela aplicação individual ou pelo fechamento. |
 | [ ] | Farm membro: `/farm_membro` | Lideranca consulta/edita membro. |
 | [ ] | Farm painel: `/setup_farm_painel` | Posta painel legado/operacional. |
 | [ ] | Relatorio farm: `/setup_relatorio_farm` | Posta/configura relatorio. |

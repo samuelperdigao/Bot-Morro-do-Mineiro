@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from typing import Literal
 
 from core.date_utils import BRAZIL_TZ
+from core.settings import LEGACY_FIXED_IDS
 
 FarmWeekMembership = Literal["obrigado", "isento_entrada", "fora_da_semana"]
 
@@ -25,6 +26,8 @@ FARM_HIERARCHY_ROLES = (
     "| 01 Dono",
 )
 FARM_WARNING_HIERARCHY_CUTOFF = "| 02"
+FARM_VICE_ROLE_ID = LEGACY_FIXED_IDS["hierarchy_vice_role"]
+FARM_LEADER_ROLE_ID = LEGACY_FIXED_IDS["hierarchy_owner_role"]
 
 FARM_TICKET_ONLY_MESSAGE = """⚠️ **Sistema atualizado**
 
@@ -88,6 +91,24 @@ def is_farm_manager(member) -> bool:
     )
 
 
+def is_farm_vice(member) -> bool:
+    """Indica se o membro possui o cargo de vice da hierarquia."""
+    return any(
+        getattr(role, "id", None) == FARM_VICE_ROLE_ID
+        or getattr(role, "name", "") == FARM_WARNING_HIERARCHY_CUTOFF
+        for role in getattr(member, "roles", ()) or ()
+    )
+
+
+def is_farm_leader(member) -> bool:
+    """Indica se o membro possui o cargo de líder/dono da hierarquia."""
+    return any(
+        getattr(role, "id", None) == FARM_LEADER_ROLE_ID
+        or getattr(role, "name", "") == "| 01 Dono"
+        for role in getattr(member, "roles", ()) or ()
+    )
+
+
 def _highest_farm_hierarchy_index(member) -> int | None:
     indexes = [
         FARM_HIERARCHY_ROLES.index(getattr(role, "name", ""))
@@ -99,7 +120,11 @@ def _highest_farm_hierarchy_index(member) -> int | None:
 
 def is_farm_warning_eligible(member, permitted_role_ids: list[int]) -> bool:
     """Aplica a mesma elegibilidade usada pelo fechamento de Farm."""
-    if getattr(member, "bot", False):
+    if (
+        getattr(member, "bot", False)
+        or is_farm_vice(member)
+        or is_farm_leader(member)
+    ):
         return False
     if {
         getattr(role, "id", None)

@@ -57,7 +57,8 @@ def build_farm_week_snapshot(guild, guild_id: str, week_id: str) -> dict:
     """Classifica os membros vivos da semana com as regras do fechamento.
 
     Gerentes são retornados em ``gerentes`` e nunca em ``pendentes``. Membros
-    que não estão mais no servidor simplesmente não entram no snapshot.
+    que não estão mais no servidor simplesmente não entram no snapshot. Os
+    cargos de vice e líder não participam do fluxo de advertências.
     """
     permitted_role_ids = db_get_permitidos_role_ids(guild_id)
     eligible_members = sorted(

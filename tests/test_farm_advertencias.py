@@ -195,6 +195,52 @@ class FarmAdvertenciasTests(unittest.TestCase):
         self.assertEqual([item["user_id"] for item in snapshot["gerentes"]], ["10"])
         self.assertEqual(snapshot["gerentes"][0]["status"], "pendente")
 
+    def test_vice_with_permitted_farm_role_never_enters_warning_preview(self):
+        guild_id = "1"
+        week_id = "2026-06-15"
+        vice = FakeMember(
+            10,
+            "Vice",
+            [FakeRole(50), FakeRole(1474869320684146846, "| 02")],
+        )
+
+        db.db_set_guild_config(
+            guild_id,
+            cargos_permitidos_farm="50",
+            farm_adv1_role_id="101",
+            farm_adv2_role_id="102",
+            farm_adv3_role_id="103",
+        )
+        db.db_set_meta(guild_id, week_id, {"Borracha": 100}, "99")
+
+        snapshot = build_farm_warning_preview(FakeGuild([vice]), guild_id, week_id)
+
+        self.assertEqual(snapshot["pendentes"], [])
+        self.assertEqual(snapshot["obrigados"], [])
+
+    def test_leader_with_permitted_farm_role_never_enters_warning_preview(self):
+        guild_id = "1"
+        week_id = "2026-06-15"
+        leader = FakeMember(
+            11,
+            "Líder",
+            [FakeRole(50), FakeRole(1474869320684146847, "| 01 Dono")],
+        )
+
+        db.db_set_guild_config(
+            guild_id,
+            cargos_permitidos_farm="50",
+            farm_adv1_role_id="101",
+            farm_adv2_role_id="102",
+            farm_adv3_role_id="103",
+        )
+        db.db_set_meta(guild_id, week_id, {"Borracha": 100}, "99")
+
+        snapshot = build_farm_warning_preview(FakeGuild([leader]), guild_id, week_id)
+
+        self.assertEqual(snapshot["pendentes"], [])
+        self.assertEqual(snapshot["obrigados"], [])
+
     def test_panel_uses_stable_title_for_message_recovery(self):
         embed = build_panel_embed(SimpleNamespace(), "1")
 
@@ -237,6 +283,50 @@ class FarmAdvertenciasTests(unittest.TestCase):
 
 
 class FarmAdvertenciasInteractionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_vice_is_rejected_when_applying_a_stale_warning_preview(self):
+        cog = FarmAdvertenciasCog.__new__(FarmAdvertenciasCog)
+        vice = FakeMember(
+            10,
+            "Vice",
+            [FakeRole(50), FakeRole(1474869320684146846, "| 02")],
+        )
+        interaction = SimpleNamespace(
+            guild=SimpleNamespace(get_member=lambda _user_id: vice),
+        )
+
+        with patch("cogs.farm_advertencias.db_farm_advertencia_criar") as create_warning:
+            result = await cog._apply_warning_item(
+                interaction,
+                {"guild_id": "1", "week_id": "2026-06-15"},
+                {"user_id": "10", "display_name": "Vice", "nivel": 1},
+                {1: "101", 2: "102", 3: "103"},
+            )
+
+        self.assertEqual(result["status"], "cargo_vice_isento")
+        create_warning.assert_not_called()
+
+    async def test_leader_is_rejected_when_applying_a_stale_warning_preview(self):
+        cog = FarmAdvertenciasCog.__new__(FarmAdvertenciasCog)
+        leader = FakeMember(
+            11,
+            "Líder",
+            [FakeRole(50), FakeRole(1474869320684146847, "| 01 Dono")],
+        )
+        interaction = SimpleNamespace(
+            guild=SimpleNamespace(get_member=lambda _user_id: leader),
+        )
+
+        with patch("cogs.farm_advertencias.db_farm_advertencia_criar") as create_warning:
+            result = await cog._apply_warning_item(
+                interaction,
+                {"guild_id": "1", "week_id": "2026-06-15"},
+                {"user_id": "11", "display_name": "Líder", "nivel": 1},
+                {1: "101", 2: "102", 3: "103"},
+            )
+
+        self.assertEqual(result["status"], "cargo_lider_isento")
+        create_warning.assert_not_called()
+
     async def test_automatic_application_rejects_manager_for_manual_review(self):
         cog = FarmAdvertenciasCog.__new__(FarmAdvertenciasCog)
         manager = FakeMember(

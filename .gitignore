@@ -20,3 +20,6 @@ __pycache__/
 !.claude/settings.json
 .codex-remote-attachments/
 *.db.bak
+backups/
+*.migrated
+.vscode/
