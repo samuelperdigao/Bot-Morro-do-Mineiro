@@ -6,7 +6,7 @@ import json
 import sqlite3
 import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -446,54 +446,120 @@ def db_pending_member_folders_all(guild_id: str) -> list[str]:
 
 # ── Ausências (substitui ausencias.json) ──────────────────────────────────────
 
-def db_ausencia_get(guild_id: str, user_id: str) -> sqlite3.Row | None:
-    return get_conn().execute(
-        "SELECT * FROM ausencias WHERE guild_id=? AND user_id=?", (guild_id, user_id)
-    ).fetchone()
+def db_ausencia_parse_data(valor: str | None) -> datetime | None:
+    """Converte a data salva; datas legadas sem fuso são tratadas como UTC."""
+    if not valor:
+        return None
+    try:
+        data = datetime.fromisoformat(valor)
+    except (TypeError, ValueError):
+        return None
+    return data.replace(tzinfo=timezone.utc) if data.tzinfo is None else data
 
-def db_ausencia_set(guild_id: str, user_id: str, dados: dict):
-    conn = get_conn()
-    conn.execute("""
-        INSERT INTO ausencias (guild_id, user_id, nome, dias, motivo, inicio, fim, avisado, message_id)
-        VALUES (?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(guild_id, user_id) DO UPDATE SET
-            nome=excluded.nome, dias=excluded.dias, motivo=excluded.motivo,
-            inicio=excluded.inicio, fim=excluded.fim,
-            avisado=excluded.avisado, message_id=excluded.message_id
+def _db_ausencia_inserir(conn: sqlite3.Connection, guild_id: str, user_id: str, dados: dict) -> int:
+    cursor = conn.execute("""
+        INSERT INTO ausencias_historico
+            (guild_id, user_id, nome, dias, motivo, inicio, fim, avisado, message_id, canal_id, criado_em)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
     """, (
         guild_id, user_id,
         dados.get("nome"), dados.get("dias"), dados.get("motivo"),
         dados.get("inicio"), dados.get("fim"),
         1 if dados.get("avisado") else 0,
-        dados.get("message_id"),
+        dados.get("message_id"), dados.get("canal_id"),
+        datetime.now(timezone.utc).isoformat(),
     ))
+    return int(cursor.lastrowid)
+
+def db_ausencia_get(guild_id: str, user_id: str) -> sqlite3.Row | None:
+    """Retorna o registro mais recente do usuário, ativo ou não."""
+    return get_conn().execute(
+        "SELECT * FROM ausencias_historico WHERE guild_id=? AND user_id=? ORDER BY id DESC LIMIT 1",
+        (guild_id, user_id),
+    ).fetchone()
+
+def db_ausencia_set(guild_id: str, user_id: str, dados: dict) -> int:
+    """Registra uma nova ausência, preservando as anteriores, e retorna o id."""
+    conn = get_conn()
+    ausencia_id = _db_ausencia_inserir(conn, guild_id, user_id, dados)
+    conn.commit()
+    return ausencia_id
+
+def db_ausencia_remover(ausencia_id: int):
+    conn = get_conn()
+    conn.execute("DELETE FROM ausencias_historico WHERE id=?", (ausencia_id,))
     conn.commit()
 
 def db_ausencias_ativos(guild_id: str) -> list[sqlite3.Row]:
-    agora = datetime.utcnow().isoformat()
-    return get_conn().execute(
-        "SELECT * FROM ausencias WHERE guild_id=? AND fim > ?", (guild_id, agora)
-    ).fetchall()
+    """Retorna, para cada usuário, a ausência mais recente ainda não vencida."""
+    agora = datetime.now(timezone.utc)
+    ativos: dict[str, sqlite3.Row] = {}
+    for row in db_ausencias_todos(guild_id):
+        fim = db_ausencia_parse_data(row["fim"])
+        if fim is not None and fim > agora:
+            ativos[row["user_id"]] = row
+    return list(ativos.values())
 
 def db_ausencias_todos(guild_id: str) -> list[sqlite3.Row]:
     return get_conn().execute(
-        "SELECT * FROM ausencias WHERE guild_id=?", (guild_id,)
+        "SELECT * FROM ausencias_historico WHERE guild_id=? ORDER BY id", (guild_id,)
     ).fetchall()
 
-def db_ausencia_marcar_avisado(guild_id: str, user_id: str):
+def db_ausencias_vencidas_sem_aviso(guild_id: str) -> list[sqlite3.Row]:
+    agora = datetime.now(timezone.utc)
+    rows = get_conn().execute(
+        "SELECT * FROM ausencias_historico WHERE guild_id=? AND avisado=0 ORDER BY id",
+        (guild_id,),
+    ).fetchall()
+    vencidas = []
+    for row in rows:
+        fim = db_ausencia_parse_data(row["fim"])
+        if fim is not None and fim <= agora:
+            vencidas.append(row)
+    return vencidas
+
+def db_ausencia_marcar_avisado(ausencia_id: int):
+    conn = get_conn()
+    conn.execute("UPDATE ausencias_historico SET avisado=1 WHERE id=?", (ausencia_id,))
+    conn.commit()
+
+def db_ausencia_atualizar_message_id(ausencia_id: int, message_id: str):
     conn = get_conn()
     conn.execute(
-        "UPDATE ausencias SET avisado=1 WHERE guild_id=? AND user_id=?", (guild_id, user_id)
+        "UPDATE ausencias_historico SET message_id=? WHERE id=?",
+        (message_id, ausencia_id),
     )
     conn.commit()
 
-def db_ausencia_atualizar_message_id(guild_id: str, user_id: str, message_id: str):
+def db_ausencias_importar_json(guild_id: str, ausencias_file: Path) -> int:
+    """Importa ausencias.json sem duplicar. Arquivo inválido levanta exceção sem gravar nada."""
+    with open(ausencias_file, "r", encoding="utf-8") as f:
+        ausencias = json.load(f)
+    if not isinstance(ausencias, dict) or not all(isinstance(d, dict) for d in ausencias.values()):
+        raise ValueError("Formato inesperado em ausencias.json")
+
+    agora = datetime.now(timezone.utc)
     conn = get_conn()
-    conn.execute(
-        "UPDATE ausencias SET message_id=? WHERE guild_id=? AND user_id=?",
-        (message_id, guild_id, user_id)
-    )
-    conn.commit()
+    importadas = 0
+    try:
+        for user_id, dados in ausencias.items():
+            existente = conn.execute(
+                """SELECT 1 FROM ausencias_historico
+                   WHERE guild_id=? AND user_id=? AND inicio IS ? AND fim IS ?""",
+                (guild_id, user_id, dados.get("inicio"), dados.get("fim")),
+            ).fetchone()
+            if existente:
+                continue
+            # Ausência que já venceu no legado não gera lembrete tardio ao membro.
+            fim = db_ausencia_parse_data(dados.get("fim"))
+            avisado = bool(dados.get("avisado")) or (fim is not None and fim <= agora)
+            _db_ausencia_inserir(conn, guild_id, user_id, {**dados, "avisado": avisado})
+            importadas += 1
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return importadas
 
 
 # ── Migração de JSON → DB (não-destrutiva) ────────────────────────────────────
@@ -525,16 +591,7 @@ def db_migrate_from_json(guild_id: str, channel_map_file: Path, ausencias_file: 
 
     if ausencias_file.exists():
         try:
-            with open(ausencias_file, "r", encoding="utf-8") as f:
-                au = json.load(f)
-            for user_id, dados in au.items():
-                existing = get_conn().execute(
-                    "SELECT 1 FROM ausencias WHERE guild_id=? AND user_id=?",
-                    (guild_id, user_id)
-                ).fetchone()
-                if not existing:
-                    db_ausencia_set(guild_id, user_id, dados)
-                    migrados_au += 1
+            migrados_au = db_ausencias_importar_json(guild_id, ausencias_file)
             log.info(f"Migração ausências: {migrados_au} entradas para guild {guild_id}")
         except Exception as e:
             log.error(f"Erro na migração de ausencias.json: {e}")

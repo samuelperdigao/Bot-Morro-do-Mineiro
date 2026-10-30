@@ -201,7 +201,8 @@ Observacao: `/acao` aparece duas vezes em `cogs/acao.py`; validar no startup se 
 | [ ] | Anuncio: `Novo Anuncio > AnuncioModal` | Publica anuncio com/sem arquivo. |
 | [ ] | Ausencia: `/painel_ausencia` | Posta painel. |
 | [ ] | Ausencia: `AusenciaPanelView > Registrar` | Abre modal e registra ausencia. |
-| [ ] | Ausencia: `/ausencias` | Lista ausentes. |
+| [ ] | Ausencia: `/ausencias` | Lista ausentes da guild, uma linha por membro (a ausencia ativa mais recente). |
+| [ ] | Ausencia: nova ausencia com outra ativa | Mantem o historico; a ausencia substituida nao gera DM ao vencer. |
 | [ ] | Encomenda: `/setup_encomenda_painel` | Posta painel. |
 | [ ] | Encomenda: `/encomenda` | Abre/registra encomenda. |
 | [ ] | Encomenda: `EncomendaPainelView > Registrar` | Abre modal e posta registro. |
