@@ -54,21 +54,18 @@ class AcaoService:
         added_by: str | None,
         max_participants: int | None = None,
     ) -> ParticipantMutation:
+        if acao_repository.add_participant(
+            acao_id, user_id, user_name, origem, added_by, max_participants
+        ):
+            return ParticipantMutation(True)
+
         action = acao_repository.get(acao_id)
         if not action or action["status"] != "aberta":
             return ParticipantMutation(False, "closed")
-
         participants = acao_repository.participants(acao_id)
         if any(row["user_id"] == user_id for row in participants):
             return ParticipantMutation(False, "duplicate")
-        if max_participants and len(participants) >= max_participants:
-            return ParticipantMutation(False, "full")
-
-        if not acao_repository.add_participant(
-            acao_id, user_id, user_name, origem, added_by
-        ):
-            return ParticipantMutation(False, "duplicate")
-        return ParticipantMutation(True)
+        return ParticipantMutation(False, "full")
 
     def remove_participant(self, acao_id: int, user_id: str) -> bool:
         action = acao_repository.get(acao_id)
