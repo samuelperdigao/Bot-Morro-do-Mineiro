@@ -98,7 +98,9 @@ Pontos de atencao no codigo:
 | [ ] | `DetalheResultadoView > Voltar` | Retorna ao painel de resultados. |
 | [ ] | `/historico` | Consulta historico proprio. |
 | [ ] | `/historico membro:<outro>` | Sem lideranca nega; com lideranca mostra historico. |
-| [ ] | `/ranking` | Mostra ranking da semana atual. |
+| [ ] | Editar lançamento para baixo da meta | Campos vêm preenchidos; meta volta para em andamento, aprovação é zerada e não há aviso de conclusão. |
+| [ ] | Subir a meta da semana | Quem não cobre mais a nova meta volta para em andamento, com a aprovação zerada. |
+| [ ] | `/ranking` | Mostra ranking da semana atual; excesso em um item não compensa outro e, no empate, fica à frente quem concluiu primeiro. |
 | [ ] | `/ranking semana:DD/MM/AAAA` | Mostra historico ou erro para semana futura. |
 
 ## Tickets de farm
