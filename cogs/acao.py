@@ -628,6 +628,9 @@ class AcaoSelectView(discord.ui.View):
         options=[discord.SelectOption(label=d["nome"], value=k, emoji=d["emoji"]) for k, d in ACOES.items()],
     )
     async def selecionar_acao(self, interaction: discord.Interaction, select: discord.ui.Select):
+        if not _is_lideranca(interaction.user, str(interaction.guild_id)):
+            await interaction.response.send_message("❌ Apenas liderança pode iniciar ação.", ephemeral=True)
+            return
         acao_key = select.values[0]
         embed = _build_regras_embed(acao_key, horario=self.horario, tipo=self.tipo, data=self.data, criador_id=self.criador_id)
         await interaction.response.send_message(embed=embed, view=AcaoParticipantesView())
@@ -658,6 +661,22 @@ class AcaoParticipantesView(discord.ui.View):
             return None
         return acao_service.get_by_message(str(interaction.guild_id), str(interaction.message.id))
 
+    async def _load_aberta(self, interaction: discord.Interaction):
+        """Devolve a ação aberta do painel ou responde por que ela não pode ser usada."""
+        acao_row = self._load(interaction)
+        if not acao_row:
+            await interaction.response.send_message("❌ Painel indisponível.", ephemeral=True)
+            if interaction.message:
+                try:
+                    await interaction.message.edit(view=None)
+                except discord.HTTPException as exc:
+                    log.warning("Nao foi possivel remover a view do painel sem acao: %s", exc)
+            return None
+        if acao_row["status"] != "aberta":
+            await interaction.response.send_message("❌ Ação não encontrada ou já finalizada.", ephemeral=True)
+            return None
+        return acao_row
+
     async def _refresh_message(self, interaction: discord.Interaction, acao_row):
         participantes = acao_service.participants(int(acao_row["id"]))
         embed = _build_regras_embed(
@@ -675,9 +694,8 @@ class AcaoParticipantesView(discord.ui.View):
 
     @discord.ui.button(label="✅ Entrar na ação", style=discord.ButtonStyle.success, custom_id="acao:entrar")
     async def entrar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        acao_row = self._load(interaction)
-        if not acao_row or acao_row["status"] != "aberta":
-            await interaction.response.send_message("❌ Ação não encontrada ou já finalizada.", ephemeral=True)
+        acao_row = await self._load_aberta(interaction)
+        if not acao_row:
             return
         max_b = ACOES[acao_row["acao_key"]]["max_bandidos"]
         result = acao_service.add_participant(
@@ -703,9 +721,8 @@ class AcaoParticipantesView(discord.ui.View):
 
     @discord.ui.button(label="🚪 Sair da ação", style=discord.ButtonStyle.danger, custom_id="acao:sair")
     async def sair(self, interaction: discord.Interaction, button: discord.ui.Button):
-        acao_row = self._load(interaction)
-        if not acao_row or acao_row["status"] != "aberta":
-            await interaction.response.send_message("❌ Ação não encontrada ou já finalizada.", ephemeral=True)
+        acao_row = await self._load_aberta(interaction)
+        if not acao_row:
             return
         removed = acao_service.remove_participant(int(acao_row["id"]), str(interaction.user.id))
         if not removed:
@@ -717,9 +734,8 @@ class AcaoParticipantesView(discord.ui.View):
 
     @discord.ui.button(label="➕ Adicionar membro", style=discord.ButtonStyle.secondary, custom_id="acao:adicionar")
     async def adicionar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        acao_row = self._load(interaction)
-        if not acao_row or acao_row["status"] != "aberta":
-            await interaction.response.send_message("❌ Ação não encontrada ou já finalizada.", ephemeral=True)
+        acao_row = await self._load_aberta(interaction)
+        if not acao_row:
             return
         if not _is_lideranca(interaction.user, str(interaction.guild_id)):
             await interaction.response.send_message("❌ Apenas liderança pode adicionar membros.", ephemeral=True)
@@ -738,9 +754,8 @@ class AcaoParticipantesView(discord.ui.View):
 
     @discord.ui.button(label="➖ Remover membro", style=discord.ButtonStyle.secondary, custom_id="acao:remover")
     async def remover(self, interaction: discord.Interaction, button: discord.ui.Button):
-        acao_row = self._load(interaction)
-        if not acao_row or acao_row["status"] != "aberta":
-            await interaction.response.send_message("❌ Ação não encontrada ou já finalizada.", ephemeral=True)
+        acao_row = await self._load_aberta(interaction)
+        if not acao_row:
             return
         if not _is_lideranca(interaction.user, str(interaction.guild_id)):
             await interaction.response.send_message("❌ Apenas liderança pode remover membros.", ephemeral=True)
@@ -753,9 +768,8 @@ class AcaoParticipantesView(discord.ui.View):
 
     @discord.ui.button(label="🔒 Finalizar ação", style=discord.ButtonStyle.danger, custom_id="acao:encerrar", row=1)
     async def encerrar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        acao_row = self._load(interaction)
-        if not acao_row or acao_row["status"] != "aberta":
-            await interaction.response.send_message("❌ Ação não encontrada ou já finalizada.", ephemeral=True)
+        acao_row = await self._load_aberta(interaction)
+        if not acao_row:
             return
         if not _is_lideranca(interaction.user, str(interaction.guild_id)):
             await interaction.response.send_message("❌ Apenas liderança pode finalizar a ação.", ephemeral=True)

@@ -1471,23 +1471,49 @@ def db_acao_participante_add(
     user_name: str,
     origem: str,
     adicionado_por: str | None = None,
+    max_participantes: int | None = None,
 ) -> bool:
+    """Inscreve o membro se a ação estiver aberta, com vaga e sem duplicidade.
+
+    As três condições ficam na própria instrução de INSERT para o teto valer
+    mesmo com escritas concorrentes no banco.
+    """
     conn = get_conn()
-    try:
-        conn.execute(
-            """INSERT INTO acao_participantes
-               (acao_id, user_id, user_name, origem, adicionado_por, criado_em)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (acao_id, user_id, user_name, origem, adicionado_por, now_tz().isoformat()),
-        )
+    limite = max_participantes or None
+    cur = conn.execute(
+        """INSERT INTO acao_participantes
+           (acao_id, user_id, user_name, origem, adicionado_por, criado_em)
+           SELECT ?, ?, ?, ?, ?, ?
+           WHERE EXISTS (SELECT 1 FROM acoes WHERE id=? AND status='aberta')
+             AND NOT EXISTS (
+                 SELECT 1 FROM acao_participantes WHERE acao_id=? AND user_id=?
+             )
+             AND (
+                 ? IS NULL
+                 OR (SELECT COUNT(*) FROM acao_participantes WHERE acao_id=?) < ?
+             )""",
+        (
+            acao_id,
+            user_id,
+            user_name,
+            origem,
+            adicionado_por,
+            now_tz().isoformat(),
+            acao_id,
+            acao_id,
+            user_id,
+            limite,
+            acao_id,
+            limite,
+        ),
+    )
+    if cur.rowcount:
         conn.execute(
             "UPDATE acoes SET atualizado_em=? WHERE id=?",
             (now_tz().isoformat(), acao_id),
         )
-        conn.commit()
-        return True
-    except sqlite3.IntegrityError:
-        return False
+    conn.commit()
+    return bool(cur.rowcount)
 
 
 def db_acao_participante_remove(acao_id: int, user_id: str) -> bool:

@@ -183,8 +183,9 @@ Observacao: `/acao` aparece duas vezes em `cogs/acao.py`; validar no startup se 
 | [ ] | `AcaoTipoView > Fuga` | Abre modal de configuracao. |
 | [ ] | `AcaoTipoView > No Tiro` | Abre modal de configuracao. |
 | [ ] | `IniciarAcaoModal` | Valida data/horario/valor e posta acao. |
-| [ ] | `AcaoSelectView > select acao` | Abre painel de participantes. |
-| [ ] | `AcaoParticipantesView > Entrar` | Adiciona participante ou avisa duplicado. |
+| [ ] | `AcaoSelectView > select acao` | Lideranca abre painel de participantes; outro membro recebe erro ephemeral e nada e criado. |
+| [ ] | `AcaoParticipantesView > Entrar` | Adiciona participante, avisa duplicado ou vagas esgotadas. |
+| [ ] | `AcaoParticipantesView` em mensagem sem acao no banco | Responde `Painel indisponivel` e remove os botoes da mensagem. |
 | [ ] | `AcaoParticipantesView > Sair` | Remove participante ou avisa que nao estava inscrito. |
 | [ ] | `AcaoParticipantesView > Adicionar membro` | Lideranca abre select paginado. |
 | [ ] | `AdicionarMembroPaginadoView > select` | Adiciona membro e atualiza painel. |
