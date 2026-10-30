@@ -123,6 +123,42 @@ def classificar_resultado(meta_itens: dict, prog_itens: dict) -> str:
     return "parcial"
 
 
+def calcular_pct_meta(alvos: dict, entregue: dict) -> float:
+    """Média de min(entregue/alvo, 1) sobre os alvos > 0, em percentual."""
+    razoes = [
+        min(float(entregue.get(nome, 0) or 0) / float(alvo), 1)
+        for nome, alvo in alvos.items()
+        if float(alvo or 0) > 0
+    ]
+    if not razoes:
+        return 0
+    return round(sum(razoes) / len(razoes) * 100, 1)
+
+
+def _concluida_em_ordem(concluida_em: str | None) -> float:
+    """Chave de desempate: conclusão mais cedo primeiro, sem conclusão por último."""
+    if not concluida_em:
+        return float("inf")
+    try:
+        return datetime.fromisoformat(concluida_em).timestamp()
+    except (TypeError, ValueError):
+        return float("inf")
+
+
+def ordenar_ranking(linhas: list[dict]) -> list[dict]:
+    """Ordena por classificação, percentual e data de conclusão."""
+    ordem = {"elite": 4, "meta_batida": 3, "parcial": 2, "zero": 1}
+    return sorted(
+        linhas,
+        key=lambda linha: (
+            -ordem.get(linha["classificacao"], 0),
+            -linha["pct"],
+            _concluida_em_ordem(linha.get("concluida_em")),
+            linha["user_id"],
+        ),
+    )
+
+
 CLASSIFICACAO_LABEL = {
     "elite":       "🔥 Elite",
     "meta_batida": "✅ Meta Batida",
@@ -868,7 +904,7 @@ def db_ranking_semana(guild_id: str, week_id: str, user_ids: list[str] | None = 
     meta_tipo = db_meta_tipo_efetivo(meta)
     meta_itens = db_meta_itens_ativos(meta)
     meta_dinheiro = db_meta_dinheiro_ativo(meta)
-    total_meta = (meta_dinheiro if meta_tipo == "dinheiro" else sum(meta_itens.values())) or 1
+    _, alvos = db_meta_alvos_ativos(meta)
 
     rows = get_conn().execute(
         "SELECT * FROM progresso WHERE guild_id=? AND week_id=?",
@@ -879,9 +915,6 @@ def db_ranking_semana(guild_id: str, week_id: str, user_ids: list[str] | None = 
     if user_ids:
         ranking_user_ids.update(str(uid) for uid in user_ids)
 
-    # Ordem de classificação para ordenar o ranking
-    _ordem = {"elite": 4, "meta_batida": 3, "parcial": 2, "zero": 1}
-
     result = []
     for user_id in ranking_user_ids:
         row = rows_by_uid.get(str(user_id))
@@ -889,18 +922,21 @@ def db_ranking_semana(guild_id: str, week_id: str, user_ids: list[str] | None = 
         total_itens = sum(prog_itens.get(nome, 0) for nome in meta_itens)
         total_dinheiro = sum(prog_itens.get(nome, 0) for nome in DINHEIRO_ITEMS)
         total_prog = total_dinheiro if meta_tipo == "dinheiro" else total_itens
-        pct        = round(total_prog / total_meta * 100, 1)
+        entregue   = {**prog_itens, "Dinheiro": total_dinheiro}
+        pct        = calcular_pct_meta(alvos, entregue)
 
         # Aprovação antecipada com nível escolhido → usar esse nível diretamente
         if row and row["aprovacao_antecipada"] and row["aprovacao_nivel"]:
             classificacao = row["aprovacao_nivel"]
         elif meta_tipo == "dinheiro":
             meta_dinheiro_itens = db_meta_dinheiro_itens_ativos(meta)
+            # O percentual exibido tem teto; Elite depende do valor bruto.
+            pct_bruto = round(total_prog / (meta_dinheiro or 1) * 100, 1)
             if meta_dinheiro_itens:
                 classificacao = classificar_resultado(meta_dinheiro_itens, prog_itens)
-            elif pct >= 130:
+            elif pct_bruto >= 130:
                 classificacao = "elite"
-            elif pct >= 100:
+            elif pct_bruto >= 100:
                 classificacao = "meta_batida"
             elif total_prog > 0:
                 classificacao = "parcial"
@@ -916,10 +952,10 @@ def db_ranking_semana(guild_id: str, week_id: str, user_ids: list[str] | None = 
             "pct":           pct,
             "classificacao": classificacao,
             "total":         total_prog,
+            "concluida_em":  row["concluida_em"] if row else None,
         })
 
-    result.sort(key=lambda x: (_ordem.get(x["classificacao"], 0), x["pct"]), reverse=True)
-    return result
+    return ordenar_ranking(result)
 
 
 def db_get_painel_ranking(guild_id: str) -> tuple[str | None, str | None, str | None]:
