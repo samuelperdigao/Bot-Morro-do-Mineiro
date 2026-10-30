@@ -83,6 +83,17 @@ def _get_pedir_set_role(guild: discord.Guild) -> discord.Role | None:
     return find_role_by_names(guild, ("| Pedir Set", "Pedir Set")) or guild.get_role(PEDIR_SET_ROLE_ID)
 
 
+async def _avisar_apelido_bloqueado(log_channel, member) -> None:
+    """Avisa a liderança sem interromper uma aprovação que já aplicou os cargos."""
+    try:
+        await log_channel.send(
+            f"⚠️ Sem permissão para alterar apelido de {member.mention} (`{member.id}`).",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    except Exception as e:
+        log.warning(f"Não foi possível avisar sobre o apelido de {member.id}: {e}")
+
+
 class SetModal(discord.ui.Modal, title="Solicitação de Set"):
     id_jogo     = discord.ui.TextInput(label="ID no Jogo", placeholder="Ex: 12345", min_length=1, max_length=20)
     membro_nome = discord.ui.TextInput(label="Nome do Membro", placeholder="Ex: João Silva", max_length=100)
@@ -366,10 +377,12 @@ class ApprovalView(discord.ui.View):
                     db_channel_map_set(guild_id, str(self.target_user_id), pasta.id)
 
             novo_nick = build_nick_from_parts(self.target_name, self.id_jogo, TAG_MEMBRO)
+            apelido_bloqueado = False
             if novo_nick:
                 try:
                     await member.edit(nick=novo_nick, reason=f"Set aprovado por {approver}")
                 except discord.Forbidden:
+                    apelido_bloqueado = True
                     log.warning(f"Sem permissão para alterar apelido de {member.id}")
                 except Exception as e:
                     log.error(f"Erro ao alterar apelido: {e}")
@@ -379,6 +392,8 @@ class ApprovalView(discord.ui.View):
             log_channel = guild.get_channel(log_ch_id) or await safe_fetch_channel(guild, log_ch_id)
 
         if log_channel:
+            if apelido_bloqueado:
+                await _avisar_apelido_bloqueado(log_channel, member)
             log_embed = discord.Embed(title="✅ Set Aprovado", color=discord.Color.green(), timestamp=discord.utils.utcnow())
             log_embed.set_thumbnail(url=member.display_avatar.url)
             log_embed.add_field(name="👤 Membro",        value=f"{member.mention}\n`{member.id}`",     inline=True)

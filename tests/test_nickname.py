@@ -117,6 +117,30 @@ class BuildNickTests(unittest.TestCase):
         self.assertLessEqual(len(nick), NICK_MAX)
         self.assertTrue(nick.endswith(" | 41468"))
 
+    def test_nome_de_40_caracteres_nunca_corta_o_id(self):
+        nome = "N" * 40
+        for id_jogo in ("12345", "1" * 20):
+            for tag in (None, TAG_MEMBRO, TAG_LIDER):
+                with self.subTest(id_jogo=id_jogo, tag=tag):
+                    nick = build_nick_from_parts(nome, id_jogo, tag)
+                    self.assertLessEqual(len(nick), NICK_MAX)
+                    self.assertTrue(nick.endswith(f" | {id_jogo}"))
+                    self.assertIn("N", nick)
+
+    def test_nome_vazio_usa_somente_o_id(self):
+        for nome in ("", "   "):
+            for tag, esperado in ((None, "12345"), (TAG_MEMBRO, "[MBR] 12345")):
+                with self.subTest(nome=nome, tag=tag):
+                    self.assertEqual(build_nick_from_parts(nome, "12345", tag), esperado)
+
+    def test_nome_que_sobra_vazio_no_corte_usa_somente_o_id(self):
+        id_jogo = "1" * 29
+        self.assertEqual(build_nick(f"Nome | {id_jogo}", None), id_jogo)
+        self.assertEqual(build_nick(f"Nome | {id_jogo}", TAG_LIDER), f"{TAG_LIDER} {'1' * 24}")
+
+    def test_nome_com_espacos_no_ponto_de_corte_nao_deixa_separador_solto(self):
+        self.assertEqual(build_nick(f"A{' ' * 30}B | 12345", None), "A | 12345")
+
 
 class DesiredNickTests(unittest.TestCase):
     def test_usa_nick_atual_sem_a_tag_antiga(self):
