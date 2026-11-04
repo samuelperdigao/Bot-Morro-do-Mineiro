@@ -658,7 +658,7 @@ class EncomendaCog(commands.Cog):
         if canal is None:
             await interaction.response.send_message(
                 "❌ Canal de encomendas não configurado ou não encontrado.\n"
-                "Use `/setup_encomenda` (ou o dashboard) para definir o canal do painel.",
+                "Use `/setup_encomenda_canais` para escolher o canal do painel.",
                 ephemeral=True,
             )
             return
@@ -683,9 +683,10 @@ class EncomendaCog(commands.Cog):
 
     @app_commands.command(
         name="setup_encomenda_canais",
-        description="Define os canais de pedidos ativos e de encomendas entregues.",
+        description="Define os canais do painel, dos pedidos ativos e das encomendas entregues.",
     )
     @app_commands.describe(
+        painel="Canal do painel fixo com o botão Registrar Encomenda",
         pedidos="Canal onde ficam as encomendas em andamento (com botões de status)",
         entregues="Canal de arquivo das encomendas entregues ou canceladas",
     )
@@ -693,6 +694,7 @@ class EncomendaCog(commands.Cog):
     async def setup_encomenda_canais(
         self,
         interaction: discord.Interaction,
+        painel: discord.TextChannel,
         pedidos: discord.TextChannel,
         entregues: discord.TextChannel,
     ):
@@ -703,7 +705,7 @@ class EncomendaCog(commands.Cog):
             return
 
         problemas = []
-        for canal in (pedidos, entregues):
+        for canal in {painel.id: painel, pedidos.id: pedidos, entregues.id: entregues}.values():
             faltando = _permissoes_faltando(canal)
             if faltando:
                 problemas.append(f"{canal.mention}: {', '.join(faltando)}")
@@ -715,10 +717,10 @@ class EncomendaCog(commands.Cog):
             return
 
         guild_id = str(interaction.guild_id)
-        db_set_encomenda_canais(guild_id, str(pedidos.id), str(entregues.id))
+        db_set_encomenda_canais(guild_id, str(pedidos.id), str(entregues.id), str(painel.id))
         log.info(
-            "Canais de encomenda definidos (pedidos=%s, entregues=%s) — guild %s por %s",
-            pedidos.id, entregues.id, guild_id, interaction.user,
+            "Canais de encomenda definidos (painel=%s, pedidos=%s, entregues=%s) — guild %s por %s",
+            painel.id, pedidos.id, entregues.id, guild_id, interaction.user,
         )
 
         embed = discord.Embed(
@@ -726,8 +728,14 @@ class EncomendaCog(commands.Cog):
             color=discord.Color.green(),
             timestamp=discord.utils.utcnow(),
         )
+        embed.add_field(name="🧾 Painel", value=painel.mention, inline=True)
         embed.add_field(name="📋 Pedidos", value=pedidos.mention, inline=True)
         embed.add_field(name="📦 Entregues", value=entregues.mention, inline=True)
+        embed.add_field(
+            name="Próximo passo",
+            value="Use `/setup_encomenda_painel` para postar o painel no canal escolhido.",
+            inline=False,
+        )
         embed.set_footer(text=f"Configurado por {interaction.user}")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 

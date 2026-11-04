@@ -385,6 +385,19 @@ class EncomendaCanaisConfigTests(unittest.TestCase):
         self.assertIsNone(row["canal_interacao_id"])
         self.assertEqual(self.db.db_get_encomenda_canais("guild-2"), ("1", "2"))
 
+    def test_canal_do_painel_grava_interacao_e_preserva_log(self):
+        db = self.db
+        db.db_set_system_config("guild-3", "encomenda", "111", "222")
+
+        db.db_set_encomenda_canais("guild-3", "333", "444", "555")
+        row = db.db_get_system_config("guild-3", "encomenda")
+        self.assertEqual((row["canal_interacao_id"], row["canal_log_id"]), ("555", "222"))
+
+        db.db_set_encomenda_canais("guild-3", "666", "777")
+        row = db.db_get_system_config("guild-3", "encomenda")
+        self.assertEqual(row["canal_interacao_id"], "555")
+        self.assertEqual(db.db_get_encomenda_canais("guild-3"), ("666", "777"))
+
 
 if __name__ == "__main__":
     unittest.main()

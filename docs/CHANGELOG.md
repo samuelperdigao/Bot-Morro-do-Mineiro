@@ -17,7 +17,8 @@
 - Mudancas de status sao atomicas: cliques simultaneos geram uma unica
   transicao.
 - O solicitante e avisado por DM a cada mudanca de status.
-- Novo comando `/setup_encomenda_canais` para definir #pedidos e #entregues.
+- Novo comando `/setup_encomenda_canais` para escolher o canal do painel,
+  #pedidos e #entregues.
 - `/setup_encomenda_painel` passou a aceitar o canal definido por
   `/setup_encomenda` quando o dashboard nao configurou o sistema.
 - Novas tabelas `encomendas` e `encomenda_eventos`; migracao versionada 6

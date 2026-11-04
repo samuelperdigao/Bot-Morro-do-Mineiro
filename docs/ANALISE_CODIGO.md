@@ -298,8 +298,8 @@ simultâneos resultam em uma única mudança, e o perdedor vê
 |---------|-----------|-----------|
 | `/encomenda` | Nenhuma | Abre o mesmo modal do painel (exige `#pedidos` configurado) |
 | `/setup_encomenda_painel` | manage_guild | Posta o painel no canal de encomendas |
-| `/setup_encomenda_canais` | manage_guild | Define `#pedidos` e `#entregues` (valida permissões do bot) |
-| `/setup_encomenda` (`cogs/setup.py`) | administrator | Define `guild_config.canal_encomendas_id`, usado como canal do painel |
+| `/setup_encomenda_canais` | manage_guild | Define painel (`canal_interacao_id`), `#pedidos` e `#entregues` (valida permissões do bot) |
+| `/setup_encomenda` (`cogs/setup.py`) | administrator | Define `guild_config.canal_encomendas_id`, alternativa para o canal do painel |
 
 **Banco:** `encomendas`, `encomenda_eventos` (`criada`, `status`, `erro`) e
 `system_config.canal_pedidos_id` / `canal_entregues_id` (migração versionada 6).

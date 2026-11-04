@@ -208,7 +208,7 @@ Observacao: `/acao` aparece duas vezes em `cogs/acao.py`; validar no startup se 
 | [ ] | Ausencia: `AusenciaPanelView > Registrar` | Abre modal e registra ausencia. |
 | [ ] | Ausencia: `/ausencias` | Lista ausentes da guild, uma linha por membro (a ausencia ativa mais recente). |
 | [ ] | Ausencia: nova ausencia com outra ativa | Mantem o historico; a ausencia substituida nao gera DM ao vencer. |
-| [ ] | Encomenda: `/setup_encomenda_canais` | Salva #pedidos/#entregues; recusa canal igual ou sem permissao do bot. |
+| [ ] | Encomenda: `/setup_encomenda_canais` | Salva painel, #pedidos e #entregues; recusa pedidos=entregues ou canal sem permissao do bot. |
 | [ ] | Encomenda: `/setup_encomenda_painel` | Posta painel. |
 | [ ] | Encomenda: `/encomenda` | Abre/registra encomenda; sem #pedidos configurado responde erro sem abrir modal. |
 | [ ] | Encomenda: `EncomendaPainelView > Registrar` | Grava `#00N` e posta em #pedidos com 4 botoes; valor/quantidade invalidos nao gravam. |

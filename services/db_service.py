@@ -1387,16 +1387,23 @@ def db_get_encomenda_canais(guild_id: str) -> tuple[str | None, str | None]:
     return row["canal_pedidos_id"], row["canal_entregues_id"]
 
 
-def db_set_encomenda_canais(guild_id: str, canal_pedidos_id: str, canal_entregues_id: str) -> None:
-    """Grava os canais de pedidos/entregues sem tocar em canal_interacao_id/canal_log_id."""
+def db_set_encomenda_canais(
+    guild_id: str,
+    canal_pedidos_id: str,
+    canal_entregues_id: str,
+    canal_painel_id: str | None = None,
+) -> None:
+    """Grava os canais de pedidos/entregues (e do painel, se informado) sem tocar em canal_log_id."""
     conn = get_conn()
     conn.execute(
-        """INSERT INTO system_config (guild_id, sistema, canal_pedidos_id, canal_entregues_id)
-           VALUES (?, 'encomenda', ?, ?)
+        """INSERT INTO system_config
+               (guild_id, sistema, canal_interacao_id, canal_pedidos_id, canal_entregues_id)
+           VALUES (?, 'encomenda', ?, ?, ?)
            ON CONFLICT(guild_id, sistema) DO UPDATE SET
+               canal_interacao_id=COALESCE(excluded.canal_interacao_id, canal_interacao_id),
                canal_pedidos_id=excluded.canal_pedidos_id,
                canal_entregues_id=excluded.canal_entregues_id""",
-        (guild_id, canal_pedidos_id, canal_entregues_id),
+        (guild_id, canal_painel_id, canal_pedidos_id, canal_entregues_id),
     )
     conn.commit()
 
