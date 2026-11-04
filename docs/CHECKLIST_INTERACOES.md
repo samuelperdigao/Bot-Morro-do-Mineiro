@@ -212,7 +212,7 @@ Observacao: `/acao` aparece duas vezes em `cogs/acao.py`; validar no startup se 
 | [ ] | Encomenda: `/setup_encomenda_painel` | Posta painel. |
 | [ ] | Encomenda: `/encomenda` | Abre/registra encomenda; sem #pedidos configurado responde erro sem abrir modal. |
 | [ ] | Encomenda: `EncomendaPainelView > Registrar` | Grava `#00N` e posta em #pedidos com 4 botoes; valor/quantidade invalidos nao gravam. |
-| [ ] | Encomenda: `PedidoView > Em producao/Pronta` | Edita o mesmo embed (status, cor, responsavel) e desabilita botoes anteriores; membro sem lideranca recebe erro. |
+| [ ] | Encomenda: `PedidoView > Em producao/Pronta` | Edita o mesmo embed (status, cor, responsavel) e desabilita botoes anteriores; qualquer membro com acesso a #pedidos consegue usar. |
 | [ ] | Encomenda: `PedidoView > Entregue/Cancelar` | Pede confirmacao; ao confirmar posta em #entregues sem botoes e apaga de #pedidos. |
 | [ ] | Encomenda: botoes apos restart | Os 4 botoes continuam funcionando apos reiniciar o bot. |
 | [ ] | Advertencia: `/setup_adv_painel` | Posta painel. |

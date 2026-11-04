@@ -9,6 +9,7 @@ PedidoView               → embed vivo em #pedidos com botões de status (persi
 
 As regras (validação, numeração, transições) ficam em services/encomenda_core.py.
 O pedido é localizado pelo ID da mensagem em #pedidos, nunca pelo custom_id.
+Quem pode mudar o status é definido pelo acesso ao canal #pedidos no Discord.
 """
 
 from __future__ import annotations
@@ -21,11 +22,9 @@ from discord.ext import commands
 
 from core.date_utils import DATE_BR_EXAMPLE, normalize_date_br
 from core.logger import get_logger
-from core.permissions import is_lideranca
 from services.db_service import (
     db_get_encomenda_canais,
     db_get_guild_config,
-    db_get_lideranca_role_ids,
     db_get_system_config,
     db_set_encomenda_canais,
     get_conn,
@@ -67,7 +66,6 @@ ACOES_PEDIDO = {
 
 FOOTER_ENCOMENDAS = "Morro do Mineiro — Encomendas"
 MSG_CANAIS_NAO_CONFIGURADOS = "❌ Canais não configurados. Use `/setup_encomenda_canais`."
-MSG_SEM_PERMISSAO = "❌ Apenas líder, vice-líder ou gerente podem alterar o status das encomendas."
 MSG_DESATUALIZADA = "⚠️ Alguém já atualizou esta encomenda. Atualize a tela."
 MSG_NAO_ENCONTRADA = "❌ Encomenda não encontrada no banco."
 
@@ -144,13 +142,6 @@ async def _get_encomenda_channel(guild: discord.Guild, guild_id: str) -> discord
     if cfg and cfg["canal_encomendas_id"]:
         return await _resolver_canal(guild, cfg["canal_encomendas_id"])
     return None
-
-
-def _pode_gerenciar(interaction: discord.Interaction) -> bool:
-    membro = interaction.user
-    if not isinstance(membro, discord.Member):
-        return False
-    return is_lideranca(membro, db_get_lideranca_role_ids(str(interaction.guild_id)))
 
 
 def _pedidos_configurado(guild_id: str) -> bool:
@@ -422,9 +413,6 @@ async def _tratar_botao_pedido(interaction: discord.Interaction, acao: str) -> N
     if row is None:
         await interaction.response.send_message(MSG_NAO_ENCONTRADA, ephemeral=True)
         return
-    if not _pode_gerenciar(interaction):
-        await interaction.response.send_message(MSG_SEM_PERMISSAO, ephemeral=True)
-        return
 
     guild = interaction.guild
     status_atual = row["status"]
@@ -539,8 +527,6 @@ async def _finalizar_encomenda(
     """Finaliza (entregue/cancelada), arquiva em #entregues e apaga de #pedidos."""
     guild = interaction.guild
     user_id = str(interaction.user.id)
-    if not _pode_gerenciar(interaction):
-        return MSG_SEM_PERMISSAO
 
     canal_entregues, erro = await _canal_entregues(guild)
     if erro:

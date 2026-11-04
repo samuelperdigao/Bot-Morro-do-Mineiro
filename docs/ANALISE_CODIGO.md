@@ -289,9 +289,9 @@ compare-and-set (`BEGIN IMMEDIATE` + `UPDATE ... WHERE status=?`): dois cliques
 simultâneos resultam em uma única mudança, e o perdedor vê
 "Alguém já atualizou esta encomenda".
 
-**Permissão para mudar status:** `is_lideranca` com
-`db_get_lideranca_role_ids` (cargos de liderança do farm; administrador e
-`manage_guild` também passam).
+**Permissão para mudar status:** o bot não checa cargo. Quem vê `#pedidos`
+pode usar os botões; o acesso é controlado pelas permissões do canal no
+Discord. A confirmação de Entregue/Cancelar só aceita quem a abriu.
 
 **Slash Commands:**
 | Comando | Permissão | Descrição |

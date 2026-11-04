@@ -10,8 +10,8 @@
   quantidade, valor e data antes de gravar qualquer coisa.
 - Cada encomenda e postada em #pedidos com os botoes Em producao, Pronta,
   Entregue e Cancelar, que continuam funcionando apos reiniciar o bot.
-- Somente lider, vice-lider e gerente (cargos de lideranca, administrador ou
-  gerenciar servidor) podem mudar o status.
+- Qualquer membro com acesso ao canal #pedidos pode mudar o status; o controle
+  de quem participa e feito pelas permissoes dos canais no Discord.
 - Entregue e Cancelar pedem confirmacao, arquivam a encomenda em #entregues
   sem botoes e apagam a mensagem de #pedidos.
 - Mudancas de status sao atomicas: cliques simultaneos geram uma unica
