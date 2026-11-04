@@ -817,9 +817,10 @@ def db_registrar_fabricacao_colete(
     aluminio: int,
     borracha: int,
     custo: int,
-):
+) -> int:
+    """Registra a fabricacao e retorna o ID dela."""
     conn = get_conn()
-    conn.execute(
+    cur = conn.execute(
         """INSERT INTO fabricacoes_colete
            (guild_id, user_id, user_name, quantidade, ferro, plastico,
             tecido, aluminio, borracha, custo, timestamp)
@@ -839,6 +840,39 @@ def db_registrar_fabricacao_colete(
         ),
     )
     conn.commit()
+    return cur.lastrowid
+
+
+def db_resumo_coletes(guild_id: str) -> dict[str, int]:
+    """Totais de coletes fabricados hoje e na semana (segunda a domingo)."""
+    hoje = now_tz().date()
+    segunda = hoje - timedelta(days=hoje.weekday())
+    domingo = segunda + timedelta(days=6)
+    row = get_conn().execute(
+        """SELECT
+               COALESCE(SUM(CASE WHEN substr(timestamp, 1, 10) = ?
+                                 THEN quantidade END), 0) AS hoje_qtd,
+               COALESCE(SUM(CASE WHEN substr(timestamp, 1, 10) = ?
+                                 THEN custo END), 0)      AS hoje_custo,
+               COALESCE(SUM(quantidade), 0)               AS semana_qtd,
+               COALESCE(SUM(custo), 0)                    AS semana_custo
+           FROM fabricacoes_colete
+           WHERE guild_id = ?
+             AND substr(timestamp, 1, 10) BETWEEN ? AND ?""",
+        (
+            hoje.isoformat(),
+            hoje.isoformat(),
+            guild_id,
+            segunda.isoformat(),
+            domingo.isoformat(),
+        ),
+    ).fetchone()
+    return {
+        "hoje_qtd": row["hoje_qtd"],
+        "hoje_custo": row["hoje_custo"],
+        "semana_qtd": row["semana_qtd"],
+        "semana_custo": row["semana_custo"],
+    }
 
 
 # ── Dashboard: system_config ─────────────────────────────────────────────────

@@ -1,5 +1,31 @@
 # Changelog
 
+## 04/11/2026
+
+### Fabricacao de Coletes (visual em Components V2)
+
+- O painel passou de embed com menu suspenso para um Container V2 dourado, com
+  receita por colete em duas linhas e botoes de atalho (1, 5, 10 e 50).
+- Adicionado o botao "Outra quantidade", que abre um campo para digitar
+  qualquer valor.
+- Removido o limite de quantidade por fabricacao.
+- O passo de confirmacao agora tem stepper (-10, -1, quantidade, +1, +10) que
+  recalcula materiais e custo na mesma mensagem. Tocar no numero abre o campo
+  de digitacao.
+- A espera do print mostra contagem regressiva nativa do Discord e tem botao
+  para cancelar. Uma segunda fabricacao do mesmo membro e recusada enquanto a
+  primeira aguarda o print.
+- O log da fabricacao virou Container V2 com avatar do membro, ID da
+  fabricacao, materiais e o print em galeria de midia.
+- O painel passou a exibir os totais de hoje e da semana (coletes e gasto),
+  atualizados a cada registro.
+- As interacoes sao roteadas por `custom_id` sem estado, entao os botoes
+  continuam funcionando apos reiniciar o bot.
+- Criado `core/components_v2.py` com os construtores e o envio de mensagens V2
+  reutilizaveis (discord.py 2.3.2 ainda nao possui classes para V2).
+- Apos atualizar, e necessario executar `/colete` uma vez para postar o novo
+  painel; o painel antigo avisa que esta desatualizado.
+
 ## 08/06/2026 a 09/06/2026
 
 Alteracoes finalizadas e validadas no estado atual do bot.

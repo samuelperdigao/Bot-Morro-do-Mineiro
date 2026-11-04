@@ -1,26 +1,41 @@
 """
-Painel fixo de fabricacao de coletes.
+Painel fixo de fabricacao de coletes (Components V2).
 
 /colete publica o painel no canal em que o comando for executado.
+
+Fluxo:
+1. Painel fixo: atalhos de quantidade (1, 5, 10, 50) ou "Outra quantidade" (Modal).
+2. Passo efemero com stepper (-10, -1, [qtd], +1, +10) que recalcula materiais e custo.
+3. Confirmacao -> espera o print no canal -> registra no banco -> posta o log.
+
+As interacoes sao roteadas por custom_id sem estado ("colete:acao:valor"),
+entao os botoes continuam funcionando depois de reiniciar o bot. Nao ha limite
+de quantidade por fabricacao.
 """
 
+from __future__ import annotations
+
 import asyncio
+import os
+import time
+from typing import Any
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+from core import components_v2 as v2
 from core.logger import get_logger
 from services.db_service import (
     db_get_painel_colete,
+    db_get_system_config,
     db_registrar_fabricacao_colete,
+    db_resumo_coletes,
     db_set_guild_config,
 )
-from services.log_service import send_log
 
 log = get_logger("colete", "colete.log")
 
-QUANTIDADES = range(1, 11)
 MATERIAIS_POR_COLETE = {
     "ferro": 20,
     "plastico": 10,
@@ -29,14 +44,23 @@ MATERIAIS_POR_COLETE = {
     "borracha": 10,
 }
 CUSTO_POR_COLETE = 1000
+ATALHOS = (1, 5, 10, 50)
 PRINT_TIMEOUT_SECONDS = 180.0
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 LOG_FABRICACAO_CHANNEL_ID = 1506880362633236630
+COR_DOURADO = 0xFFD700
+COR_VERMELHO = 0xED4245
+COR_VERDE = 0x57F287
 
+PREFIXO = "colete"
+CANCELADO = "cancelado"
+
+
+# ── Regras de negocio ─────────────────────────────────────────────────────────
 
 def calcular_fabricacao(quantidade: int) -> dict[str, int]:
-    if quantidade not in QUANTIDADES:
-        raise ValueError("A quantidade deve estar entre 1 e 10.")
+    if not isinstance(quantidade, int) or quantidade < 1:
+        raise ValueError("A quantidade deve ser um inteiro maior que zero.")
     materiais = {
         nome: valor * quantidade
         for nome, valor in MATERIAIS_POR_COLETE.items()
@@ -45,12 +69,29 @@ def calcular_fabricacao(quantidade: int) -> dict[str, int]:
     return materiais
 
 
+def interpretar_quantidade(valor: str) -> int | None:
+    """Converte o texto digitado em quantidade valida. Aceita '1.000' e '1 000'."""
+    limpo = valor.strip().replace(".", "").replace(",", "").replace(" ", "")
+    if not limpo.isdigit():
+        return None
+    quantidade = int(limpo)
+    return quantidade if quantidade >= 1 else None
+
+
 def _fmt_money(valor: int) -> str:
-    return f"${valor:,.0f}"
+    return "$" + f"{valor:,}".replace(",", ".")
+
+
+def _fmt_num(valor: int) -> str:
+    return f"{valor:,}".replace(",", ".")
 
 
 def _nome_colete(quantidade: int) -> str:
     return "colete" if quantidade == 1 else "coletes"
+
+
+def _qtd_texto(quantidade: int) -> str:
+    return f"{_fmt_num(quantidade)} {_nome_colete(quantidade)}"
 
 
 def _is_image_attachment(attachment: discord.Attachment) -> bool:
@@ -60,101 +101,344 @@ def _is_image_attachment(attachment: discord.Attachment) -> bool:
     return attachment.filename.lower().endswith(IMAGE_EXTENSIONS)
 
 
-def _criar_embed_painel() -> discord.Embed:
-    embed = discord.Embed(
-        title="FABRICACAO DE COLETES",
-        description=(
-            "Selecione abaixo a quantidade que deseja fabricar.\n"
-            "O limite e de **10 coletes por vez**.\n\n"
-            "**Materiais por colete:**\n"
-            "Ferro: `20` | Plastico: `10` | Tecido: `1`\n"
-            "Aluminio: `20` | Borracha: `10`\n"
-            f"Custo: `{_fmt_money(CUSTO_POR_COLETE)}`"
+def _linhas_materiais(materiais: dict[str, int], com_custo: bool) -> str:
+    fmt = _fmt_num
+    linha_1 = (
+        f"Ferro `{fmt(materiais['ferro'])}` · "
+        f"Plástico `{fmt(materiais['plastico'])}` · "
+        f"Tecido `{fmt(materiais['tecido'])}`"
+    )
+    linha_2 = (
+        f"Alumínio `{fmt(materiais['aluminio'])}` · "
+        f"Borracha `{fmt(materiais['borracha'])}`"
+    )
+    if com_custo:
+        linha_2 += f" · Custo `{_fmt_money(materiais['custo'])}`"
+    return f"{linha_1}\n{linha_2}"
+
+
+# ── Montagem das mensagens (Components V2) ────────────────────────────────────
+
+def montar_painel(resumo: dict[str, int] | None = None) -> list[dict[str, Any]]:
+    por_colete = calcular_fabricacao(1)
+    filhos: list[dict[str, Any]] = [
+        v2.texto(
+            "## Fabricação de coletes\n"
+            "Escolha a quantidade, confirme e envie o print da fabricação."
         ),
-        color=0x34495E,
-    )
-    embed.set_footer(text="Morro do Mineiro")
-    return embed
-
-
-def _criar_embed_confirmacao(quantidade: int, materiais: dict[str, int]) -> discord.Embed:
-    nome = _nome_colete(quantidade)
-    embed = discord.Embed(
-        title=f"Fabricacao - {quantidade} {nome.title()}",
-        description=(
-            "Confira os materiais necessarios e confirme a fabricacao.\n"
-            "Depois da confirmacao, voce precisara enviar o print da fabricacao."
+        v2.separador(),
+        v2.texto(f"**Por colete**\n{_linhas_materiais(por_colete, com_custo=True)}"),
+        v2.separador(),
+        v2.linha(
+            [
+                v2.botao(str(q), f"{PREFIXO}:q:{q}", v2.PRIMARY)
+                for q in ATALHOS
+            ]
+            + [v2.botao("Outra quantidade", f"{PREFIXO}:outra", v2.SECONDARY)]
         ),
-        color=0xF1C40F,
+    ]
+    if resumo is not None:
+        filhos.append(v2.separador())
+        filhos.append(
+            v2.texto(
+                f"-# Hoje: **{_fmt_num(resumo['hoje_qtd'])}** · "
+                f"Semana: **{_fmt_num(resumo['semana_qtd'])}** coletes · "
+                f"Gasto da semana: **{_fmt_money(resumo['semana_custo'])}**"
+            )
+        )
+    return [v2.container(filhos, COR_DOURADO)]
+
+
+def montar_passo_quantidade(quantidade: int) -> list[dict[str, Any]]:
+    materiais = calcular_fabricacao(quantidade)
+    stepper = v2.linha(
+        [
+            v2.botao("-10", f"{PREFIXO}:step:{quantidade}:-10"),
+            v2.botao("-1", f"{PREFIXO}:step:{quantidade}:-1"),
+            v2.botao(_fmt_num(quantidade), f"{PREFIXO}:edit:{quantidade}", v2.PRIMARY),
+            v2.botao("+1", f"{PREFIXO}:step:{quantidade}:1"),
+            v2.botao("+10", f"{PREFIXO}:step:{quantidade}:10"),
+        ]
     )
-    embed.add_field(name="Ferro", value=str(materiais["ferro"]), inline=True)
-    embed.add_field(name="Plastico", value=str(materiais["plastico"]), inline=True)
-    embed.add_field(name="Tecido", value=str(materiais["tecido"]), inline=True)
-    embed.add_field(name="Aluminio", value=str(materiais["aluminio"]), inline=True)
-    embed.add_field(name="Borracha", value=str(materiais["borracha"]), inline=True)
-    embed.add_field(name="Custo", value=_fmt_money(materiais["custo"]), inline=True)
-    embed.set_footer(text="Confirme ou cancele abaixo.")
-    return embed
+    return [
+        v2.container(
+            [
+                v2.texto(
+                    f"## Fabricar {_qtd_texto(quantidade)}\n"
+                    "Ajuste a quantidade ou toque no número para digitar."
+                ),
+                stepper,
+                v2.separador(),
+                v2.texto(
+                    f"**Materiais**\n{_linhas_materiais(materiais, com_custo=False)}\n\n"
+                    f"**Custo total** `{_fmt_money(materiais['custo'])}`"
+                ),
+                v2.separador(),
+                v2.linha(
+                    [
+                        v2.botao(
+                            "Confirmar e enviar print",
+                            f"{PREFIXO}:ok:{quantidade}",
+                            v2.SUCCESS,
+                        ),
+                        v2.botao("Cancelar", f"{PREFIXO}:cancel", v2.DANGER),
+                    ]
+                ),
+            ],
+            COR_DOURADO,
+        )
+    ]
 
 
-def _criar_embed_aguardando_print(quantidade: int) -> discord.Embed:
-    nome = _nome_colete(quantidade)
-    embed = discord.Embed(
-        title="Aguardando print da fabricacao",
-        description=(
-            f"Envie uma imagem neste canal em ate **{int(PRINT_TIMEOUT_SECONDS / 60)} minutos** "
-            f"para confirmar a fabricacao de **{quantidade} {nome}**.\n\n"
-            "A fabricacao so sera registrada depois que o print for recebido."
-        ),
-        color=0xF1C40F,
+def montar_aguardando(quantidade: int, prazo_unix: int) -> list[dict[str, Any]]:
+    return [
+        v2.container(
+            [
+                v2.texto(
+                    "## Aguardando o print\n"
+                    f"Envie uma imagem **neste canal** <t:{prazo_unix}:R> para registrar "
+                    f"**{_qtd_texto(quantidade)}**."
+                ),
+                v2.texto(
+                    "-# A fabricação só é registrada depois do print. "
+                    "Formatos: PNG, JPG, JPEG, WEBP ou GIF."
+                ),
+                v2.linha([v2.botao("Cancelar", f"{PREFIXO}:abort", v2.DANGER)]),
+            ],
+            COR_DOURADO,
+        )
+    ]
+
+
+def montar_cancelado() -> list[dict[str, Any]]:
+    return [
+        v2.container(
+            [v2.texto("## Fabricação cancelada\nNada foi registrado.")],
+            COR_VERMELHO,
+        )
+    ]
+
+
+def montar_timeout(quantidade: int) -> list[dict[str, Any]]:
+    return [
+        v2.container(
+            [
+                v2.texto(
+                    "## Tempo esgotado\n"
+                    f"Nenhum print chegou para **{_qtd_texto(quantidade)}**. "
+                    "Nada foi registrado."
+                )
+            ],
+            COR_VERMELHO,
+        )
+    ]
+
+
+def montar_erro_print() -> list[dict[str, Any]]:
+    return [
+        v2.container(
+            [
+                v2.texto(
+                    "## Não consegui ler o print\n"
+                    "A imagem não pôde ser baixada. Nada foi registrado, "
+                    "tente fabricar de novo."
+                )
+            ],
+            COR_VERMELHO,
+        )
+    ]
+
+
+def montar_sucesso(
+    fabricacao_id: int,
+    quantidade: int,
+    custo: int,
+    canal_log_id: int | None,
+) -> list[dict[str, Any]]:
+    detalhe = (
+        f"Log com o print enviado em <#{canal_log_id}>."
+        if canal_log_id
+        else "Salvo no banco, mas não consegui enviar o log."
     )
-    embed.set_footer(text="Formatos aceitos: PNG, JPG, JPEG, WEBP ou GIF.")
-    return embed
+    return [
+        v2.container(
+            [
+                v2.texto(
+                    f"## Fabricação #{fabricacao_id} registrada\n"
+                    f"**{_qtd_texto(quantidade)}** · `{_fmt_money(custo)}`"
+                ),
+                v2.texto(f"-# {detalhe}"),
+            ],
+            COR_VERDE if canal_log_id else COR_DOURADO,
+        )
+    ]
 
 
-def _criar_embed_timeout(quantidade: int) -> discord.Embed:
-    nome = _nome_colete(quantidade)
-    return discord.Embed(
-        title="Tempo esgotado",
-        description=(
-            f"Nenhum print foi recebido para a fabricacao de **{quantidade} {nome}**. "
-            "Nada foi registrado."
-        ),
-        color=discord.Color.red(),
-    )
+def montar_log(
+    *,
+    fabricacao_id: int,
+    membro_id: int,
+    avatar_url: str,
+    quantidade: int,
+    materiais: dict[str, int],
+    canal_id: int,
+    nome_arquivo: str,
+    quando_unix: int,
+) -> list[dict[str, Any]]:
+    return [
+        v2.container(
+            [
+                v2.secao(
+                    [
+                        f"## Fabricação #{fabricacao_id}\n"
+                        f"**Membro:** <@{membro_id}>\n"
+                        f"**Quantidade:** `{_qtd_texto(quantidade)}`\n"
+                        f"**Gasto total:** `{_fmt_money(materiais['custo'])}`"
+                    ],
+                    avatar_url,
+                ),
+                v2.texto(f"**Materiais**\n{_linhas_materiais(materiais, com_custo=False)}"),
+                v2.galeria([f"attachment://{nome_arquivo}"]),
+                v2.separador(),
+                v2.texto(
+                    f"-# <t:{quando_unix}:f> · <#{canal_id}> · "
+                    "Morro do Mineiro - Fabricação de Coletes"
+                ),
+            ],
+            COR_DOURADO,
+        )
+    ]
 
 
-def _criar_embed_sucesso(quantidade: int, log_enviado: bool) -> discord.Embed:
-    nome = _nome_colete(quantidade)
-    registrado = "registrado" if quantidade == 1 else "registrados"
-    detalhe_log = (
-        "O log com o print foi enviado ao canal de fabricacao."
-        if log_enviado
-        else "A fabricacao foi salva, mas nao foi possivel enviar o log."
-    )
-    return discord.Embed(
-        title="Fabricacao registrada",
-        description=(
-            f"**{quantidade} {nome}** {registrado} com sucesso!\n{detalhe_log}"
-        ),
-        color=discord.Color.green(),
-    )
+# ── Modal ─────────────────────────────────────────────────────────────────────
 
+class QuantidadeModal(discord.ui.Modal):
+    """Pede uma quantidade livre. editar=True atualiza o passo ja aberto."""
 
-class ColeteConfirmView(discord.ui.View):
-    def __init__(self, quantidade: int, materiais: dict[str, int]):
-        super().__init__(timeout=180)
-        self.quantidade = quantidade
-        self.materiais = materiais
+    def __init__(self, editar: bool, padrao: int | None = None):
+        super().__init__(title="Quantidade de coletes")
+        self.editar = editar
+        self.campo = discord.ui.TextInput(
+            label="Quantos coletes?",
+            placeholder="Ex.: 25",
+            default=str(padrao) if padrao else None,
+            min_length=1,
+            max_length=7,
+            required=True,
+        )
+        self.add_item(self.campo)
 
-    @discord.ui.button(label="CONFIRMAR FABRICACAO", style=discord.ButtonStyle.success)
-    async def confirmar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self._desativar()
-        await interaction.response.edit_message(
-            embed=_criar_embed_aguardando_print(self.quantidade),
-            view=self,
+    async def on_submit(self, interaction: discord.Interaction):
+        quantidade = interpretar_quantidade(self.campo.value)
+        if quantidade is None:
+            await interaction.response.send_message(
+                "Digite um número inteiro maior que zero.", ephemeral=True
+            )
+            return
+        await v2.responder(
+            interaction, montar_passo_quantidade(quantidade), atualizar=self.editar
         )
 
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        log.error("Erro no modal de quantidade: %s", error, exc_info=True)
+
+
+# ── Cog ───────────────────────────────────────────────────────────────────────
+
+class ColeteCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        # (guild_id, user_id) -> Event que cancela a espera do print
+        self._pendentes: dict[tuple[int, int], asyncio.Event] = {}
+
+    # Roteamento -------------------------------------------------------------
+
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction):
+        if interaction.type is not discord.InteractionType.component:
+            return
+        custom_id = (interaction.data or {}).get("custom_id", "")
+        if not custom_id.startswith(f"{PREFIXO}:") or interaction.guild_id is None:
+            return
+        try:
+            await self._rotear(interaction, custom_id.split(":"))
+        except Exception as exc:
+            log.error("Erro ao tratar %s: %s", custom_id, exc, exc_info=True)
+            try:
+                await interaction.response.send_message(
+                    "Ocorreu um erro. Tente novamente.", ephemeral=True
+                )
+            except discord.HTTPException:
+                pass
+
+    async def _rotear(self, interaction: discord.Interaction, partes: list[str]):
+        acao = partes[1] if len(partes) > 1 else ""
+
+        if acao == "q":
+            quantidade = int(partes[2])
+            if quantidade >= 1:
+                await v2.responder(interaction, montar_passo_quantidade(quantidade))
+        elif acao == "outra":
+            await interaction.response.send_modal(QuantidadeModal(editar=False))
+        elif acao == "edit":
+            await interaction.response.send_modal(
+                QuantidadeModal(editar=True, padrao=int(partes[2]))
+            )
+        elif acao == "step":
+            quantidade = max(1, int(partes[2]) + int(partes[3]))
+            await v2.responder(
+                interaction, montar_passo_quantidade(quantidade), atualizar=True
+            )
+        elif acao == "cancel":
+            await v2.responder(interaction, montar_cancelado(), atualizar=True)
+        elif acao == "abort":
+            evento = self._pendentes.get((interaction.guild_id, interaction.user.id))
+            if evento:
+                evento.set()
+            await v2.responder(interaction, montar_cancelado(), atualizar=True)
+        elif acao == "ok":
+            await self._confirmar(interaction, int(partes[2]))
+        elif acao == "select":
+            await interaction.response.send_message(
+                "Esse painel está desatualizado. Peça para a liderança postar "
+                "o painel novamente com `/colete`.",
+                ephemeral=True,
+            )
+
+    # Fabricacao -------------------------------------------------------------
+
+    async def _confirmar(self, interaction: discord.Interaction, quantidade: int):
+        if quantidade < 1:
+            return
+        chave = (interaction.guild_id, interaction.user.id)
+        if chave in self._pendentes:
+            await interaction.response.send_message(
+                "Você já tem uma fabricação aguardando print. "
+                "Envie o print ou cancele a anterior.",
+                ephemeral=True,
+            )
+            return
+
+        cancelar = asyncio.Event()
+        self._pendentes[chave] = cancelar
+        try:
+            prazo = int(time.time() + PRINT_TIMEOUT_SECONDS)
+            await v2.responder(
+                interaction, montar_aguardando(quantidade, prazo), atualizar=True
+            )
+            resultado = await self._aguardar_print(interaction, cancelar)
+            if resultado == CANCELADO:
+                return
+            if resultado is None:
+                await v2.editar_original(interaction, montar_timeout(quantidade))
+                return
+            await self._finalizar(interaction, quantidade, resultado)
+        finally:
+            self._pendentes.pop(chave, None)
+
+    async def _aguardar_print(
+        self, interaction: discord.Interaction, cancelar: asyncio.Event
+    ) -> discord.Message | str | None:
         def check(message: discord.Message) -> bool:
             return (
                 message.author.id == interaction.user.id
@@ -162,50 +446,52 @@ class ColeteConfirmView(discord.ui.View):
                 and any(_is_image_attachment(att) for att in message.attachments)
             )
 
-        try:
-            message = await interaction.client.wait_for(
-                "message",
-                check=check,
-                timeout=PRINT_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError:
-            await interaction.edit_original_response(
-                embed=_criar_embed_timeout(self.quantidade),
-                view=self,
-            )
-            return
-
-        print_attachment = next(
-            att for att in message.attachments if _is_image_attachment(att)
+        espera_print = asyncio.create_task(
+            self.bot.wait_for("message", check=check, timeout=PRINT_TIMEOUT_SECONDS)
         )
+        espera_cancel = asyncio.create_task(cancelar.wait())
+        feitas, pendentes = await asyncio.wait(
+            {espera_print, espera_cancel}, return_when=asyncio.FIRST_COMPLETED
+        )
+        for tarefa in pendentes:
+            tarefa.cancel()
+        if espera_cancel in feitas:
+            return CANCELADO
         try:
-            print_file = await print_attachment.to_file(use_cached=True)
+            return espera_print.result()
+        except asyncio.TimeoutError:
+            return None
+
+    async def _finalizar(
+        self,
+        interaction: discord.Interaction,
+        quantidade: int,
+        mensagem: discord.Message,
+    ):
+        anexo = next(a for a in mensagem.attachments if _is_image_attachment(a))
+        extensao = os.path.splitext(anexo.filename)[1].lower()
+        if extensao not in IMAGE_EXTENSIONS:
+            extensao = ".png"
+        nome_arquivo = f"print{extensao}"
+
+        try:
+            arquivo = await anexo.to_file(filename=nome_arquivo, use_cached=True)
         except Exception:
             log.error("Erro ao baixar print de fabricacao de colete", exc_info=True)
-            await interaction.edit_original_response(
-                embed=discord.Embed(
-                    title="Erro ao ler o print",
-                    description=(
-                        "Nao consegui baixar a imagem enviada. "
-                        "Tente registrar a fabricacao novamente."
-                    ),
-                    color=discord.Color.red(),
-                ),
-                view=self,
-            )
+            await v2.editar_original(interaction, montar_erro_print())
             return
 
         try:
-            await message.delete()
+            await mensagem.delete()
         except Exception:
             pass
 
-        materiais = self.materiais
-        db_registrar_fabricacao_colete(
+        materiais = calcular_fabricacao(quantidade)
+        fabricacao_id = db_registrar_fabricacao_colete(
             guild_id=str(interaction.guild_id),
             user_id=str(interaction.user.id),
             user_name=interaction.user.display_name,
-            quantidade=self.quantidade,
+            quantidade=quantidade,
             ferro=materiais["ferro"],
             plastico=materiais["plastico"],
             tecido=materiais["tecido"],
@@ -214,125 +500,82 @@ class ColeteConfirmView(discord.ui.View):
             custo=materiais["custo"],
         )
         log.info(
-            "Fabricacao registrada: user=%s qtd=%s custo=%s print=%s",
+            "Fabricacao #%s registrada: user=%s qtd=%s custo=%s print=%s",
+            fabricacao_id,
             interaction.user.id,
-            self.quantidade,
+            quantidade,
             materiais["custo"],
-            print_attachment.filename,
+            anexo.filename,
         )
 
-        log_embed = discord.Embed(
-            title="Fabricacao de Colete Registrada",
-            color=0xF1C40F,
-            timestamp=discord.utils.utcnow(),
+        componentes_log = montar_log(
+            fabricacao_id=fabricacao_id,
+            membro_id=interaction.user.id,
+            avatar_url=interaction.user.display_avatar.url,
+            quantidade=quantidade,
+            materiais=materiais,
+            canal_id=interaction.channel_id,
+            nome_arquivo=arquivo.filename,
+            quando_unix=int(time.time()),
         )
-        log_embed.add_field(
-            name="Membro",
-            value=interaction.user.mention,
-            inline=True,
-        )
-        log_embed.add_field(name="Produto", value="Colete", inline=True)
-        log_embed.add_field(name="Quantidade", value=str(self.quantidade), inline=True)
-        log_embed.add_field(
-            name="Gasto total",
-            value=_fmt_money(materiais["custo"]),
-            inline=True,
-        )
-        log_embed.add_field(
-            name="Materiais gastos",
-            value=(
-                f"Ferro: `{materiais['ferro']}`\n"
-                f"Plastico: `{materiais['plastico']}`\n"
-                f"Tecido: `{materiais['tecido']}`\n"
-                f"Aluminio: `{materiais['aluminio']}`\n"
-                f"Borracha: `{materiais['borracha']}`"
-            ),
-            inline=True,
-        )
-        log_embed.add_field(name="Canal", value=interaction.channel.mention, inline=True)
-        log_embed.set_image(url=f"attachment://{print_file.filename}")
-        log_embed.set_footer(text="Morro do Mineiro - Fabricacao de Coletes")
-
-        log_enviado = await send_log(
-            interaction.client,
-            interaction.guild,
-            "colete",
-            log_embed,
-            files=[print_file],
-            fallback_channel_id=LOG_FABRICACAO_CHANNEL_ID,
-        )
-        await interaction.edit_original_response(
-            embed=_criar_embed_sucesso(self.quantidade, log_enviado),
-            view=self,
+        canal_log_id = await self._postar_log(
+            interaction.guild_id, componentes_log, arquivo
         )
 
-    @discord.ui.button(label="CANCELAR", style=discord.ButtonStyle.danger)
-    async def cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self._desativar()
-        embed = discord.Embed(
-            title="Fabricacao cancelada",
-            description="Nenhuma fabricacao foi registrada.",
-            color=discord.Color.red(),
-        )
-        await interaction.response.edit_message(embed=embed, view=self)
-
-    def _desativar(self):
-        for item in self.children:
-            item.disabled = True
-        self.stop()
-
-
-class ColetePanelView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-        options = []
-        for quantidade in QUANTIDADES:
-            materiais = calcular_fabricacao(quantidade)
-            nome = _nome_colete(quantidade)
-            options.append(
-                discord.SelectOption(
-                    label=(
-                        f"{quantidade} {nome.title()} - "
-                        f"{_fmt_money(materiais['custo'])}"
-                    ),
-                    description=(
-                        f"Ferro: {materiais['ferro']} | Plastico: {materiais['plastico']} "
-                        f"| Tecido: {materiais['tecido']} | Aluminio: {materiais['aluminio']} "
-                        f"| Borracha: {materiais['borracha']}"
-                    ),
-                    value=str(quantidade),
-                )
+        try:
+            await v2.editar_original(
+                interaction,
+                montar_sucesso(
+                    fabricacao_id, quantidade, materiais["custo"], canal_log_id
+                ),
             )
+        except discord.HTTPException as exc:
+            log.warning("Nao consegui editar a resposta de sucesso: %s", exc)
 
-        select = discord.ui.Select(
-            placeholder="Selecione de 1 a 10 coletes...",
-            options=options,
-            custom_id="colete:select",
-        )
-        select.callback = self._select_callback
-        self.add_item(select)
+        await self._atualizar_painel(interaction.guild_id)
 
-    async def _select_callback(self, interaction: discord.Interaction):
-        quantidade = int(interaction.data["values"][0])
-        materiais = calcular_fabricacao(quantidade)
-        await interaction.response.send_message(
-            embed=_criar_embed_confirmacao(quantidade, materiais),
-            view=ColeteConfirmView(quantidade, materiais),
-            ephemeral=True,
-        )
+    async def _postar_log(
+        self,
+        guild_id: int,
+        componentes: list[dict[str, Any]],
+        arquivo: discord.File,
+    ) -> int | None:
+        """Posta o log no canal configurado e, se falhar, no canal de fallback."""
+        canais: list[int] = []
+        config = db_get_system_config(str(guild_id), "colete")
+        if config and config["canal_log_id"]:
+            canais.append(int(config["canal_log_id"]))
+        if LOG_FABRICACAO_CHANNEL_ID not in canais:
+            canais.append(LOG_FABRICACAO_CHANNEL_ID)
 
+        for canal_id in canais:
+            try:
+                await v2.enviar_canal(self.bot.http, canal_id, componentes, [arquivo])
+                return canal_id
+            except discord.HTTPException as exc:
+                log.error("Erro ao enviar log de colete (canal=%s): %s", canal_id, exc)
+        return None
 
-class ColeteCog(commands.Cog):
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
+    async def _atualizar_painel(self, guild_id: int):
+        """Atualiza a linha Hoje/Semana do painel fixo apos cada registro."""
+        canal_id, mensagem_id = db_get_painel_colete(str(guild_id))
+        if not (canal_id and mensagem_id):
+            return
+        try:
+            await v2.editar_mensagem(
+                self.bot.http,
+                int(canal_id),
+                int(mensagem_id),
+                montar_painel(db_resumo_coletes(str(guild_id))),
+            )
+        except discord.HTTPException as exc:
+            log.warning("Nao consegui atualizar o painel de coletes: %s", exc)
 
-    async def cog_load(self):
-        self.bot.add_view(ColetePanelView())
+    # Comando ----------------------------------------------------------------
 
     @app_commands.command(
         name="colete",
-        description="Posta o painel de fabricacao de coletes neste canal.",
+        description="Posta o painel de fabricação de coletes neste canal.",
     )
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -358,11 +601,15 @@ class ColeteCog(commands.Cog):
                 except Exception:
                     pass
 
-        message = await canal.send(embed=_criar_embed_painel(), view=ColetePanelView())
+        mensagem = await v2.enviar_canal(
+            self.bot.http,
+            canal.id,
+            montar_painel(db_resumo_coletes(guild_id)),
+        )
         db_set_guild_config(
             guild_id,
             painel_colete_channel_id=str(canal.id),
-            painel_colete_message_id=str(message.id),
+            painel_colete_message_id=str(mensagem["id"]),
         )
         await interaction.followup.send(
             f"Painel de coletes postado em {canal.mention}!",
@@ -370,7 +617,7 @@ class ColeteCog(commands.Cog):
         )
         log.info(
             "Painel de coletes postado: message_id=%s (guild %s)",
-            message.id,
+            mensagem["id"],
             guild_id,
         )
 
