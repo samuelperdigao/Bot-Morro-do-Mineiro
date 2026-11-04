@@ -224,8 +224,12 @@ Observacao: `/acao` aparece duas vezes em `cogs/acao.py`; validar no startup se 
 | [ ] | Bau: `ClearConfirmView` | Confirma/cancela zerar bau. |
 | [ ] | Bau gerentes: `/bau_gerentes_setup` | Posta painel. |
 | [ ] | Bau gerentes: botoes/selects | Configuram/removem gerentes por slot. |
-| [ ] | Colete: `/colete` | Abre fluxo de quantidade e confirmacao. |
-| [ ] | Colete: `ColeteConfirmView` | Confirma/cancela e trata timeout de print. |
+| [ ] | Colete: `/colete` | Posta o painel V2 novo e so entao remove o anterior; o rodape mostra Hoje/Semana. |
+| [ ] | Colete: atalhos `colete:q:*` e `colete:outra` | Atalho abre o passo ephemeral; "Outra quantidade" abre modal sem limite superior. |
+| [ ] | Colete: stepper `colete:step:*` e `colete:edit:*` | Recalcula materiais e custo na mesma mensagem; nunca fica abaixo de 1. |
+| [ ] | Colete: `colete:ok:*` e `colete:abort` | Espera o print com contagem regressiva; Cancelar e timeout nao registram nada; segunda fabricacao pendente e recusada. |
+| [ ] | Colete: print enviado | Registra, credita no Bau da Gerencia, posta log V2 com o print e atualiza o painel. |
+| [ ] | Colete: painel antigo (`colete:select`/`colete:faixa`) | Responde que o painel esta desatualizado. |
 | [ ] | Disparo: `/painel_disparo` | Posta painel. |
 | [ ] | Disparo: `BroadcastView` | Abre modal e confirma/exclui disparos. |
 | [ ] | Farm advertencias: `/setup_farm_advertencias` | Configura cargos. |
