@@ -95,6 +95,11 @@ corresponder a um template.
   `ausencias` deixou de receber gravações e só permanece para rollback de código.
   `ausencias.json`, se existir, é importado no startup e renomeado para
   `.migrated`.
+- Encomendas: `encomendas` (número sequencial por servidor, status e IDs das
+  mensagens em #pedidos/#entregues) e `encomenda_eventos` (histórico). Regras
+  em `services/encomenda_core.py`, sem dependência do Discord. Canais em
+  `system_config` (sistema `encomenda`): `canal_pedidos_id` e
+  `canal_entregues_id`, adicionados pela migração versionada 6.
 - Dados locais auxiliares: JSONs em `data/`, não versionados.
 - Segredos e caminhos de operação: `.env` e `oracle.key`, não versionados.
 - Logs: arquivos por sistema em `logs/`, não versionados.

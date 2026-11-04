@@ -1375,6 +1375,32 @@ def db_get_all_system_configs(guild_id: str):
     ).fetchall()
 
 
+def db_get_encomenda_canais(guild_id: str) -> tuple[str | None, str | None]:
+    """Retorna (canal_pedidos_id, canal_entregues_id) do sistema de encomendas."""
+    row = get_conn().execute(
+        """SELECT canal_pedidos_id, canal_entregues_id FROM system_config
+           WHERE guild_id=? AND sistema='encomenda'""",
+        (guild_id,),
+    ).fetchone()
+    if row is None:
+        return None, None
+    return row["canal_pedidos_id"], row["canal_entregues_id"]
+
+
+def db_set_encomenda_canais(guild_id: str, canal_pedidos_id: str, canal_entregues_id: str) -> None:
+    """Grava os canais de pedidos/entregues sem tocar em canal_interacao_id/canal_log_id."""
+    conn = get_conn()
+    conn.execute(
+        """INSERT INTO system_config (guild_id, sistema, canal_pedidos_id, canal_entregues_id)
+           VALUES (?, 'encomenda', ?, ?)
+           ON CONFLICT(guild_id, sistema) DO UPDATE SET
+               canal_pedidos_id=excluded.canal_pedidos_id,
+               canal_entregues_id=excluded.canal_entregues_id""",
+        (guild_id, canal_pedidos_id, canal_entregues_id),
+    )
+    conn.commit()
+
+
 # ── Ações ─────────────────────────────────────────────────────────────────────
 
 def db_set_request_create(

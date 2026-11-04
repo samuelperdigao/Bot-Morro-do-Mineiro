@@ -263,12 +263,48 @@ Painel embed fixo no canal configurado via dashboard (sistema "acao").
 
 ### I) `cogs/encomenda.py` — Encomendas
 
+> Atualizado em 03/11/2026 (Fase 1: fluxo Registro → Pedidos → Entregues).
+
+**Fluxo com 3 canais:**
+1. Painel fixo (`canal_interacao_id` ou, na falta, `guild_config.canal_encomendas_id`)
+   com o botão `encomenda_painel:registrar` → modal com Família, Quantidade,
+   Valor (R$), Data e Observação (opcional, até 300).
+2. Tudo é validado antes de gravar (`parse_quantidade`, `parse_valor_centavos`,
+   `normalize_date_br`). A encomenda recebe número sequencial por servidor
+   (#001, #002…) e é postada em `#pedidos` com status **Pendente**.
+   Se o envio falhar, o registro é excluído (nunca fica órfão).
+3. Em `#pedidos`, a `PedidoView` (persistente) tem os botões
+   `encomenda_pedido:producao`, `:pronta`, `:entregue` e `:cancelar`. O pedido é
+   localizado pelo ID da mensagem. O mesmo embed é editado a cada clique, e os
+   botões que não fazem sentido no status atual ficam desabilitados.
+4. **Entregue** e **Cancelar** pedem confirmação (60s, só quem clicou). Ao
+   confirmar: transição atômica, embed final sem botões em `#entregues`, e a
+   mensagem de `#pedidos` é apagada. Sem `#entregues` acessível, nada muda.
+5. O solicitante recebe DM a cada mudança. Se a DM falhar na finalização, ele
+   é mencionado na mensagem de `#entregues`.
+
+**Status:** `pendente` → `em_producao` → `pronta` → `entregue` | `cancelada`.
+Só avança (pode pular etapas); estados finais não saem. A transição é um
+compare-and-set (`BEGIN IMMEDIATE` + `UPDATE ... WHERE status=?`): dois cliques
+simultâneos resultam em uma única mudança, e o perdedor vê
+"Alguém já atualizou esta encomenda".
+
+**Permissão para mudar status:** `is_lideranca` com
+`db_get_lideranca_role_ids` (cargos de liderança do farm; administrador e
+`manage_guild` também passam).
+
 **Slash Commands:**
 | Comando | Permissão | Descrição |
 |---------|-----------|-----------|
-| `/encomenda` | Nenhuma | Abre modal se canal estiver configurado |
+| `/encomenda` | Nenhuma | Abre o mesmo modal do painel (exige `#pedidos` configurado) |
+| `/setup_encomenda_painel` | manage_guild | Posta o painel no canal de encomendas |
+| `/setup_encomenda_canais` | manage_guild | Define `#pedidos` e `#entregues` (valida permissões do bot) |
+| `/setup_encomenda` (`cogs/setup.py`) | administrator | Define `guild_config.canal_encomendas_id`, usado como canal do painel |
 
-**Log (V2):** após registrar encomenda, envia embed dourado via `send_log(..., "encomenda", ...)`
+**Banco:** `encomendas`, `encomenda_eventos` (`criada`, `status`, `erro`) e
+`system_config.canal_pedidos_id` / `canal_entregues_id` (migração versionada 6).
+
+**Log:** registro e cada mudança de status via `send_log(..., "encomenda", ...)`.
 
 ---
 

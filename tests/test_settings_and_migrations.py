@@ -28,7 +28,7 @@ class SchemaMigrationTests(unittest.TestCase):
             ).fetchone()[0]
             conn.close()
 
-            self.assertEqual(versions, [1, 2, 3, 4, 5])
+            self.assertEqual(versions, [1, 2, 3, 4, 5, 6])
             self.assertEqual(pending_table, 1)
 
     def test_absences_are_copied_to_history_and_legacy_table_is_preserved(self):

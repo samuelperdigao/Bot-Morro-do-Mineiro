@@ -1,5 +1,28 @@
 # Changelog
 
+## 03/11/2026
+
+### Encomendas — Fase 1: fluxo Registro → Pedidos → Entregues
+
+- As encomendas passaram a ser gravadas no banco com numero sequencial por
+  servidor (#001, #002...), status e historico de eventos.
+- O modal de registro ganhou o campo Observacao (opcional) e valida
+  quantidade, valor e data antes de gravar qualquer coisa.
+- Cada encomenda e postada em #pedidos com os botoes Em producao, Pronta,
+  Entregue e Cancelar, que continuam funcionando apos reiniciar o bot.
+- Somente lider, vice-lider e gerente (cargos de lideranca, administrador ou
+  gerenciar servidor) podem mudar o status.
+- Entregue e Cancelar pedem confirmacao, arquivam a encomenda em #entregues
+  sem botoes e apagam a mensagem de #pedidos.
+- Mudancas de status sao atomicas: cliques simultaneos geram uma unica
+  transicao.
+- O solicitante e avisado por DM a cada mudanca de status.
+- Novo comando `/setup_encomenda_canais` para definir #pedidos e #entregues.
+- `/setup_encomenda_painel` passou a aceitar o canal definido por
+  `/setup_encomenda` quando o dashboard nao configurou o sistema.
+- Novas tabelas `encomendas` e `encomenda_eventos`; migracao versionada 6
+  adiciona os canais em `system_config`.
+
 ## 08/06/2026 a 09/06/2026
 
 Alteracoes finalizadas e validadas no estado atual do bot.

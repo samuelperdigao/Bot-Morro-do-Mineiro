@@ -433,6 +433,49 @@ CREATE TABLE IF NOT EXISTS parcerias (
 
 CREATE INDEX IF NOT EXISTS idx_parcerias_guild_ativo
 ON parcerias (guild_id, ativo, nome_familia);
+
+CREATE TABLE IF NOT EXISTS encomendas (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id           TEXT NOT NULL,
+    numero             INTEGER NOT NULL,
+    familia            TEXT NOT NULL,
+    quantidade         INTEGER NOT NULL CHECK (quantidade > 0),
+    valor_centavos     INTEGER NOT NULL CHECK (valor_centavos > 0),
+    data               TEXT NOT NULL,
+    observacao         TEXT,
+    status             TEXT NOT NULL DEFAULT 'pendente'
+                       CHECK (status IN ('pendente', 'em_producao', 'pronta', 'entregue', 'cancelada')),
+    solicitante_id     TEXT NOT NULL,
+    responsavel_id     TEXT,
+    pedidos_channel_id TEXT,
+    pedidos_message_id TEXT,
+    arquivo_channel_id TEXT,
+    arquivo_message_id TEXT,
+    criado_em          TEXT NOT NULL,
+    atualizado_em      TEXT NOT NULL,
+    finalizado_em      TEXT,
+    UNIQUE (guild_id, numero)
+);
+
+CREATE INDEX IF NOT EXISTS idx_encomendas_status
+ON encomendas (guild_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_encomendas_pedidos_message
+ON encomendas (pedidos_message_id);
+
+CREATE TABLE IF NOT EXISTS encomenda_eventos (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    encomenda_id INTEGER NOT NULL,
+    tipo         TEXT NOT NULL,
+    de_status    TEXT,
+    para_status  TEXT,
+    user_id      TEXT,
+    detalhe      TEXT,
+    criado_em    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_encomenda_eventos_encomenda
+ON encomenda_eventos (encomenda_id, id);
 """
 
 LEGACY_COLUMN_MIGRATIONS = (
@@ -633,12 +676,27 @@ def _apply_ausencias_historico(conn: sqlite3.Connection) -> bool:
     return True
 
 
+ENCOMENDA_SYSTEM_CONFIG_COLUMNS = (
+    ("system_config", "canal_pedidos_id", "TEXT"),
+    ("system_config", "canal_entregues_id", "TEXT"),
+)
+
+
+def _apply_encomenda_canais(conn: sqlite3.Connection) -> bool:
+    # A migração 1 já foi aplicada nas bases existentes; colunas novas precisam
+    # de uma versão própria para chegar até elas.
+    for table, column, definition in ENCOMENDA_SYSTEM_CONFIG_COLUMNS:
+        _ensure_column(conn, table, column, definition)
+    return True
+
+
 VERSIONED_MIGRATIONS = (
     (1, "ensure legacy columns", _apply_legacy_columns),
     (2, "ensure persistent set requests", _apply_set_request_schema),
     (3, "ensure active farm ticket index", _apply_farm_active_ticket_index),
     (4, "ensure pending member folders", _apply_pending_member_folders),
     (5, "copy absences to history table", _apply_ausencias_historico),
+    (6, "ensure encomenda channels in system_config", _apply_encomenda_canais),
 )
 
 
