@@ -2,6 +2,8 @@
 cogs/acao.py - Sistema de Ações para o bot Morro do Mineiro.
 """
 
+import re
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -9,6 +11,7 @@ from discord.ext import commands
 from core.date_utils import DATE_BR_EXAMPLE, normalize_date_br
 from core.logger import get_logger
 from core.permissions import is_lideranca
+from services import acao_service
 from services.db_service import db_get_lideranca_role_ids, db_get_system_config
 
 log = get_logger("acao", "acao.log")
@@ -33,9 +36,22 @@ ACOES: dict[str, dict] = {
 }
 
 
+HORARIO_RE = re.compile(r"^([01]?[0-9]|2[0-3])[:hH]([0-5][0-9])$")
+MENCOES_POR_FIELD = 35  # "• <@id>" tem até ~25 caracteres: 35 cabem em 1024
+MAX_FIELDS_PARTICIPANTES = 3
+
+
+def normalizar_horario(raw: str) -> str:
+    """Aceita 21:00, 21h00, 9:30 e devolve HH:MM."""
+    m = HORARIO_RE.match((raw or "").strip())
+    if not m:
+        raise ValueError("Horário inválido. Use o formato **HH:MM** (ex.: 21:00).")
+    return f"{int(m.group(1)):02d}:{m.group(2)}"
+
+
 def _build_regras_embed(
     acao_key: str,
-    membros_inscritos: list[discord.Member] | None = None,
+    inscritos: list[str] | None = None,
     horario: str | None = None,
     tipo: str | None = None,
     data: str | None = None,
@@ -72,20 +88,88 @@ def _build_regras_embed(
     embed.add_field(name="👤 Reféns",     value=acao["refens"],     inline=True)
     if acao["obs"]:
         embed.add_field(name="📋 Observações", value="\n".join(f"• {o}" for o in acao["obs"]), inline=False)
-    if membros_inscritos:
-        embed.add_field(name=f"✅ Participantes ({len(membros_inscritos)})", value="\n".join(f"• {m.mention}" for m in membros_inscritos), inline=False)
+    inscritos = inscritos or []
+    if inscritos:
+        vagas = f"/{max_b}" if max_b else ""
+        # Até 3 blocos (~105 nomes) para manter o embed abaixo de 6000 caracteres.
+        visiveis = inscritos[:MENCOES_POR_FIELD * MAX_FIELDS_PARTICIPANTES]
+        for inicio in range(0, len(visiveis), MENCOES_POR_FIELD):
+            bloco = visiveis[inicio:inicio + MENCOES_POR_FIELD]
+            nome = f"✅ Participantes ({len(inscritos)}{vagas})" if inicio == 0 else "✅ Participantes (cont.)"
+            valor = "\n".join(f"• <@{uid}>" for uid in bloco)
+            if inicio + MENCOES_POR_FIELD >= len(visiveis) and len(inscritos) > len(visiveis):
+                valor += f"\n… e mais {len(inscritos) - len(visiveis)}"
+            embed.add_field(name=nome, value=valor[:1024], inline=False)
     else:
         embed.add_field(name="✅ Participantes", value="Nenhum inscrito ainda", inline=False)
-    embed.set_footer(text="Use os botões abaixo para se inscrever ou remover")
+    embed.set_footer(text="Morro do Mineiro — Sistema de Ações • use os botões para se inscrever")
     return embed
 
 
+def _embed_da_acao(acao) -> discord.Embed:
+    return _build_regras_embed(
+        acao["acao_key"], acao_service.inscritos(acao["id"]), acao["horario"], acao["tipo"], acao["data"]
+    )
+
+
+def _embed_encerrada(acao, encerrado_por: str) -> discord.Embed:
+    nome = ACOES[acao["acao_key"]]["nome"]
+    ids = acao_service.inscritos(acao["id"])
+    embed = discord.Embed(
+        title=f"🔒 Ação Encerrada — {nome}",
+        description=f"Encerrada por <@{encerrado_por}>",
+        color=discord.Color.greyple(),
+        timestamp=discord.utils.utcnow(),
+    )
+    valor = ", ".join(f"<@{uid}>" for uid in ids) if ids else "Nenhum"
+    if len(valor) > 1024:
+        valor = valor[:1000].rsplit(",", 1)[0] + f", … (+{len(ids)} no total)"
+    embed.add_field(name=f"✅ Participantes finais ({len(ids)})", value=valor, inline=False)
+    embed.set_footer(text="Morro do Mineiro — Sistema de Ações")
+    return embed
+
+
+def _view_encerrada() -> "AcaoParticipantesView":
+    view = AcaoParticipantesView()
+    for item in view.children:
+        item.disabled = True
+    return view
+
+
+async def _atualizar_painel(client: discord.Client, acao) -> None:
+    """Reedita a mensagem do painel com os inscritos atuais."""
+    if not acao["message_id"]:
+        return
+    try:
+        canal = client.get_channel(int(acao["channel_id"])) or await client.fetch_channel(int(acao["channel_id"]))
+        await canal.get_partial_message(int(acao["message_id"])).edit(embed=_embed_da_acao(acao))
+    except Exception as e:
+        log.warning("Não foi possível atualizar o painel da ação %s: %s", acao["id"], e)
+
+
 class AcaoSelectView(discord.ui.View):
-    def __init__(self, horario: str | None = None, tipo: str | None = None, data: str | None = None):
-        super().__init__(timeout=120)
+    def __init__(
+        self,
+        horario: str | None = None,
+        tipo: str | None = None,
+        data: str | None = None,
+        iniciador_id: int | None = None,
+    ):
+        super().__init__(timeout=600)
         self.horario = horario
         self.tipo    = tipo
         self.data    = data
+        self.iniciador_id = iniciador_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if self.iniciador_id is None or interaction.user.id == self.iniciador_id:
+            return True
+        if is_lideranca(interaction.user, db_get_lideranca_role_ids(str(interaction.guild_id))):
+            return True
+        await interaction.response.send_message(
+            "❌ Apenas quem iniciou a ação ou a liderança pode escolher a ação.", ephemeral=True
+        )
+        return False
 
     @discord.ui.select(
         placeholder="Escolha a ação...", min_values=1, max_values=1,
@@ -93,216 +177,185 @@ class AcaoSelectView(discord.ui.View):
     )
     async def selecionar_acao(self, interaction: discord.Interaction, select: discord.ui.Select):
         acao_key = select.values[0]
-        embed    = _build_regras_embed(acao_key, horario=self.horario, tipo=self.tipo, data=self.data)
-        view     = AcaoParticipantesView(acao_key=acao_key, horario=self.horario, tipo=self.tipo, data=self.data)
-        await interaction.response.send_message(embed=embed, view=view)
-        log.info(f"{interaction.user} abriu painel de ação: {ACOES[acao_key]['nome']}")
+        acao_id = acao_service.criar_acao(
+            str(interaction.guild_id), str(interaction.channel_id), acao_key,
+            str(interaction.user.id), self.data, self.horario, self.tipo,
+        )
+        embed = _build_regras_embed(acao_key, [], horario=self.horario, tipo=self.tipo, data=self.data)
+        view = AcaoParticipantesView()
+        try:
+            if interaction.message is not None and not interaction.message.flags.ephemeral:
+                # Transforma o seletor no painel: some o menu (sem escolha dupla).
+                await interaction.response.edit_message(embed=embed, view=view)
+                message = interaction.message
+            else:
+                await interaction.response.send_message(embed=embed, view=view)
+                message = await interaction.original_response()
+        except Exception:
+            acao_service.excluir_acao(acao_id)
+            raise
+        acao_service.salvar_mensagem(acao_id, str(message.channel.id), str(message.id))
+        self.stop()
+        log.info(f"{interaction.user} abriu painel de ação: {ACOES[acao_key]['nome']} (id={acao_id})")
 
 
 class AcaoParticipantesView(discord.ui.View):
-    def __init__(self, acao_key: str, horario: str | None = None, tipo: str | None = None, data: str | None = None):
+    """View única e sem estado: a ação é localizada pela mensagem clicada."""
+
+    def __init__(self):
         super().__init__(timeout=None)
-        self.acao_key = acao_key
-        self.horario  = horario
-        self.tipo     = tipo
-        self.data     = data
-        self.inscritos: list[discord.Member] = []
 
-    def _max_bandidos(self) -> int | None:
-        return ACOES[self.acao_key]["max_bandidos"]
+    async def _acao(self, interaction: discord.Interaction):
+        acao = acao_service.get_por_mensagem(str(interaction.message.id)) if interaction.message else None
+        if acao is None:
+            await interaction.response.send_message(
+                "⚠️ Esta ação foi criada antes da atualização do bot e não pode mais ser alterada. "
+                "Inicie uma nova ação.",
+                ephemeral=True,
+            )
+            return None
+        if acao["status"] != acao_service.ABERTA:
+            await interaction.response.send_message("🔒 Esta ação já foi encerrada.", ephemeral=True)
+            return None
+        return acao
 
-    def _esta_inscrito(self, member: discord.Member) -> bool:
-        return any(m.id == member.id for m in self.inscritos)
-
-    def _atualizar_embed(self) -> discord.Embed:
-        return _build_regras_embed(self.acao_key, self.inscritos, self.horario, self.tipo, self.data)
+    @staticmethod
+    def _eh_lideranca(interaction: discord.Interaction) -> bool:
+        return is_lideranca(interaction.user, db_get_lideranca_role_ids(str(interaction.guild_id)))
 
     @discord.ui.button(label="✅ Entrar na ação", style=discord.ButtonStyle.success, custom_id="acao:entrar")
     async def entrar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        member = interaction.user
-        max_b  = self._max_bandidos()
-        if self._esta_inscrito(member):
+        acao = await self._acao(interaction)
+        if acao is None:
+            return
+        nome = ACOES[acao["acao_key"]]["nome"]
+        max_b = ACOES[acao["acao_key"]]["max_bandidos"]
+        resultado = acao_service.inscrever(acao["id"], str(interaction.user.id), str(interaction.user.id), max_b)
+        if resultado == "ja_inscrito":
             await interaction.response.send_message("⚠️ Você já está inscrito nesta ação.", ephemeral=True)
             return
-        if max_b and len(self.inscritos) >= max_b:
+        if resultado == "lotada":
             await interaction.response.send_message(f"❌ Vagas esgotadas (máximo: {max_b} participantes).", ephemeral=True)
             return
-        self.inscritos.append(member)
-        log.info(f"{member} entrou na ação '{ACOES[self.acao_key]['nome']}'")
-        await interaction.response.edit_message(embed=self._atualizar_embed(), view=self)
-        await interaction.followup.send(f"✅ {member.mention} inscrito na ação **{ACOES[self.acao_key]['nome']}**!", ephemeral=True)
+        if resultado == "encerrada":
+            await interaction.response.send_message("🔒 Esta ação já foi encerrada.", ephemeral=True)
+            return
+        log.info(f"{interaction.user} entrou na ação '{nome}' (id={acao['id']})")
+        await interaction.response.edit_message(embed=_embed_da_acao(acao), view=self)
+        await interaction.followup.send(f"✅ {interaction.user.mention} inscrito na ação **{nome}**!", ephemeral=True)
 
     @discord.ui.button(label="🚪 Sair da ação", style=discord.ButtonStyle.danger, custom_id="acao:sair")
     async def sair(self, interaction: discord.Interaction, button: discord.ui.Button):
-        member = interaction.user
-        if not self._esta_inscrito(member):
+        acao = await self._acao(interaction)
+        if acao is None:
+            return
+        if acao_service.remover(acao["id"], str(interaction.user.id)) != "ok":
             await interaction.response.send_message("⚠️ Você não está inscrito nesta ação.", ephemeral=True)
             return
-        self.inscritos = [m for m in self.inscritos if m.id != member.id]
-        log.info(f"{member} saiu da ação '{ACOES[self.acao_key]['nome']}'")
-        await interaction.response.edit_message(embed=self._atualizar_embed(), view=self)
-        await interaction.followup.send(f"🚪 {member.mention} removido da ação.", ephemeral=True)
+        log.info(f"{interaction.user} saiu da ação '{ACOES[acao['acao_key']]['nome']}' (id={acao['id']})")
+        await interaction.response.edit_message(embed=_embed_da_acao(acao), view=self)
+        await interaction.followup.send(f"🚪 {interaction.user.mention} removido da ação.", ephemeral=True)
 
     @discord.ui.button(label="➕ Adicionar membro", style=discord.ButtonStyle.secondary, custom_id="acao:adicionar")
     async def adicionar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        lideranca_ids = db_get_lideranca_role_ids(str(interaction.guild_id))
-        if not is_lideranca(interaction.user, lideranca_ids):
+        if not self._eh_lideranca(interaction):
             await interaction.response.send_message("❌ Apenas liderança pode adicionar membros.", ephemeral=True)
             return
-        membros = sorted(
-            [m for m in interaction.guild.members if not m.bot and not self._esta_inscrito(m)],
-            key=lambda m: m.display_name.lower(),
-        )
-        if not membros:
-            await interaction.response.send_message("⚠️ Nenhum membro disponível para adicionar.", ephemeral=True)
+        acao = await self._acao(interaction)
+        if acao is None:
             return
-        total = max(1, (len(membros) + AdicionarMembroPaginadoView.POR_PAGINA - 1) // AdicionarMembroPaginadoView.POR_PAGINA)
         await interaction.response.send_message(
-            f"Selecione o membro para adicionar à ação (página 1/{total}):",
-            view=AdicionarMembroPaginadoView(painel_view=self, painel_msg=interaction.message, membros=membros),
+            "Selecione o membro para adicionar à ação:",
+            view=GerenciarMembroView(acao["id"], adicionar=True),
             ephemeral=True,
         )
 
     @discord.ui.button(label="➖ Remover membro", style=discord.ButtonStyle.secondary, custom_id="acao:remover")
     async def remover(self, interaction: discord.Interaction, button: discord.ui.Button):
-        lideranca_ids = db_get_lideranca_role_ids(str(interaction.guild_id))
-        if not is_lideranca(interaction.user, lideranca_ids):
+        if not self._eh_lideranca(interaction):
             await interaction.response.send_message("❌ Apenas liderança pode remover membros.", ephemeral=True)
             return
-        if not self.inscritos:
+        acao = await self._acao(interaction)
+        if acao is None:
+            return
+        if not acao_service.inscritos(acao["id"]):
             await interaction.response.send_message("⚠️ Nenhum membro inscrito para remover.", ephemeral=True)
             return
         await interaction.response.send_message(
             "Selecione o membro que deseja remover da ação:",
-            view=RemoverMembroView(painel_view=self, painel_msg=interaction.message),
+            view=GerenciarMembroView(acao["id"], adicionar=False),
             ephemeral=True,
         )
 
     @discord.ui.button(label="🔒 Encerrar ação", style=discord.ButtonStyle.danger, custom_id="acao:encerrar", row=1)
     async def encerrar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        lideranca_ids = db_get_lideranca_role_ids(str(interaction.guild_id))
-        if not is_lideranca(interaction.user, lideranca_ids):
+        if not self._eh_lideranca(interaction):
             await interaction.response.send_message("❌ Apenas liderança pode encerrar a ação.", ephemeral=True)
             return
-        acao_nome = ACOES[self.acao_key]["nome"]
-        nomes     = ", ".join(m.display_name for m in self.inscritos) if self.inscritos else "Nenhum"
-        embed_final = discord.Embed(
-            title=f"🔒 Ação Encerrada — {acao_nome}",
-            description=f"Encerrada por {interaction.user.mention}",
-            color=discord.Color.greyple(), timestamp=discord.utils.utcnow(),
-        )
-        embed_final.add_field(name=f"✅ Participantes finais ({len(self.inscritos)})", value=nomes, inline=False)
-        self.stop()
-        for item in self.children: item.disabled = True
-        await interaction.response.edit_message(embed=embed_final, view=self)
-        log.info(f"{interaction.user} encerrou a ação '{acao_nome}' com {len(self.inscritos)} participante(s)")
-
-
-class AdicionarMembroPaginadoView(discord.ui.View):
-    POR_PAGINA = 20
-
-    def __init__(self, painel_view: "AcaoParticipantesView", painel_msg: discord.Message, membros: list[discord.Member], pagina: int = 0):
-        super().__init__(timeout=60)
-        self.painel_view = painel_view
-        self.painel_msg  = painel_msg
-        self.membros     = membros
-        self.pagina      = pagina
-        self._rebuild()
-
-    def _total_paginas(self) -> int:
-        return max(1, (len(self.membros) + self.POR_PAGINA - 1) // self.POR_PAGINA)
-
-    def _rebuild(self):
-        self.clear_items()
-        inicio = self.pagina * self.POR_PAGINA
-        fatia  = self.membros[inicio : inicio + self.POR_PAGINA]
-        opcoes = [
-            discord.SelectOption(label=m.display_name[:100], value=str(m.id))
-            for m in fatia
-        ]
-        sel = discord.ui.Select(
-            placeholder=f"Membros (pág. {self.pagina + 1}/{self._total_paginas()})...",
-            min_values=1, max_values=1, options=opcoes,
-        )
-        sel.callback = self._on_select
-        self.add_item(sel)
-
-        if self._total_paginas() > 1:
-            prev = discord.ui.Button(label="◀", style=discord.ButtonStyle.secondary,
-                                     disabled=self.pagina == 0)
-            prev.callback = self._prev
-            self.add_item(prev)
-            nxt = discord.ui.Button(label="▶", style=discord.ButtonStyle.secondary,
-                                    disabled=self.pagina >= self._total_paginas() - 1)
-            nxt.callback = self._next
-            self.add_item(nxt)
-
-    async def _on_select(self, interaction: discord.Interaction):
-        member_id = int(interaction.data["values"][0])
-        member    = interaction.guild.get_member(member_id)
-        if not member:
-            try:
-                member = await interaction.guild.fetch_member(member_id)
-            except Exception:
-                await interaction.response.edit_message(content="❌ Membro não encontrado no servidor.", view=None)
-                return
-        pv = self.painel_view
-        if pv._esta_inscrito(member):
-            await interaction.response.edit_message(content=f"⚠️ {member.display_name} já está inscrito.", view=None)
+        acao = await self._acao(interaction)
+        if acao is None:
             return
-        max_b = pv._max_bandidos()
-        if max_b and len(pv.inscritos) >= max_b:
-            await interaction.response.edit_message(content=f"❌ Vagas esgotadas (máximo: {max_b}).", view=None)
+        if not acao_service.encerrar(acao["id"], str(interaction.user.id)):
+            await interaction.response.send_message("🔒 Esta ação já foi encerrada.", ephemeral=True)
             return
-        pv.inscritos.append(member)
-        log.info("Liderança %s adicionou %s à ação '%s'", interaction.user, member, ACOES[pv.acao_key]["nome"])
-        await interaction.response.edit_message(content=f"✅ {member.mention} adicionado à ação!", view=None)
-        try:
-            await self.painel_msg.edit(embed=pv._atualizar_embed(), view=pv)
-        except Exception as e:
-            log.warning("Não foi possível atualizar painel após adicionar: %s", e)
-
-    async def _prev(self, interaction: discord.Interaction):
-        self.pagina -= 1
-        self._rebuild()
-        await interaction.response.edit_message(view=self)
-
-    async def _next(self, interaction: discord.Interaction):
-        self.pagina += 1
-        self._rebuild()
-        await interaction.response.edit_message(view=self)
+        await interaction.response.edit_message(
+            embed=_embed_encerrada(acao, str(interaction.user.id)), view=_view_encerrada()
+        )
+        log.info(
+            f"{interaction.user} encerrou a ação '{ACOES[acao['acao_key']]['nome']}' "
+            f"(id={acao['id']}) com {len(acao_service.inscritos(acao['id']))} participante(s)"
+        )
 
 
-class RemoverMembroView(discord.ui.View):
-    def __init__(self, painel_view: "AcaoParticipantesView", painel_msg: discord.Message):
-        super().__init__(timeout=60)
-        self.painel_view = painel_view
-        self.painel_msg  = painel_msg
-        options = [
-            discord.SelectOption(label=m.display_name[:100], value=str(m.id))
-            for m in painel_view.inscritos
-        ]
-        select = discord.ui.Select(
-            placeholder="Selecione o membro para remover...",
-            min_values=1, max_values=1,
-            options=options,
+class GerenciarMembroView(discord.ui.View):
+    """Adicionar/remover inscrito via seletor de usuário (sem limite de 25)."""
+
+    def __init__(self, acao_id: int, adicionar: bool):
+        super().__init__(timeout=120)
+        self.acao_id = acao_id
+        self.adicionar = adicionar
+        select = discord.ui.UserSelect(
+            placeholder="Selecione o membro..." if adicionar else "Selecione quem remover...",
+            min_values=1,
+            max_values=1,
         )
         select.callback = self._on_select
         self.add_item(select)
 
     async def _on_select(self, interaction: discord.Interaction):
-        member_id = int(interaction.data["values"][0])
-        member    = next((m for m in self.painel_view.inscritos if m.id == member_id), None)
-        if not member:
-            await interaction.response.edit_message(content="❌ Membro não encontrado na lista.", view=None)
+        membro = interaction.data.get("values", [None])[0]
+        acao = acao_service.get_acao(self.acao_id)
+        if acao is None or acao["status"] != acao_service.ABERTA:
+            await interaction.response.edit_message(content="🔒 Esta ação já foi encerrada.", view=None)
             return
-        self.painel_view.inscritos = [m for m in self.painel_view.inscritos if m.id != member_id]
-        log.info(f"Liderança {interaction.user} removeu {member} da ação '{ACOES[self.painel_view.acao_key]['nome']}'")
-        await interaction.response.edit_message(content=f"🚪 {member.mention} removido da ação.", view=None)
-        try:
-            await self.painel_msg.edit(embed=self.painel_view._atualizar_embed(), view=self.painel_view)
-        except Exception as e:
-            log.warning(f"Não foi possível atualizar painel após remover: {e}")
+        user = interaction.guild.get_member(int(membro)) if membro else None
+        if user is None or user.bot:
+            await interaction.response.edit_message(content="❌ Membro inválido.", view=None)
+            return
+        nome = ACOES[acao["acao_key"]]["nome"]
+        if self.adicionar:
+            max_b = ACOES[acao["acao_key"]]["max_bandidos"]
+            resultado = acao_service.inscrever(acao["id"], str(user.id), str(interaction.user.id), max_b)
+            mensagens = {
+                "ok": f"✅ {user.mention} adicionado à ação!",
+                "ja_inscrito": f"⚠️ {user.display_name} já está inscrito.",
+                "lotada": f"❌ Vagas esgotadas (máximo: {max_b}).",
+                "encerrada": "🔒 Esta ação já foi encerrada.",
+            }
+        else:
+            resultado = acao_service.remover(acao["id"], str(user.id))
+            mensagens = {
+                "ok": f"🚪 {user.mention} removido da ação.",
+                "nao_inscrito": f"⚠️ {user.display_name} não está inscrito.",
+                "encerrada": "🔒 Esta ação já foi encerrada.",
+            }
+        await interaction.response.edit_message(content=mensagens[resultado], view=None)
+        if resultado == "ok":
+            log.info(
+                "Liderança %s %s %s na ação '%s' (id=%s)",
+                interaction.user, "adicionou" if self.adicionar else "removeu", user, nome, acao["id"],
+            )
+            await _atualizar_painel(interaction.client, acao)
 
 
 class IniciarAcaoModal(discord.ui.Modal, title="⚡ Configurar Ação"):
@@ -335,7 +388,11 @@ class IniciarAcaoModal(discord.ui.Modal, title="⚡ Configurar Ação"):
         except ValueError as exc:
             await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
             return
-        horario_val = self.horario.value.strip()
+        try:
+            horario_val = normalizar_horario(self.horario.value)
+        except ValueError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
         tipo_val    = self.tipo_acao.value.strip().lower()
         if tipo_val not in ("fuga", "tiro"):
             await interaction.response.send_message(
@@ -366,13 +423,13 @@ class IniciarAcaoModal(discord.ui.Modal, title="⚡ Configurar Ação"):
                     canal = None
 
         if canal:
-            await canal.send(embed=embed, view=AcaoSelectView(horario=horario_val, tipo=tipo_val, data=data_val))
+            await canal.send(embed=embed, view=AcaoSelectView(horario=horario_val, tipo=tipo_val, data=data_val, iniciador_id=interaction.user.id))
             await interaction.followup.send(
                 f"✅ Seletor de ação aberto em {canal.mention}!", ephemeral=True
             )
         else:
             await interaction.followup.send(
-                embed=embed, view=AcaoSelectView(horario=horario_val, tipo=tipo_val, data=data_val)
+                embed=embed, view=AcaoSelectView(horario=horario_val, tipo=tipo_val, data=data_val, iniciador_id=interaction.user.id)
             )
         log.info(f"{interaction.user} iniciou ação via /acao — data: {data_val}, horário: {horario_val}, tipo: {tipo_val}")
 
@@ -387,6 +444,8 @@ class IniciarAcaoModal(discord.ui.Modal, title="⚡ Configurar Ação"):
 class AcaoCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # Uma única view persistente atende todos os painéis de ação.
+        bot.add_view(AcaoParticipantesView())
 
     @app_commands.command(name="acao", description="Abre o painel para iniciar uma ação.")
     async def acao(self, interaction: discord.Interaction):

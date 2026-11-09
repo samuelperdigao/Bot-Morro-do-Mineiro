@@ -206,6 +206,33 @@ CREATE TABLE IF NOT EXISTS set_solicitacoes (
 CREATE INDEX IF NOT EXISTS idx_set_solicitacoes_usuario
 ON set_solicitacoes (guild_id, user_id, status);
 
+CREATE TABLE IF NOT EXISTS acoes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id      TEXT NOT NULL,
+    channel_id    TEXT NOT NULL,
+    message_id    TEXT,
+    acao_key      TEXT NOT NULL,
+    data          TEXT,
+    horario       TEXT,
+    tipo          TEXT,
+    status        TEXT NOT NULL DEFAULT 'aberta',
+    criado_por    TEXT NOT NULL,
+    criado_em     TEXT NOT NULL,
+    encerrado_por TEXT,
+    encerrado_em  TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_acoes_mensagem
+ON acoes (message_id) WHERE message_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS acao_inscritos (
+    acao_id        INTEGER NOT NULL,
+    user_id        TEXT NOT NULL,
+    adicionado_por TEXT NOT NULL,
+    inscrito_em    TEXT NOT NULL,
+    PRIMARY KEY (acao_id, user_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_recolhimento_entregas_ciclo
 ON recolhimento_entregas (ciclo_id);
 
