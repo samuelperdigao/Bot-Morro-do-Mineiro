@@ -8,7 +8,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from cogs.set_views import SetPanelView
+from cogs.set_views import LegacyApprovalView, SetDecisaoButton, SetPanelView
 from core.config import APPLICATION_ID, TOKEN
 from core.error_reporting import (
     contexto_interacao,
@@ -39,6 +39,9 @@ class MyBot(commands.Bot):
         init_db()
         instalar_handlers_ui(self)
         self.add_view(SetPanelView())
+        # Aprovar/Reprovar de set: persistentes entre restarts.
+        self.add_dynamic_items(SetDecisaoButton)
+        self.add_view(LegacyApprovalView())
 
         for ext in COG_EXTENSIONS:
             try:

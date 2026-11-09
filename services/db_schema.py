@@ -189,6 +189,23 @@ WHERE status = 'aberto';
 CREATE INDEX IF NOT EXISTS idx_ponto_sessoes_guild_week_status
 ON ponto_sessoes (guild_id, week_id, status);
 
+CREATE TABLE IF NOT EXISTS set_solicitacoes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id      TEXT NOT NULL,
+    user_id       TEXT NOT NULL,
+    nome          TEXT NOT NULL,
+    id_jogo       TEXT NOT NULL,
+    channel_id    TEXT,
+    message_id    TEXT,
+    status        TEXT NOT NULL DEFAULT 'pendente',
+    criado_em     TEXT NOT NULL,
+    decidido_por  TEXT,
+    decidido_em   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_set_solicitacoes_usuario
+ON set_solicitacoes (guild_id, user_id, status);
+
 CREATE INDEX IF NOT EXISTS idx_recolhimento_entregas_ciclo
 ON recolhimento_entregas (ciclo_id);
 
