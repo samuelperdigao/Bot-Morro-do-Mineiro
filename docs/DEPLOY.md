@@ -53,6 +53,7 @@ Sem essas variáveis, erros e backups ficam só no servidor (`logs/` e `backups/
 ```bash
 cd /home/ubuntu/farmbot
 sudo systemctl stop farmbot
+rm -f data/farm.db-wal data/farm.db-shm
 gunzip -c backups/predeploy-farm-AAAAMMDD-HHMMSS.db.gz > data/farm.db
 sudo systemctl start farmbot
 ```
