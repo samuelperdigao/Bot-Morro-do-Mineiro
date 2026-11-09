@@ -861,18 +861,53 @@ class AdicionarMembroPaginadoView(discord.ui.View):
 
 
 class RemoverMembroView(discord.ui.View):
-    def __init__(self, acao_id: int, painel_msg: discord.Message, participantes):
+    # Paginado como o "Adicionar": antes só os 25 primeiros inscritos
+    # apareciam e os demais não podiam ser removidos.
+    POR_PAGINA = 20
+
+    def __init__(self, acao_id: int, painel_msg: discord.Message, participantes, pagina: int = 0):
         super().__init__(timeout=60)
         self.acao_id = acao_id
         self.painel_msg = painel_msg
+        self.participantes = list(participantes)
+        self.pagina = pagina
+        self._rebuild()
+
+    def _total_paginas(self) -> int:
+        return max(1, (len(self.participantes) + self.POR_PAGINA - 1) // self.POR_PAGINA)
+
+    def _rebuild(self):
+        self.clear_items()
+        inicio = self.pagina * self.POR_PAGINA
+        fatia = self.participantes[inicio : inicio + self.POR_PAGINA]
+        placeholder = "Selecione o membro para remover..."
+        if self._total_paginas() > 1:
+            placeholder = f"Inscritos (pág. {self.pagina + 1}/{self._total_paginas()})..."
         select = discord.ui.Select(
-            placeholder="Selecione o membro para remover...",
+            placeholder=placeholder,
             min_values=1,
             max_values=1,
-            options=[discord.SelectOption(label=(p["user_name"] or p["user_id"])[:100], value=str(p["user_id"])) for p in participantes[:25]],
+            options=[discord.SelectOption(label=(p["user_name"] or p["user_id"])[:100], value=str(p["user_id"])) for p in fatia],
         )
         select.callback = self._on_select
         self.add_item(select)
+        if self._total_paginas() > 1:
+            prev = discord.ui.Button(label="◀", style=discord.ButtonStyle.secondary, disabled=self.pagina == 0)
+            prev.callback = self._prev
+            self.add_item(prev)
+            nxt = discord.ui.Button(label="▶", style=discord.ButtonStyle.secondary, disabled=self.pagina >= self._total_paginas() - 1)
+            nxt.callback = self._next
+            self.add_item(nxt)
+
+    async def _prev(self, interaction: discord.Interaction):
+        self.pagina -= 1
+        self._rebuild()
+        await interaction.response.edit_message(view=self)
+
+    async def _next(self, interaction: discord.Interaction):
+        self.pagina += 1
+        self._rebuild()
+        await interaction.response.edit_message(view=self)
 
     async def _on_select(self, interaction: discord.Interaction):
         acao_row = acao_service.get(self.acao_id)
