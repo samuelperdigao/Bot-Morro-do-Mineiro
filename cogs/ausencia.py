@@ -14,6 +14,7 @@ from discord.ext import commands, tasks
 from datetime import datetime, timedelta, timezone
 
 from core.config import AUSENCIAS_FILE, BASE_DIR
+from core.date_utils import BRAZIL_TZ
 from core.logger import get_logger
 from core.error_reporting import proteger_loop
 from core.command_config import is_enabled as _cmd_enabled, get_cog_config as _cog_cfg
@@ -36,6 +37,87 @@ from services.db_service import (
 log = get_logger("ausencia", "ausencia.log")
 COR_EMBED = 0xF0A500
 CANAL_LEGADO_ID = 1474869321187459147
+FOOTER_AUSENCIA = "Sistema de Ausências • Cidade"
+MSG_DESATIVADO = "❌ O registro de ausências está desativado pela administração."
+LIMITE_DESCRICAO = 4096
+# O Discord limita a 6000 caracteres a soma de todas as embeds da mensagem.
+ORCAMENTO_LISTA = 5500
+
+
+def _para_brt(valor: str | datetime) -> datetime:
+    """Converte uma data salva (UTC, com ou sem fuso) para o horário de Brasília."""
+    data = db_ausencia_parse_data(valor) if isinstance(valor, str) else valor
+    if data is None:
+        raise ValueError(f"data de ausência inválida: {valor!r}")
+    if data.tzinfo is None:
+        data = data.replace(tzinfo=timezone.utc)
+    return data.astimezone(BRAZIL_TZ)
+
+
+def _fmt_data_brt(valor: str | datetime) -> str:
+    """Data no calendário de Brasília. Antes saía em UTC e quem registrava
+    entre 21h e 23h59 via o retorno com 1 dia a mais."""
+    return _para_brt(valor).strftime("%d/%m/%Y")
+
+
+def _dias_restantes(fim: str | datetime, agora: datetime) -> int:
+    """Dias corridos (no calendário de Brasília) até a data de retorno."""
+    return max((_para_brt(fim).date() - _para_brt(agora).date()).days, 0)
+
+
+def _linhas_ausencias(ativos, agora: datetime) -> list[str]:
+    validos = [row for row in ativos if db_ausencia_parse_data(row["fim"]) is not None]
+    linhas = []
+    for row in sorted(validos, key=lambda r: db_ausencia_parse_data(r["fim"])):
+        motivo = (row["motivo"] or "Não informado").replace("\n", " ")
+        if len(motivo) > 80:
+            motivo = motivo[:77] + "..."
+        nome = discord.utils.escape_markdown(row["nome"] or f"ID {row['user_id']}")
+        linhas.append(
+            f"👤 **{nome}** (<@{row['user_id']}>) — retorno `{_fmt_data_brt(row['fim'])}` "
+            f"({_dias_restantes(row['fim'], agora)} dia(s))\n└ {motivo}"
+        )
+    return linhas
+
+
+def _embeds_ausencias(ativos, agora: datetime) -> list[discord.Embed]:
+    """Lista compacta ordenada por retorno, dentro dos limites do Discord.
+
+    Antes era um field por ausente, e a listagem quebrava acima de 25.
+    Quem não couber aparece como "e mais N ausente(s)".
+    """
+    linhas = _linhas_ausencias(ativos, agora)
+    blocos: list[str] = []
+    atual = ""
+    usados = 0
+    exibidos = 0
+    for linha in linhas:
+        custo = len(linha) + 2
+        if usados + custo > ORCAMENTO_LISTA:
+            break
+        candidato = f"{atual}\n\n{linha}" if atual else linha
+        if len(candidato) > LIMITE_DESCRICAO:
+            blocos.append(atual)
+            atual = linha
+        else:
+            atual = candidato
+        usados += custo
+        exibidos += 1
+    if atual or not blocos:
+        blocos.append(atual)
+    restantes = len(linhas) - exibidos
+    if restantes:
+        blocos[-1] += f"\n\n… e mais **{restantes}** ausente(s)."
+
+    embeds = []
+    for i, bloco in enumerate(blocos, 1):
+        titulo = "📋 Jogadores em Ausência"
+        if len(blocos) > 1:
+            titulo += f" ({i}/{len(blocos)})"
+        embed = discord.Embed(title=titulo, description=bloco, color=COR_EMBED, timestamp=agora)
+        embed.set_footer(text=f"{FOOTER_AUSENCIA} • {len(linhas)} ausente(s)")
+        embeds.append(embed)
+    return embeds
 
 
 def migrar_canal_legado(guilds) -> None:
@@ -105,6 +187,10 @@ class AusenciaModal(discord.ui.Modal, title="📋 Registrar Ausência"):
 
         guild_id = str(interaction.guild_id)
 
+        if not _cmd_enabled("ausencia"):
+            await interaction.followup.send(MSG_DESATIVADO, ephemeral=True)
+            return
+
         if not db_is_ausencia_configured(guild_id):
             await interaction.followup.send(
                 "❌ O módulo de Ausências não está configurado. Um administrador deve usar `/setup_ausencia`.",
@@ -165,7 +251,7 @@ class AusenciaModal(discord.ui.Modal, title="📋 Registrar Ausência"):
         )
         embed.add_field(name="👤 Jogador",   value=interaction.user.mention,        inline=True)
         embed.add_field(name="📅 Dias fora", value=f"`{dias_int} dia(s)`",          inline=True)
-        embed.add_field(name="🔙 Retorno",   value=f"`{fim.strftime('%d/%m/%Y')}`", inline=True)
+        embed.add_field(name="🔙 Retorno",   value=f"`{_fmt_data_brt(fim)}`",       inline=True)
         embed.add_field(name="📝 Motivo",    value=motivo_texto,                    inline=False)
         embed.set_footer(text="Sistema de Ausências • Cidade")
 
@@ -184,12 +270,13 @@ class AusenciaModal(discord.ui.Modal, title="📋 Registrar Ausência"):
         )
         log_embed.add_field(name="👤 Membro", value=f"{interaction.user.mention}\n`{user_id}`", inline=True)
         log_embed.add_field(name="📅 Dias", value=f"`{dias_int}`", inline=True)
-        log_embed.add_field(name="🔙 Retorno", value=f"`{fim.strftime('%d/%m/%Y')}`", inline=True)
+        log_embed.add_field(name="🔙 Retorno", value=f"`{_fmt_data_brt(fim)}`", inline=True)
         log_embed.add_field(name="📝 Motivo", value=motivo_texto, inline=False)
         log_embed.set_footer(text="Morro do Mineiro — Sistema de Ausência")
         await send_log(interaction.client, interaction.guild, "ausencia", log_embed)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
+        log.error("Erro no AusenciaModal: %s", error, exc_info=error)
         try:
             if not interaction.response.is_done():
                 await interaction.response.send_message("❌ Erro interno. Tente novamente.", ephemeral=True)
@@ -209,6 +296,9 @@ class AusenciaPanelView(discord.ui.View):
         custom_id="ausencia_panel:registrar",
     )
     async def registrar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _cmd_enabled("ausencia"):
+            await interaction.response.send_message(MSG_DESATIVADO, ephemeral=True)
+            return
         await interaction.response.send_modal(AusenciaModal())
 
 
@@ -277,17 +367,7 @@ class Ausencia(commands.Cog):
         if not ativos:
             await interaction.followup.send("✅ Nenhum jogador ausente no momento.")
             return
-        embed = discord.Embed(title="📋 Jogadores em Ausência", color=COR_EMBED, timestamp=agora)
-        embed.set_footer(text="Sistema de Ausências • Cidade")
-        for row in ativos:
-            fim_dt = db_ausencia_parse_data(row["fim"])
-            restam = max((fim_dt - agora).days + 1, 0)
-            embed.add_field(
-                name=f"👤 {row['nome']}",
-                value=f"Retorno: `{fim_dt.strftime('%d/%m/%Y')}`\nDias restantes: `{restam}`\nMotivo: {row['motivo']}",
-                inline=False,
-            )
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embeds=_embeds_ausencias(ativos, agora))
 
     @tasks.loop(hours=1)
     async def verificar_ausencias(self):
@@ -306,10 +386,9 @@ class Ausencia(commands.Cog):
             for row in db_ausencias_vencidas_sem_aviso(guild_id_str):
                 membro = None if row["user_id"] in sem_lembrete else guild.get_member(int(row["user_id"]))
                 if membro:
-                    fim_dt = db_ausencia_parse_data(row["fim"])
                     try:
                         await membro.send(
-                            f"⏰ **Sua ausência venceu hoje ({fim_dt.strftime('%d/%m/%Y')}).**\n"
+                            f"⏰ **Sua ausência venceu hoje ({_fmt_data_brt(row['fim'])}).**\n"
                             f"Se precisar de mais tempo, registre uma nova ausência pelo painel.\n"
                             f"Lembre-se: mais de **7 dias sem aviso** resulta em **PD automático**."
                         )
