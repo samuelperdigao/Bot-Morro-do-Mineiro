@@ -188,6 +188,15 @@ WHERE status = 'aberto';
 
 CREATE INDEX IF NOT EXISTS idx_ponto_sessoes_guild_week_status
 ON ponto_sessoes (guild_id, week_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_recolhimento_entregas_ciclo
+ON recolhimento_entregas (ciclo_id);
+
+CREATE INDEX IF NOT EXISTS idx_recolhimento_ciclos_mensagem
+ON recolhimento_ciclos (guild_id, channel_id, message_id);
+
+CREATE INDEX IF NOT EXISTS idx_recolhimento_ciclos_abertos
+ON recolhimento_ciclos (encerrado, semana_fim);
 """
 
 MIGRATIONS = (

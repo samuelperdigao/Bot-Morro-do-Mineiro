@@ -897,6 +897,31 @@ def db_recolhimento_ciclo_aberto_por_mensagem(
     ).fetchone()
 
 
+def db_recolhimento_ciclo_por_mensagem(
+    guild_id: str,
+    channel_id: str,
+    tipo: str,
+    message_id: str,
+):
+    """Ciclo da mensagem, aberto ou encerrado (usado para pagar apos o fechamento)."""
+    return get_conn().execute(
+        "SELECT * FROM recolhimento_ciclos "
+        "WHERE guild_id=? AND channel_id=? AND tipo=? AND message_id=?",
+        (guild_id, channel_id, tipo, message_id),
+    ).fetchone()
+
+
+def db_recolhimento_excluir_ciclo_vazio(ciclo_id: int) -> None:
+    """Remove um ciclo recem-criado cuja mensagem nao pode ser postada."""
+    conn = get_conn()
+    conn.execute(
+        "DELETE FROM recolhimento_ciclos WHERE id=? AND NOT EXISTS "
+        "(SELECT 1 FROM recolhimento_entregas WHERE ciclo_id=?)",
+        (ciclo_id, ciclo_id),
+    )
+    conn.commit()
+
+
 def db_recolhimento_criar_ciclo(
     guild_id: str, member_id: str, channel_id: str, tipo: str,
     semana_inicio: str, semana_fim: str,
@@ -926,14 +951,17 @@ def db_recolhimento_get_ciclo(ciclo_id: int):
     ).fetchone()
 
 
-def db_recolhimento_marcar_pago(ciclo_id: int, pago_por: str, observacao: str):
+def db_recolhimento_marcar_pago(ciclo_id: int, pago_por: str, observacao: str) -> bool:
+    """Marca o ciclo como pago. Retorna False se ele ja estava pago (idempotente)."""
     conn = get_conn()
-    conn.execute(
+    cur = conn.execute(
         "UPDATE recolhimento_ciclos "
-        "SET pago=1, pago_por=?, data_pagamento=?, observacao_pagamento=? WHERE id=?",
+        "SET pago=1, pago_por=?, data_pagamento=?, observacao_pagamento=? "
+        "WHERE id=? AND pago=0",
         (pago_por, now_tz().isoformat(), observacao, ciclo_id),
     )
     conn.commit()
+    return cur.rowcount > 0
 
 
 def db_recolhimento_encerrar(ciclo_id: int):
@@ -942,9 +970,16 @@ def db_recolhimento_encerrar(ciclo_id: int):
     conn.commit()
 
 
-def db_recolhimento_ciclos_para_encerrar(semana_fim: str) -> list:
+def db_recolhimento_ciclos_para_encerrar(semana_fim: str, incluir_ate: bool = True) -> list:
+    """Ciclos abertos cuja semana termina ate `semana_fim` (inclusive se incluir_ate).
+
+    Usar <= garante que ciclos de semanas anteriores sejam encerrados mesmo que
+    o bot estivesse fora do ar no horario do fechamento.
+    """
+    operador = "<=" if incluir_ate else "<"
     return get_conn().execute(
-        "SELECT * FROM recolhimento_ciclos WHERE semana_fim=? AND encerrado=0", (semana_fim,),
+        f"SELECT * FROM recolhimento_ciclos WHERE semana_fim {operador} ? AND encerrado=0",
+        (semana_fim,),
     ).fetchall()
 
 
