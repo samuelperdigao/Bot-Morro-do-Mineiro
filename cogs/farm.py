@@ -4,8 +4,6 @@ cogs/farm.py - Extensão FARM: metas semanais, lançamentos e aprovações.
 
 import asyncio
 import logging
-import math
-import re
 
 import discord
 from discord import app_commands
@@ -13,6 +11,7 @@ from discord.ext import commands, tasks
 
 from core.date_utils import format_date_br, format_week_range_br, week_id_from_date_br
 from core.logger import get_logger
+from core.money import fmt_input_valor, parse_money_br
 from core.error_reporting import proteger_loop
 from core.permissions import is_lideranca, is_permitido_farm
 from core.command_config import is_enabled as _cmd_enabled
@@ -43,45 +42,9 @@ IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 FARM_EXTRA_ITEM = "Ferro"
 
 
-MAX_VALOR_DINHEIRO = 1_000_000_000_000  # teto de sanidade: R$ 1 trilhao
-
-
-def _parse_money(raw: str) -> float:
-    """Converte texto em valor monetario no padrao brasileiro.
-
-    Aceita "50000", "50.000", "50.000,50", "R$ 1.500", "1500,5".
-    O ponto e separador de milhar; a virgula e separador decimal.
-    Um unico ponto seguido de 1 ou 2 digitos (ex.: "50000.0", "1500.50")
-    e tratado como decimal, para nao multiplicar valores pre-preenchidos.
-    Rejeita valores nao finitos (inf/nan), notacao cientifica e negativos
-    fora do teto de sanidade.
-    """
-    texto = (raw or "").strip().replace("R$", "").replace(" ", "").strip()
-    if not texto:
-        return 0.0
-    if not re.fullmatch(r"[0-9.,]+", texto):
-        raise ValueError(f"valor monetario invalido: {raw!r}")
-    if "," in texto:
-        if texto.count(",") > 1:
-            raise ValueError(f"valor monetario invalido: {raw!r}")
-        inteiro, decimal = texto.split(",")
-        inteiro = inteiro.replace(".", "")
-        normalizado = f"{inteiro or '0'}.{decimal or '0'}"
-    elif texto.count(".") == 1 and re.fullmatch(r"\d+\.\d{1,2}", texto):
-        normalizado = texto
-    else:
-        normalizado = texto.replace(".", "")
-    valor = float(normalizado)
-    if not math.isfinite(valor) or valor > MAX_VALOR_DINHEIRO:
-        raise ValueError(f"valor monetario fora do limite: {raw!r}")
-    return valor
-
-
-def _fmt_input_valor(valor) -> str:
-    """Formata um valor para pre-preencher um TextInput sem perder escala."""
-    if isinstance(valor, float) and valor.is_integer():
-        return str(int(valor))
-    return str(valor)
+# Leitura de valores em R$ centralizada em core/money.py.
+_parse_money = parse_money_br
+_fmt_input_valor = fmt_input_valor
 
 
 def _fmt_money(valor: float) -> str:
