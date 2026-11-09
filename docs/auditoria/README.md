@@ -25,7 +25,18 @@ O bot atende **apenas o servidor do Morro do Mineiro**. IDs fixos no código sã
 | C5 e C6 Farm | ✅ Lembretes corrigidos, parser de R$ estrito, edição sem multiplicar |
 | Tratamento global de erros | ✅ Handlers globais, tasks que se reiniciam, sync protegido |
 
-Próximo passo é a **Sessão 2**: Recolhimento (C9 e parser de R$), atualização do discord.py, estado persistente de Set e Ação (C7 e C8) e embeds paginados.
+**Sessão 2: concluída.**
+
+| Item | Situação |
+|---|---|
+| C9 Recolhimento | ✅ Entregas divididas em fields, parser de R$ comum, fechamento resiliente, ciclo encerrado continua pagável, sem ciclo duplicado |
+| Ponto | ✅ Auto-fechamento de ponto esquecido (12h), ranking em blocos |
+| Ausência | ✅ Fuso de Brasília, grava só depois de publicar, listagem dentro do limite |
+| discord.py | ✅ 2.3.2 → 2.7.1 |
+| C7 Set | ✅ Pedidos persistidos, botões persistentes, reserva atômica, pedidos antigos atendidos |
+| C8 Ação | ✅ Ações e inscritos persistidos, painéis simultâneos independentes |
+
+Pendências de decisão: regra da meta do Recolhimento (hoje compara o total do ciclo com a meta por membro) e item Ferro sem campo no Recolhimento.
 
 ---
 
