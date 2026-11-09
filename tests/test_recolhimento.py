@@ -90,7 +90,7 @@ class EmbedTests(unittest.TestCase):
         entregas = []
         for i in range(60):
             e = _entrega_dinheiro(i)
-            e.update({"valor": None, "folha": 10, "opio": 20, "seringa": 30, "agulha": 40})
+            e.update({"valor": None, "folha": 10, "opio": 20, "seringa": 30, "agulha": 40, "ferro": 5})
             entregas.append(e)
         embed = build_embed_farm(_ciclo(tipo="farm"), entregas)
         for field in embed.fields:
@@ -98,6 +98,15 @@ class EmbedTests(unittest.TestCase):
         self.assertLessEqual(_tamanho_embed(embed), 6000)
         total = next(f for f in embed.fields if "Total" in f.name)
         self.assertIn("600", total.value)
+        self.assertIn("Ferro: **300**", total.value)
+
+    def test_entregas_antigas_sem_coluna_ferro(self):
+        e = _entrega_dinheiro(1)
+        e.update({"valor": None, "folha": 1, "opio": 0, "seringa": 0, "agulha": 0})
+        e.pop("ferro", None)
+        embed = build_embed_farm(_ciclo(tipo="farm"), [e])
+        total = next(f for f in embed.fields if "Total" in f.name)
+        self.assertIn("Ferro: **0**", total.value)
 
     def test_divisao_preserva_entregas_recentes(self):
         linhas = [f"linha {i:04d} " + "x" * 80 for i in range(500)]

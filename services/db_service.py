@@ -1018,12 +1018,13 @@ def db_recolhimento_add_entrega_farm(
     alvo_user_id: str | None = None,
     alvo_nome: str | None = None,
     alvo_pasta_id: str | None = None,
+    ferro: int = 0,
 ) -> int:
     conn = get_conn()
     cur = conn.execute(
         "INSERT INTO recolhimento_entregas "
         "(ciclo_id, data, registrado_por, alvo_user_id, alvo_nome, alvo_pasta_id, "
-        "folha, opio, seringa, agulha) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "folha, opio, seringa, agulha, ferro) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (
             ciclo_id,
             now_tz().isoformat(),
@@ -1035,6 +1036,7 @@ def db_recolhimento_add_entrega_farm(
             opio,
             seringa,
             agulha,
+            ferro,
         ),
     )
     conn.commit()

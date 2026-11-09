@@ -28,9 +28,6 @@ from services.db_service import (
     now_tz,
     db_channel_map_get,
     db_get_lideranca_role_ids,
-    db_get_meta,
-    db_meta_tipo_efetivo,
-    db_meta_itens,
     db_prog_itens,
     db_lista_progresso,
     db_recolhimento_ciclo_aberto,
@@ -58,12 +55,15 @@ LIMITE_FIELD = 1024
 ORCAMENTO_ENTREGAS = 4200
 MAX_FIELDS_ENTREGAS = 8
 
+# Colunas legadas do banco → nome do item.
 _KEY_LABELS = {
     "folha": "Borracha",
     "opio": "Aluminio",
     "seringa": "Cobre",
     "agulha": "Plastico",
+    "ferro": "Ferro",
 }
+FARM_KEYS = tuple(_KEY_LABELS)
 
 
 # ── Helpers de formatação ─────────────────────────────────────────────────────
@@ -197,37 +197,6 @@ def _semana_fim_from_inicio(semana_inicio: str) -> str:
     return (inicio + datetime.timedelta(days=6)).isoformat()
 
 
-def _verificar_meta_atingida(ciclo, meta, entregas: list) -> bool:
-    """Retorna True se o total do ciclo atingiu a meta da semana."""
-    if not meta:
-        return False
-    tipo = ciclo["tipo"]
-    tipo_meta = db_meta_tipo_efetivo(meta)
-    if tipo == "dinheiro" and tipo_meta in {"dinheiro", "misto"}:
-        meta_val = meta["meta_dinheiro"] or 0
-        if meta_val <= 0:
-            return False
-        total = sum(e["valor"] or 0 for e in entregas)
-        return total >= meta_val
-    if tipo == "farm" and tipo_meta in {"itens", "misto"}:
-        meta_itens = db_meta_itens(meta)
-        if not meta_itens:
-            return False
-        nome_to_key = {
-            "Borracha": "folha",
-            "Aluminio": "opio",
-            "Cobre": "seringa",
-            "Plastico": "agulha",
-        }
-        totais = {k: sum(e[k] or 0 for e in entregas) for k in ("folha", "opio", "seringa", "agulha")}
-        return all(
-            totais.get(nome_to_key.get(nome, ""), 0) >= qtd
-            for nome, qtd in meta_itens.items()
-            if qtd > 0
-        )
-    return False
-
-
 # ── Builders de embed ─────────────────────────────────────────────────────────
 
 def build_embed_dinheiro(ciclo, entregas: list) -> discord.Embed:
@@ -271,12 +240,12 @@ def build_embed_farm(ciclo, entregas: list) -> discord.Embed:
         timestamp=discord.utils.utcnow(),
     )
 
-    total = {"folha": 0, "opio": 0, "seringa": 0, "agulha": 0}
+    total = {k: 0 for k in FARM_KEYS}
     linhas = []
     for i, e in enumerate(entregas, 1):
         partes = []
-        for key in ("folha", "opio", "seringa", "agulha"):
-            val = e[key] or 0
+        for key in FARM_KEYS:
+            val = _row_get(e, key) or 0
             total[key] += val
             if val:
                 partes.append(f"{_KEY_LABELS[key]} {val}")
@@ -380,6 +349,7 @@ class RecolhimentoFarmModal(discord.ui.Modal, title="Kit Desmanche"):
     opio_input    = discord.ui.TextInput(label="Aluminio",  placeholder="0", required=False, max_length=10)
     seringa_input = discord.ui.TextInput(label="Cobre",     placeholder="0", required=False, max_length=10)
     agulha_input  = discord.ui.TextInput(label="Plastico",  placeholder="0", required=False, max_length=10)
+    ferro_input   = discord.ui.TextInput(label="Ferro",     placeholder="0", required=False, max_length=10)
 
     def __init__(
         self,
@@ -400,13 +370,14 @@ class RecolhimentoFarmModal(discord.ui.Modal, title="Kit Desmanche"):
             opio    = max(0, int(self.opio_input.value    or 0))
             seringa = max(0, int(self.seringa_input.value or 0))
             agulha  = max(0, int(self.agulha_input.value  or 0))
+            ferro   = max(0, int(self.ferro_input.value   or 0))
         except ValueError:
             await interaction.response.send_message(
                 "❌ Valores inválidos. Use números inteiros.", ephemeral=True
             )
             return
 
-        if folha + opio + seringa + agulha == 0:
+        if folha + opio + seringa + agulha + ferro == 0:
             await interaction.response.send_message(
                 "❌ Informe pelo menos um valor acima de zero.", ephemeral=True
             )
@@ -427,10 +398,11 @@ class RecolhimentoFarmModal(discord.ui.Modal, title="Kit Desmanche"):
             self.alvo_user_id,
             self.alvo_nome,
             self.alvo_pasta_id,
+            ferro=ferro,
         )
         await interaction.response.send_message(
             f"✅ Recolhimento registrado para **{self.alvo_nome}**! "
-            f"Borracha: {folha} | Aluminio: {opio} | Cobre: {seringa} | Plastico: {agulha}",
+            f"Borracha: {folha} | Aluminio: {opio} | Cobre: {seringa} | Plastico: {agulha} | Ferro: {ferro}",
             ephemeral=True,
         )
         cog = interaction.client.get_cog("RecolhimentoCog")
@@ -494,7 +466,7 @@ class PagamentoModal(discord.ui.Modal, title="💳 Confirmar Pagamento"):
                 emoji  = "🔴"
                 label  = "Dinheiro Sujo"
             else:
-                totais = {k: sum(e[k] or 0 for e in entregas) for k in ("folha", "opio", "seringa", "agulha")}
+                totais = {k: sum(_row_get(e, k) or 0 for e in entregas) for k in FARM_KEYS}
                 resumo = " | ".join(f"{_KEY_LABELS[k]}: {v}" for k, v in totais.items())
                 emoji  = "🟢"
                 label  = "Farm"
@@ -949,17 +921,14 @@ class RecolhimentoCog(commands.Cog):
         entregas = db_recolhimento_get_entregas(ciclo["id"])
         if not entregas:
             return
-        meta = db_get_meta(ciclo["guild_id"], ciclo["semana_inicio"])
-        meta_atingida = _verificar_meta_atingida(ciclo, meta, entregas)
         try:
             canal = guild.get_channel(int(ciclo["channel_id"])) or \
                     await guild.fetch_channel(int(ciclo["channel_id"]))
             tipo_label = "Dinheiro Sujo" if ciclo["tipo"] == "dinheiro" else "Farm"
-            detalhe = "A meta da semana foi atingida, mas" if meta_atingida else "O"
             alerta = discord.Embed(
                 title="⚠️ Recolhimento encerrado — pagamento pendente",
                 description=(
-                    f"{detalhe} ciclo de **{tipo_label}** "
+                    f"O ciclo de **{tipo_label}** "
                     f"({_fmt_data_curta(ciclo['semana_inicio'])} → {_fmt_data_curta(ciclo['semana_fim'])}) "
                     "ainda **não foi marcado como pago**.\n\n"
                     "O botão **✅ Marcar como Pago** continua disponível na mensagem do ciclo."

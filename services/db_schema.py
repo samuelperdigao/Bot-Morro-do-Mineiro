@@ -273,6 +273,7 @@ MIGRATIONS = (
     ("recolhimento_entregas", "alvo_user_id", "TEXT"),
     ("recolhimento_entregas", "alvo_nome", "TEXT"),
     ("recolhimento_entregas", "alvo_pasta_id", "TEXT"),
+    ("recolhimento_entregas", "ferro", "INTEGER"),
 )
 
 
