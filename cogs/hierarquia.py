@@ -2,7 +2,8 @@
 cogs/hierarquia.py - Painel de gerenciamento de hierarquia de cargos.
 
 Embed fixo no canal configurado (sistema "hierarquia" via dashboard).
-Quem pode usar: | 01 Dono, | 02, | 03
+Quem pode usar: | 01 Dono, | 02, | Gerente Geral
+(cada um so atribui cargos abaixo do proprio nivel)
 """
 
 import discord
@@ -26,7 +27,6 @@ HIERARQUIA_CARGOS = [
     "| Gerente de Farm",
     "| Gerente de Produção",
     "| Gerente Geral",
-    "| 03",
     "| 02",
     "| 01 Dono",
 ]
@@ -36,7 +36,8 @@ CARGOS_IGNORADOS = {
     "| Server Booster", "| Medal", "| Morro Do Mineiro", "| Advertência",
 }
 
-CARGOS_AUTORIZADOS = {"| 01 Dono", "| 02", "| 03"}
+# O antigo cargo 03 deixou de existir e virou Gerente Geral.
+CARGOS_AUTORIZADOS = {"| 01 Dono", "| 02", "| Gerente Geral"}
 CARGOS_AUTORIZADOS_IDS = {1474869320684146847, 1474869320684146846, 1490821840191619322}
 
 
@@ -45,6 +46,39 @@ def _tem_permissao(member: discord.Member) -> bool:
         r.name in CARGOS_AUTORIZADOS or r.id in CARGOS_AUTORIZADOS_IDS
         for r in member.roles
     )
+
+
+def _nivel_hierarquia(member: discord.Member) -> int:
+    """Indice do cargo de hierarquia mais alto do membro (-1 se nenhum).
+
+    O dono do servidor fica acima de toda a hierarquia.
+    """
+    if member.guild is not None and member.guild.owner_id == member.id:
+        return len(HIERARQUIA_CARGOS)
+    nivel = -1
+    for role in member.roles:
+        if role.name in HIERARQUIA_CARGOS:
+            nivel = max(nivel, HIERARQUIA_CARGOS.index(role.name))
+    return nivel
+
+
+def _cargos_permitidos(executor: discord.Member) -> list[str]:
+    """Cargos que o executor pode atribuir: apenas os abaixo do seu nivel."""
+    nivel = _nivel_hierarquia(executor)
+    return [nome for idx, nome in enumerate(HIERARQUIA_CARGOS) if idx < nivel]
+
+
+def _motivo_bloqueio_alvo(executor: discord.Member, alvo: discord.Member) -> str | None:
+    """Retorna o motivo pelo qual o executor nao pode alterar o alvo, ou None."""
+    if alvo.bot:
+        return "❌ Não é possível alterar a hierarquia de bots."
+    if alvo.id == executor.id:
+        return "❌ Você não pode alterar o seu próprio cargo."
+    if alvo.guild is not None and alvo.guild.owner_id == alvo.id:
+        return "❌ Não é possível alterar o cargo do dono do servidor."
+    if _nivel_hierarquia(alvo) >= _nivel_hierarquia(executor):
+        return "❌ Você só pode alterar membros com cargo abaixo do seu."
+    return None
 
 
 def _cargo_hierarquia_atual(member: discord.Member) -> discord.Role | None:
@@ -80,14 +114,14 @@ class CargosSelectView(discord.ui.View):
         self.executor = executor
         self.membro_alvo = membro_alvo
 
+        # Mostra apenas cargos abaixo do nivel de quem executa (do maior ao menor).
         options = [
             discord.SelectOption(label=nome, value=nome)
-            for nome in HIERARQUIA_CARGOS
+            for nome in reversed(_cargos_permitidos(executor))
         ]
         select = discord.ui.Select(
             placeholder="Selecione o novo cargo...",
             options=options,
-            custom_id="hierarquia:select_cargo",
         )
         select.callback = self._on_cargo_select
         self.add_item(select)
@@ -102,6 +136,26 @@ class CargosSelectView(discord.ui.View):
         novo_cargo_nome = interaction.data["values"][0]
         guild = interaction.guild
 
+        # Revalida no momento do clique: cargos e membros podem ter mudado
+        # desde que o menu foi aberto.
+        executor = guild.get_member(self.executor.id) or self.executor
+        membro_alvo = guild.get_member(self.membro_alvo.id) or self.membro_alvo
+        self.membro_alvo = membro_alvo
+        if not _tem_permissao(executor) and guild.owner_id != executor.id:
+            await interaction.response.send_message(
+                "❌ Você não tem mais permissão para gerenciar a hierarquia.", ephemeral=True
+            )
+            return
+        bloqueio = _motivo_bloqueio_alvo(executor, membro_alvo)
+        if bloqueio:
+            await interaction.response.send_message(bloqueio, ephemeral=True)
+            return
+        if novo_cargo_nome not in _cargos_permitidos(executor):
+            await interaction.response.send_message(
+                "❌ Você só pode atribuir cargos abaixo do seu.", ephemeral=True
+            )
+            return
+
         novo_cargo = discord.utils.get(guild.roles, name=novo_cargo_nome)
         if novo_cargo is None:
             await interaction.response.send_message(
@@ -110,19 +164,40 @@ class CargosSelectView(discord.ui.View):
             )
             return
 
-        cargo_anterior = _cargo_hierarquia_atual(self.membro_alvo)
+        cargo_anterior = _cargo_hierarquia_atual(membro_alvo)
         cargo_anterior_nome = cargo_anterior.name if cargo_anterior else None
         tipo = _tipo_mudanca(cargo_anterior_nome, novo_cargo_nome)
 
-        # Remove todos os cargos de hierarquia e aplica o novo
         cargos_para_remover = [
-            r for r in self.membro_alvo.roles
-            if r.name in HIERARQUIA_CARGOS
+            r for r in membro_alvo.roles
+            if r.name in HIERARQUIA_CARGOS and r != novo_cargo
         ]
+
+        # Confere antes de mexer: se o bot nao conseguir aplicar ou remover
+        # algum cargo, nada e alterado (evita deixar o membro sem cargo).
+        bot_top = guild.me.top_role
+        sem_alcance = [r for r in [novo_cargo, *cargos_para_remover] if r >= bot_top or r.managed]
+        if sem_alcance:
+            nomes = ", ".join(f"**{r.name}**" for r in sem_alcance)
+            await interaction.response.send_message(
+                f"❌ O cargo do bot está abaixo de {nomes}. "
+                "Suba o cargo do bot nas configurações do servidor.",
+                ephemeral=True,
+            )
+            return
+        if membro_alvo.top_role >= bot_top:
+            await interaction.response.send_message(
+                "❌ O cargo mais alto deste membro está acima do cargo do bot.",
+                ephemeral=True,
+            )
+            return
+
+        # Troca todos os cargos de hierarquia numa unica chamada (atomica).
+        novos_cargos = [r for r in membro_alvo.roles if r not in cargos_para_remover and not r.is_default()]
+        if novo_cargo not in novos_cargos:
+            novos_cargos.append(novo_cargo)
         try:
-            if cargos_para_remover:
-                await self.membro_alvo.remove_roles(*cargos_para_remover, reason=f"Hierarquia por {self.executor}")
-            await self.membro_alvo.add_roles(novo_cargo, reason=f"Hierarquia por {self.executor}")
+            await membro_alvo.edit(roles=novos_cargos, reason=f"Hierarquia por {executor}")
         except discord.Forbidden:
             await interaction.response.send_message(
                 "❌ Sem permissão para alterar cargos deste membro.", ephemeral=True
@@ -183,10 +258,7 @@ class MembrosSelectView(discord.ui.View):
         super().__init__(timeout=120)
         self.executor = executor
 
-        select = discord.ui.UserSelect(
-            placeholder="Selecione o membro...",
-            custom_id="hierarquia:select_membro",
-        )
+        select = discord.ui.UserSelect(placeholder="Selecione o membro...")
         select.callback = self._on_membro_select
         self.add_item(select)
 
@@ -209,6 +281,11 @@ class MembrosSelectView(discord.ui.View):
             except Exception:
                 await interaction.response.send_message("❌ Membro não encontrado no servidor.", ephemeral=True)
                 return
+
+        bloqueio = _motivo_bloqueio_alvo(self.executor, membro)
+        if bloqueio:
+            await interaction.response.send_message(bloqueio, ephemeral=True)
+            return
 
         cargo_atual = _cargo_hierarquia_atual(membro)
         embed = discord.Embed(
@@ -239,9 +316,14 @@ class HierarquiaPainelView(discord.ui.View):
         custom_id="hierarquia:gerenciar",
     )
     async def gerenciar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not _tem_permissao(interaction.user):
+        if not _tem_permissao(interaction.user) and interaction.guild.owner_id != interaction.user.id:
             await interaction.response.send_message(
                 "❌ Você não tem permissão para gerenciar a hierarquia.", ephemeral=True
+            )
+            return
+        if not _cargos_permitidos(interaction.user):
+            await interaction.response.send_message(
+                "❌ Não há cargos abaixo do seu para atribuir.", ephemeral=True
             )
             return
 

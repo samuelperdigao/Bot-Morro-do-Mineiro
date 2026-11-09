@@ -1,11 +1,17 @@
 """
-cogs/set_views.py — SetModal, ApprovalView, SetPanelView e utilitários de rate-limit.
+cogs/set_views.py — SetModal, botões de aprovação, SetPanelView e rate-limit.
 
-Extraído de main.py para desacoplar do ponto de entrada e permitir importação
-segura por outros cogs (ex: cogs.paineis).
+Cada solicitação de set é gravada em set_solicitacoes (services/
+set_request_service.py). Os botões Aprovar/Reprovar são DynamicItems com o
+id da solicitação no custom_id ("set:ap:<id>" / "set:rp:<id>"), então
+continuam funcionando depois de qualquer restart do bot.
+
+Mensagens antigas (custom_id "approval:aprovar"/"approval:reprovar") são
+atendidas por LegacyApprovalView, que reconstrói o pedido a partir do embed.
 """
 
 import logging
+import re
 import time
 
 import discord
@@ -18,6 +24,7 @@ from services.db_service import (
     db_channel_map_get,
     db_channel_map_set,
 )
+from services import set_request_service as pedidos
 from services.set_service import criar_pasta, safe_fetch_channel
 
 log       = logging.getLogger("bot")
@@ -74,6 +81,14 @@ class SetModal(discord.ui.Modal, title="Solicitação de Set"):
             await interaction.followup.send("❌ O ID do jogo deve conter apenas números.", ephemeral=True)
             return
 
+        pendente = pedidos.pendente_do_usuario(guild_id, str(interaction.user.id))
+        if pendente:
+            await interaction.followup.send(
+                "⏳ Você já tem uma solicitação de set aguardando decisão da liderança.",
+                ephemeral=True,
+            )
+            return
+
         pode, restante = _check_rate_limit(interaction.user.id)
         if not pode:
             mins = int(restante // 60)
@@ -100,14 +115,15 @@ class SetModal(discord.ui.Modal, title="Solicitação de Set"):
         embed.add_field(name="📨 Solicitante (Discord)", value=f"{solicitante.mention}\n`{solicitante.id}`", inline=False)
         embed.set_footer(text="Aguardando decisão da liderança")
 
-        view = ApprovalView(
-            target_user_id=solicitante.id,
-            target_name=self.membro_nome.value,
-            requester=solicitante,
-            id_jogo=self.id_jogo.value.strip(),
+        solicitacao_id = pedidos.criar_solicitacao(
+            guild_id, str(solicitante.id), self.membro_nome.value.strip(), self.id_jogo.value.strip()
         )
-        msg = await approval_channel.send(embed=embed, view=view)
-        view.message = msg
+        try:
+            msg = await approval_channel.send(embed=embed, view=build_approval_view(solicitacao_id))
+        except Exception:
+            pedidos.excluir_solicitacao(solicitacao_id)
+            raise
+        pedidos.salvar_mensagem(solicitacao_id, str(approval_channel.id), str(msg.id))
 
         _audit("SET_SOLICITADO", solicitante.id, nome=self.membro_nome.value, id_jogo=self.id_jogo.value.strip())
         await interaction.followup.send(
@@ -136,217 +152,313 @@ class SetPanelView(discord.ui.View):
         await interaction.response.send_modal(SetModal())
 
 
-class ApprovalView(discord.ui.View):
-    def __init__(self, target_user_id: int, target_name: str, requester: discord.Member, id_jogo: str = ""):
-        super().__init__(timeout=None)
-        self.target_user_id = target_user_id
-        self.target_name    = target_name
-        self.requester      = requester
-        self.id_jogo        = id_jogo
-        self.message: discord.Message | None = None
-        self._processando   = False
+class SetDecisaoButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"set:(?P<acao>ap|rp):(?P<sid>[0-9]+)",
+):
+    """Botão Aprovar/Reprovar persistente: o id da solicitação vai no custom_id."""
 
-    def _check_permission(self, interaction: discord.Interaction) -> bool:
-        approver_role_ids = db_get_approver_role_ids(str(interaction.guild_id))
-        return has_approver_permission(interaction.user, approver_role_ids)
+    def __init__(self, acao: str, solicitacao_id: int) -> None:
+        aprovar = acao == "ap"
+        super().__init__(
+            discord.ui.Button(
+                label="✅ Aprovar" if aprovar else "❌ Reprovar",
+                style=discord.ButtonStyle.success if aprovar else discord.ButtonStyle.danger,
+                custom_id=f"set:{acao}:{solicitacao_id}",
+            )
+        )
+        self.acao = acao
+        self.solicitacao_id = solicitacao_id
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Button, match: re.Match[str], /):
+        return cls(match["acao"], int(match["sid"]))
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await decidir_set(interaction, self.solicitacao_id, aprovado=self.acao == "ap")
+
+
+def build_approval_view(solicitacao_id: int) -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    view.add_item(SetDecisaoButton("ap", solicitacao_id))
+    view.add_item(SetDecisaoButton("rp", solicitacao_id))
+    return view
+
+
+def _check_permission(interaction: discord.Interaction) -> bool:
+    approver_role_ids = db_get_approver_role_ids(str(interaction.guild_id))
+    return has_approver_permission(interaction.user, approver_role_ids)
+
+
+def _dados_do_embed_legado(message: discord.Message | None) -> dict | None:
+    """Extrai solicitante, nome e ID do jogo do embed de um pedido antigo."""
+    if message is None or not message.embeds:
+        return None
+    dados = {}
+    for field in message.embeds[0].fields:
+        nome = field.name or ""
+        valor = (field.value or "").strip()
+        if "ID no Jogo" in nome:
+            dados["id_jogo"] = valor.strip("`").strip()
+        elif "Nome" in nome:
+            dados["nome"] = valor
+        elif "Solicitante" in nome:
+            ids = re.findall(r"[0-9]{15,22}", valor)
+            if ids:
+                dados["user_id"] = ids[-1]
+    if {"id_jogo", "nome", "user_id"} <= dados.keys():
+        return dados
+    return None
+
+
+class LegacyApprovalView(discord.ui.View):
+    """Atende pedidos criados antes da persistência (custom_id fixo)."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _decidir(self, interaction: discord.Interaction, aprovado: bool) -> None:
+        guild_id = str(interaction.guild_id)
+        solicitacao = pedidos.get_por_mensagem(guild_id, str(interaction.message.id))
+        if solicitacao is None:
+            dados = _dados_do_embed_legado(interaction.message)
+            if dados is None:
+                await interaction.response.send_message(
+                    "❌ Não consegui ler os dados desta solicitação antiga. Peça para o membro refazer o set.",
+                    ephemeral=True,
+                )
+                return
+            sid = pedidos.criar_solicitacao(guild_id, dados["user_id"], dados["nome"], dados["id_jogo"])
+            pedidos.salvar_mensagem(sid, str(interaction.channel_id), str(interaction.message.id))
+        else:
+            sid = solicitacao["id"]
+        await decidir_set(interaction, sid, aprovado)
 
     @discord.ui.button(label="✅ Aprovar", style=discord.ButtonStyle.success, custom_id="approval:aprovar")
     async def aprovar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self._check_permission(interaction):
+        if not _check_permission(interaction):
             await interaction.response.send_message("❌ Sem permissão para aprovar.", ephemeral=True)
             return
-        if self._processando:
-            await interaction.response.send_message("⏳ Já sendo processado...", ephemeral=True)
-            return
-        self._processando = True
-        await interaction.response.defer()
-        await self._processar(interaction, aprovado=True)
+        await self._decidir(interaction, aprovado=True)
 
     @discord.ui.button(label="❌ Reprovar", style=discord.ButtonStyle.danger, custom_id="approval:reprovar")
     async def reprovar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self._check_permission(interaction):
+        if not _check_permission(interaction):
             await interaction.response.send_message("❌ Sem permissão para reprovar.", ephemeral=True)
             return
-        if self._processando:
-            await interaction.response.send_message("⏳ Já sendo processado...", ephemeral=True)
-            return
-        self._processando = True
-        await interaction.response.defer()
-        await self._processar(interaction, aprovado=False)
+        await self._decidir(interaction, aprovado=False)
 
-    async def _processar(self, interaction: discord.Interaction, aprovado: bool):
-        guild    = interaction.guild
-        guild_id = str(guild.id)
-        approver = interaction.user
 
-        if self.message:
-            try:
-                await self.message.edit(view=None)
-            except Exception as e:
-                log.warning(f"Não foi possível remover view: {e}")
+async def decidir_set(interaction: discord.Interaction, solicitacao_id: int, aprovado: bool) -> None:
+    acao = "aprovar" if aprovado else "reprovar"
+    if not _check_permission(interaction):
+        await interaction.response.send_message(f"❌ Sem permissão para {acao}.", ephemeral=True)
+        return
 
-        _clear_pending(self.requester.id if self.requester else 0)
+    solicitacao = pedidos.get_solicitacao(solicitacao_id)
+    if solicitacao is None or solicitacao["guild_id"] != str(interaction.guild_id):
+        await interaction.response.send_message("❌ Solicitação não encontrada.", ephemeral=True)
+        return
+    if solicitacao["status"] != pedidos.PENDENTE:
+        quem = f" por <@{solicitacao['decidido_por']}>" if solicitacao["decidido_por"] else ""
+        await interaction.response.send_message(
+            f"⚠️ Esta solicitação já está **{solicitacao['status']}**{quem}.", ephemeral=True
+        )
+        return
+    if not pedidos.reservar(solicitacao_id, str(interaction.user.id)):
+        await interaction.response.send_message("⏳ Já está sendo processada por outra pessoa.", ephemeral=True)
+        return
 
-        if not aprovado:
-            embed = discord.Embed(
-                title="❌ Set Reprovado",
-                description=f"**{self.target_name}**\nReprovado por {approver.mention}",
-                color=discord.Color.red(),
-                timestamp=discord.utils.utcnow(),
-            )
-            _audit("SET_REPROVADO", approver.id, self.target_user_id)
-            await interaction.followup.send(embed=embed)
-            return
+    await interaction.response.defer()
+    try:
+        await _processar_set(interaction, solicitacao, aprovado)
+    except Exception:
+        pedidos.liberar(solicitacao_id)
+        raise
 
+
+async def _processar_set(interaction: discord.Interaction, solicitacao, aprovado: bool) -> None:
+    guild    = interaction.guild
+    guild_id = str(guild.id)
+    approver = interaction.user
+    target_user_id = int(solicitacao["user_id"])
+    target_name    = solicitacao["nome"]
+    id_jogo        = solicitacao["id_jogo"]
+
+    try:
+        await interaction.edit_original_response(view=None)
+    except Exception as e:
+        log.warning(f"Não foi possível remover view: {e}")
+
+    _clear_pending(target_user_id)
+
+    if not aprovado:
+        embed = discord.Embed(
+            title="❌ Set Reprovado",
+            description=f"**{target_name}**\nReprovado por {approver.mention}",
+            color=discord.Color.red(),
+            timestamp=discord.utils.utcnow(),
+        )
+        pedidos.concluir(solicitacao["id"], pedidos.REPROVADO, str(approver.id))
+        _audit("SET_REPROVADO", approver.id, target_user_id)
+        await interaction.followup.send(embed=embed)
+        return
+
+    try:
+        member = guild.get_member(target_user_id) or await guild.fetch_member(target_user_id)
+    except discord.NotFound:
+        pedidos.concluir(solicitacao["id"], pedidos.REPROVADO, str(approver.id))
+        await interaction.followup.send(
+            f"❌ Membro `{target_user_id}` não está mais no servidor. Solicitação encerrada.",
+            ephemeral=True,
+        )
+        return
+    except Exception as e:
+        log.error(f"Erro ao buscar membro: {e}")
+        pedidos.liberar(solicitacao["id"])
+        await interaction.followup.send("❌ Erro ao buscar membro. Tente novamente.", ephemeral=True)
+        return
+
+    cfg               = db_get_guild_config(guild_id)
+    member_role_id    = int(cfg["member_role_id"]) if cfg and cfg["member_role_id"] else None
+    log_ch_id         = int(cfg["log_channel_id"]) if cfg and cfg["log_channel_id"] else None
+    private_cat_id    = int(cfg["private_category_id"]) if cfg and cfg["private_category_id"] else None
+    approver_role_ids = db_get_approver_role_ids(guild_id)
+
+    member_role = guild.get_role(member_role_id) if member_role_id else None
+    if member_role and member_role not in member.roles:
         try:
-            member = guild.get_member(self.target_user_id) or await guild.fetch_member(self.target_user_id)
-        except discord.NotFound:
-            await interaction.followup.send(f"❌ Membro `{self.target_user_id}` não encontrado.", ephemeral=True)
-            return
+            await member.add_roles(member_role, reason=f"Set aprovado por {approver}")
         except Exception as e:
-            log.error(f"Erro ao buscar membro: {e}")
-            await interaction.followup.send("❌ Erro ao buscar membro.", ephemeral=True)
-            return
+            log.error(f"Erro ao aplicar cargo: {e}")
 
-        cfg               = db_get_guild_config(guild_id)
-        member_role_id    = int(cfg["member_role_id"]) if cfg and cfg["member_role_id"] else None
-        log_ch_id         = int(cfg["log_channel_id"]) if cfg and cfg["log_channel_id"] else None
-        private_cat_id    = int(cfg["private_category_id"]) if cfg and cfg["private_category_id"] else None
-        approver_role_ids = db_get_approver_role_ids(guild_id)
+    pedir_set_role = guild.get_role(1474869320659107853)
+    if pedir_set_role and pedir_set_role in member.roles:
+        try:
+            await member.remove_roles(pedir_set_role, reason=f"Set aprovado por {approver}")
+        except Exception as e:
+            log.error(f"Erro ao remover cargo 'Pedir Set': {e}")
 
-        member_role = guild.get_role(member_role_id) if member_role_id else None
-        if member_role and member_role not in member.roles:
-            try:
-                await member.add_roles(member_role, reason=f"Set aprovado por {approver}")
-            except Exception as e:
-                log.error(f"Erro ao aplicar cargo: {e}")
+    # FIX: nome do canal duplicando ID do jogo
+    # Canal privado criado ANTES de definir o apelido para que
+    # member.display_name não contenha ainda o id_jogo ao montar o nome.
+    existing_ch_id = db_channel_map_get(guild_id, str(target_user_id))
+    pasta   = None
+    created = False
 
-        pedir_set_role = guild.get_role(1474869320659107853)
-        if pedir_set_role and pedir_set_role in member.roles:
-            try:
-                await member.remove_roles(pedir_set_role, reason=f"Set aprovado por {approver}")
-            except Exception as e:
-                log.error(f"Erro ao remover cargo 'Pedir Set': {e}")
-
-        # FIX: nome do canal duplicando ID do jogo
-        # Canal privado criado ANTES de definir o apelido para que
-        # member.display_name não contenha ainda o id_jogo ao montar o nome.
-        existing_ch_id = db_channel_map_get(guild_id, str(self.target_user_id))
-        pasta   = None
-        created = False
-
-        if existing_ch_id:
-            pasta = guild.get_channel(existing_ch_id) or await safe_fetch_channel(guild, existing_ch_id)
-            if pasta is None:
-                pasta   = await criar_pasta(guild, member, approver, private_cat_id, approver_role_ids, self.id_jogo, self.target_name)
-                created = True
-                if pasta:
-                    db_channel_map_set(guild_id, str(self.target_user_id), pasta.id)
-        else:
-            pasta   = await criar_pasta(guild, member, approver, private_cat_id, approver_role_ids, self.id_jogo, self.target_name)
+    if existing_ch_id:
+        pasta = guild.get_channel(existing_ch_id) or await safe_fetch_channel(guild, existing_ch_id)
+        if pasta is None:
+            pasta   = await criar_pasta(guild, member, approver, private_cat_id, approver_role_ids, id_jogo, target_name)
             created = True
             if pasta:
-                db_channel_map_set(guild_id, str(self.target_user_id), pasta.id)
-
-        if self.id_jogo:
-            novo_nick = f"{self.target_name} | {self.id_jogo}"[:32]
-            try:
-                await member.edit(nick=novo_nick, reason=f"Set aprovado por {approver}")
-            except discord.Forbidden:
-                log.warning(f"Sem permissão para alterar apelido de {member.id}")
-            except Exception as e:
-                log.error(f"Erro ao alterar apelido: {e}")
-
-        log_channel = None
-        if log_ch_id:
-            log_channel = guild.get_channel(log_ch_id) or await safe_fetch_channel(guild, log_ch_id)
-
-        if log_channel:
-            log_embed = discord.Embed(title="✅ Set Aprovado", color=discord.Color.green(), timestamp=discord.utils.utcnow())
-            log_embed.set_thumbnail(url=member.display_avatar.url)
-            log_embed.add_field(name="👤 Membro",        value=f"{member.mention}\n`{member.id}`",     inline=True)
-            log_embed.add_field(name="✅ Aprovado por",  value=f"{approver.mention}\n`{approver.id}`", inline=True)
-            log_embed.add_field(name="🎮 ID no Jogo",    value=f"`{self.id_jogo}`" if self.id_jogo else "N/A", inline=True)
-            log_embed.add_field(name="📁 Canal Privado", value=pasta.mention if pasta else "❌ Falha ao criar", inline=False)
-            log_embed.set_footer(text=f"Canal {'criado' if created else 'já existia'}")
-            await log_channel.send(embed=log_embed)
-
+                db_channel_map_set(guild_id, str(target_user_id), pasta.id)
+    else:
+        pasta   = await criar_pasta(guild, member, approver, private_cat_id, approver_role_ids, id_jogo, target_name)
+        created = True
         if pasta:
-            farm_embed = discord.Embed(
-                title="🎉 Bem-vindo(a) à Família!",
-                description=(
-                    f"Olá, {member.mention}! Seu set foi aprovado por {approver.mention}.\n"
-                    f"Este é o seu canal privado - guarde bem.\n\n"
-                    f"Leia este tutorial antes de fazer seu primeiro **lançamento de farm**."
-                ),
-                color=discord.Color.green(),
-                timestamp=discord.utils.utcnow(),
-            )
-            farm_embed.set_thumbnail(url=member.display_avatar.url)
-            if self.id_jogo:
-                farm_embed.add_field(name="🎮 ID no Jogo", value=f"`{self.id_jogo}`", inline=True)
-            farm_embed.add_field(name="\u200b", value="\u200b", inline=False)
-            farm_embed.add_field(
-                name="1️⃣ Escolha o tipo certo",
-                value=(
-                    "**🚜 Lançar Farm:** use quando a meta for o Kit Desmanche "
-                    "com Borracha, Aluminio, Cobre ou Plastico.\n"
-                    "**💵 Lançar Dinheiro:** use quando a meta da semana for em dinheiro "
-                    "sujo, dinheiro limpo ou os dois."
-                ),
-                inline=False,
-            )
-            farm_embed.add_field(
-                name="2️⃣ Faça o lançamento",
-                value=(
-                    "Vá ao canal do **Painel de Farm/Painel de Operações**, clique no botão correto "
-                    "e preencha apenas os campos que você realmente entregou.\n"
-                    "Use números inteiros nos itens. Para dinheiro, pode usar `50000` ou `R$ 50.000`."
-                ),
-                inline=False,
-            )
-            farm_embed.add_field(
-                name="3️⃣ Envie o print obrigatório",
-                value=(
-                    "Depois de confirmar o modal, o bot vai pedir o print no mesmo canal. "
-                    "Envie uma imagem em até **3 minutos**.\n"
-                    "O farm só é registrado depois que o print é recebido. Se o tempo acabar, "
-                    "nada será salvo e você precisará lançar novamente."
-                ),
-                inline=False,
-            )
-            farm_embed.add_field(
-                name="📊 Conferir ou corrigir",
-                value=(
-                    "Use **📊 Ver Meu Farm** ou o comando `/farm` para acompanhar sua meta, "
-                    "porcentagem e último lançamento.\n"
-                    "Se lançar errado, abra `/farm` e use **✏️ Editar último**. "
-                    "Se precisar alterar um lançamento antigo, chame a liderança."
-                ),
-                inline=False,
-            )
-            farm_embed.add_field(
-                name="📅 Janela de lançamento",
-                value="Os lançamentos são aceitos de **segunda 00:00 a domingo 23:59**.",
-                inline=True,
-            )
-            farm_embed.add_field(
-                name="⚠️ Atenção",
-                value="Lance somente o que você produziu e mantenha o print separado antes de abrir o modal.",
-                inline=False,
-            )
-            farm_embed.set_footer(text="Morro do Mineiro • Bom trabalho!")
-            await pasta.send(embed=farm_embed)
+            db_channel_map_set(guild_id, str(target_user_id), pasta.id)
 
-        _audit("SET_APROVADO", approver.id, member.id, id_jogo=self.id_jogo, canal=pasta.id if pasta else "N/A")
+    if id_jogo:
+        novo_nick = f"{target_name} | {id_jogo}"[:32]
+        try:
+            await member.edit(nick=novo_nick, reason=f"Set aprovado por {approver}")
+        except discord.Forbidden:
+            log.warning(f"Sem permissão para alterar apelido de {member.id}")
+        except Exception as e:
+            log.error(f"Erro ao alterar apelido: {e}")
 
-        result_embed = discord.Embed(
-            title="✅ Set Aprovado",
-            description=f"{member.mention} aprovado por {approver.mention}.",
+    log_channel = None
+    if log_ch_id:
+        log_channel = guild.get_channel(log_ch_id) or await safe_fetch_channel(guild, log_ch_id)
+
+    if log_channel:
+        log_embed = discord.Embed(title="✅ Set Aprovado", color=discord.Color.green(), timestamp=discord.utils.utcnow())
+        log_embed.set_thumbnail(url=member.display_avatar.url)
+        log_embed.add_field(name="👤 Membro",        value=f"{member.mention}\n`{member.id}`",     inline=True)
+        log_embed.add_field(name="✅ Aprovado por",  value=f"{approver.mention}\n`{approver.id}`", inline=True)
+        log_embed.add_field(name="🎮 ID no Jogo",    value=f"`{id_jogo}`" if id_jogo else "N/A", inline=True)
+        log_embed.add_field(name="📁 Canal Privado", value=pasta.mention if pasta else "❌ Falha ao criar", inline=False)
+        log_embed.set_footer(text=f"Canal {'criado' if created else 'já existia'}")
+        await log_channel.send(embed=log_embed)
+
+    if pasta:
+        farm_embed = discord.Embed(
+            title="🎉 Bem-vindo(a) à Família!",
+            description=(
+                f"Olá, {member.mention}! Seu set foi aprovado por {approver.mention}.\n"
+                f"Este é o seu canal privado - guarde bem.\n\n"
+                f"Leia este tutorial antes de fazer seu primeiro **lançamento de farm**."
+            ),
             color=discord.Color.green(),
             timestamp=discord.utils.utcnow(),
         )
-        result_embed.set_thumbnail(url=member.display_avatar.url)
-        if self.id_jogo:
-            result_embed.add_field(name="🎮 ID no Jogo", value=f"`{self.id_jogo}`", inline=True)
-        await interaction.followup.send(embed=result_embed)
+        farm_embed.set_thumbnail(url=member.display_avatar.url)
+        if id_jogo:
+            farm_embed.add_field(name="🎮 ID no Jogo", value=f"`{id_jogo}`", inline=True)
+        farm_embed.add_field(name="\u200b", value="\u200b", inline=False)
+        farm_embed.add_field(
+            name="1️⃣ Escolha o tipo certo",
+            value=(
+                "**🚜 Lançar Farm:** use quando a meta for o Kit Desmanche "
+                "com Borracha, Aluminio, Cobre ou Plastico.\n"
+                "**💵 Lançar Dinheiro:** use quando a meta da semana for em dinheiro "
+                "sujo, dinheiro limpo ou os dois."
+            ),
+            inline=False,
+        )
+        farm_embed.add_field(
+            name="2️⃣ Faça o lançamento",
+            value=(
+                "Vá ao canal do **Painel de Farm/Painel de Operações**, clique no botão correto "
+                "e preencha apenas os campos que você realmente entregou.\n"
+                "Use números inteiros nos itens. Para dinheiro, pode usar `50000` ou `R$ 50.000`."
+            ),
+            inline=False,
+        )
+        farm_embed.add_field(
+            name="3️⃣ Envie o print obrigatório",
+            value=(
+                "Depois de confirmar o modal, o bot vai pedir o print no mesmo canal. "
+                "Envie uma imagem em até **3 minutos**.\n"
+                "O farm só é registrado depois que o print é recebido. Se o tempo acabar, "
+                "nada será salvo e você precisará lançar novamente."
+            ),
+            inline=False,
+        )
+        farm_embed.add_field(
+            name="📊 Conferir ou corrigir",
+            value=(
+                "Use **📊 Ver Meu Farm** ou o comando `/farm` para acompanhar sua meta, "
+                "porcentagem e último lançamento.\n"
+                "Se lançar errado, abra `/farm` e use **✏️ Editar último**. "
+                "Se precisar alterar um lançamento antigo, chame a liderança."
+            ),
+            inline=False,
+        )
+        farm_embed.add_field(
+            name="📅 Janela de lançamento",
+            value="Os lançamentos são aceitos de **segunda 00:00 a domingo 23:59**.",
+            inline=True,
+        )
+        farm_embed.add_field(
+            name="⚠️ Atenção",
+            value="Lance somente o que você produziu e mantenha o print separado antes de abrir o modal.",
+            inline=False,
+        )
+        farm_embed.set_footer(text="Morro do Mineiro • Bom trabalho!")
+        await pasta.send(embed=farm_embed)
+
+    pedidos.concluir(solicitacao["id"], pedidos.APROVADO, str(approver.id))
+    _audit("SET_APROVADO", approver.id, member.id, id_jogo=id_jogo, canal=pasta.id if pasta else "N/A")
+
+    result_embed = discord.Embed(
+        title="✅ Set Aprovado",
+        description=f"{member.mention} aprovado por {approver.mention}.",
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow(),
+    )
+    result_embed.set_thumbnail(url=member.display_avatar.url)
+    if id_jogo:
+        result_embed.add_field(name="🎮 ID no Jogo", value=f"`{id_jogo}`", inline=True)
+    await interaction.followup.send(embed=result_embed)

@@ -54,7 +54,13 @@ class PreAcaoModal(discord.ui.Modal, title="⚡ Configurar Ação"):
         except ValueError as exc:
             await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
             return
-        horario_val = self.horario.value.strip()
+        from cogs.acao import normalizar_horario
+
+        try:
+            horario_val = normalizar_horario(self.horario.value)
+        except ValueError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
         tipo_val    = self.tipo_acao.value.strip().lower()
 
         if tipo_val not in ("fuga", "tiro"):
@@ -91,7 +97,7 @@ class PreAcaoModal(discord.ui.Modal, title="⚡ Configurar Ação"):
         if canal:
             await canal.send(
                 embed=acao_embed,
-                view=AcaoSelectView(horario=horario_val, tipo=tipo_val, data=data_val),
+                view=AcaoSelectView(horario=horario_val, tipo=tipo_val, data=data_val, iniciador_id=interaction.user.id),
             )
             await interaction.followup.send(
                 f"✅ Seletor de ação aberto em {canal.mention}!",
@@ -117,7 +123,7 @@ class PreAcaoModal(discord.ui.Modal, title="⚡ Configurar Ação"):
             # Fallback: posta no canal atual se o canal não estiver configurado
             await interaction.followup.send(
                 embed=acao_embed,
-                view=AcaoSelectView(horario=horario_val, tipo=tipo_val, data=data_val),
+                view=AcaoSelectView(horario=horario_val, tipo=tipo_val, data=data_val, iniciador_id=interaction.user.id),
             )
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):

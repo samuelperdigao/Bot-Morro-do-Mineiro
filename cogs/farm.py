@@ -11,6 +11,8 @@ from discord.ext import commands, tasks
 
 from core.date_utils import format_date_br, format_week_range_br, week_id_from_date_br
 from core.logger import get_logger
+from core.money import fmt_input_valor, parse_money_br
+from core.error_reporting import proteger_loop
 from core.permissions import is_lideranca, is_permitido_farm
 from core.command_config import is_enabled as _cmd_enabled
 from services.log_service import send_log
@@ -40,10 +42,9 @@ IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 FARM_EXTRA_ITEM = "Ferro"
 
 
-def _parse_money(raw: str) -> float:
-    raw = (raw or "0").strip()
-    raw = raw.replace("R$", "").replace(".", "").replace(",", ".").strip()
-    return float(raw or 0)
+# Leitura de valores em R$ centralizada em core/money.py.
+_parse_money = parse_money_br
+_fmt_input_valor = fmt_input_valor
 
 
 def _fmt_money(valor: float) -> str:
@@ -547,7 +548,7 @@ class EditarUltimoModal(discord.ui.Modal, title="Editar Último Lançamento"):
                 label=nome,
                 placeholder="Novo valor total",
                 required=False,
-                default=str(val) if val else "0",
+                default=_fmt_input_valor(val) if val else "0",
             )
             self.add_item(ti)
             self._inputs.append(ti)
@@ -894,11 +895,15 @@ class FarmCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         init_db()
-        self._ranking_task.start()
-        self._abertura_semana.start()
-        self._aviso_quarta.start()
-        self._aviso_quinta.start()
-        self._fechamento_semana.start()
+        for nome, loop in (
+            ("farm_ranking_domingo", self._ranking_task),
+            ("farm_abertura_semana", self._abertura_semana),
+            ("farm_aviso_quarta", self._aviso_quarta),
+            ("farm_aviso_sabado", self._aviso_quinta),
+            ("farm_fechamento_semana", self._fechamento_semana),
+        ):
+            proteger_loop(loop, nome, lambda: self.bot)
+            loop.start()
         log.info("FarmCog inicializado.")
 
     def cog_unload(self):
@@ -906,6 +911,7 @@ class FarmCog(commands.Cog):
         self._abertura_semana.cancel()
         self._aviso_quarta.cancel()
         self._aviso_quinta.cancel()
+        self._fechamento_semana.cancel()
         self._fechamento_semana.cancel()
 
     async def _atualizar_painel(self, guild_id: str, week_id: str, user_id: str):
@@ -1192,7 +1198,7 @@ class FarmCog(commands.Cog):
                     continue
                 row = prog_por_uid.get(str(member.id))
                 # Aprovados não recebem aviso
-                if row and (bool(row["aprovada"]) or bool(row.get("aprovacao_antecipada", False))):
+                if row and (bool(row["aprovada"]) or bool(row["aprovacao_antecipada"])):
                     continue
                 # Só envia DM se TODOS os itens estão zerados
                 prog_itens = db_prog_itens(row) if row else {}
@@ -1243,7 +1249,7 @@ class FarmCog(commands.Cog):
                     continue
                 row = prog_por_uid.get(str(member.id))
                 # Aprovados não recebem aviso
-                if row and (bool(row["aprovada"]) or bool(row.get("aprovacao_antecipada", False))):
+                if row and (bool(row["aprovada"]) or bool(row["aprovacao_antecipada"])):
                     continue
                 # Só envia DM se TODOS os itens estão zerados
                 prog_itens = db_prog_itens(row) if row else {}

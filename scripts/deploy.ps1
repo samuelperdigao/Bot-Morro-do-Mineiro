@@ -1,10 +1,32 @@
-# deploy.ps1 - Envia arquivos e reinicia o bot no servidor Oracle
+# deploy.ps1 - Publica o bot no servidor Oracle a partir do Windows.
 # Uso: .\deploy.ps1
+#
+# Envia SOMENTE os arquivos versionados no git (git archive HEAD): nunca leva
+# .env, chaves, bancos ou JSON de estado. No servidor, scripts/remote_deploy.sh
+# faz backup dos bancos, guarda um snapshot do codigo atual, instala as
+# dependencias, reinicia e, se o bot nao subir, restaura a versao anterior.
+#
+# Alternativa sem PC: GitHub > Actions > Deploy > Run workflow.
+
+$ErrorActionPreference = "Stop"
 
 $SSH_KEY    = "$PSScriptRoot\oracle.key"
 $REMOTE     = "ubuntu@163.176.143.142"
-$REMOTE_DIR = "/home/ubuntu/farmbot"
 $LOCAL_DIR  = Split-Path $PSScriptRoot -Parent
+$SSH_OPTS   = @("-i", $SSH_KEY, "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=20")
+$STAMP      = Get-Date -Format "yyyyMMdd-HHmmss"
+$TAR_LOCAL  = Join-Path $env:TEMP "farmbot-release-$STAMP.tar"
+$TAR_REMOTE = "/tmp/farmbot-release-$STAMP.tar"
+$SCRIPT_REMOTE = "/tmp/farmbot-remote-deploy-$STAMP.sh"
+
+function Invoke-Checked {
+    param([string]$Descricao, [scriptblock]$Comando)
+    & $Comando
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  [ERRO] $Descricao (codigo $LASTEXITCODE). Deploy abortado." -ForegroundColor Red
+        exit 1
+    }
+}
 
 Write-Host ""
 Write-Host "======================================" -ForegroundColor Cyan
@@ -12,138 +34,47 @@ Write-Host "  Deploy - Bot Morro do Mineiro" -ForegroundColor Cyan
 Write-Host "======================================" -ForegroundColor Cyan
 Write-Host ""
 
-# ── 1. Envio dos arquivos via SCP ─────────────────────────────────────────────
-
-Write-Host "[1/3] Enviando arquivos para o servidor..." -ForegroundColor Yellow
-
-# rsync nao esta disponivel no Windows por padrao, entao usamos scp com exclusoes manuais.
-# Copiamos arquivo por arquivo/pasta por pasta, excluindo o que nao deve ir.
-
-$excludedDirs  = @("venv", "__pycache__", "_old", ".git")
-$excludedExts  = @("*.db", "*.db-shm", "*.db-wal", "*.log", "*.pyc")
-
-# Coleta todos os itens a enviar (exclui pastas e extensoes indesejadas)
-$items = Get-ChildItem -Path $LOCAL_DIR -Recurse |
-    Where-Object {
-        $relativePath = $_.FullName.Substring($LOCAL_DIR.Length + 1)
-        $parts = $relativePath -split "\\"
-
-        # Exclui se algum segmento do caminho for uma pasta excluida
-        $inExcludedDir = $false
-        foreach ($part in $parts) {
-            if ($excludedDirs -contains $part) {
-                $inExcludedDir = $true
-                break
-            }
-        }
-
-        # Exclui arquivos com extensoes indesejadas
-        $hasExcludedExt = $false
-        if (-not $_.PSIsContainer) {
-            foreach ($ext in $excludedExts) {
-                if ($_.Name -like $ext) {
-                    $hasExcludedExt = $true
-                    break
-                }
-            }
-        }
-
-        -not $inExcludedDir -and -not $hasExcludedExt
-    }
-
-# Garante que a estrutura de diretorios existe no servidor
-$dirs = $items | Where-Object { $_.PSIsContainer } |
-    ForEach-Object { $_.FullName.Substring($LOCAL_DIR.Length + 1) -replace "\\", "/" }
-
-foreach ($dir in $dirs) {
-    ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE "mkdir -p $REMOTE_DIR/$dir" 2>$null
-}
-
-# Envia os arquivos
-$files = $items | Where-Object { -not $_.PSIsContainer }
-$total = $files.Count
-$count = 0
-
-foreach ($file in $files) {
-    $count++
-    $relativePath = $file.FullName.Substring($LOCAL_DIR.Length + 1) -replace "\\", "/"
-    $remotePath   = "$REMOTE_DIR/$relativePath"
-    $pathParts    = $remotePath -split "/"
-    $remoteFolder = $pathParts[0..($pathParts.Count - 2)] -join "/"
-
-    Write-Progress -Activity "Enviando arquivos" -Status "$relativePath" -PercentComplete (($count / $total) * 100)
-
-    scp -i $SSH_KEY -o StrictHostKeyChecking=no `
-        $file.FullName `
-        "${REMOTE}:${remotePath}" 2>$null
-
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "  [ERRO] Falha ao enviar: $relativePath" -ForegroundColor Red
-    }
-}
-
-Write-Progress -Activity "Enviando arquivos" -Completed
-Write-Host "  $total arquivo(s) enviado(s)." -ForegroundColor Green
-
-# ── 2. Instalar dependencias no servidor ─────────────────────────────────────
-
-Write-Host ""
-Write-Host "[2/4] Instalando dependencias Python no servidor..." -ForegroundColor Yellow
-
-ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE `
-    "cd $REMOTE_DIR && $REMOTE_DIR/venv/bin/pip install -r requirements.txt -q" 2>&1
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "  [AVISO] pip install retornou erro (pode ser normal se ja instalado)." -ForegroundColor Yellow
-} else {
-    Write-Host "  Dependencias atualizadas." -ForegroundColor Green
-}
-
-# ── 3. Reinicio do servico ────────────────────────────────────────────────────
-
-Write-Host ""
-Write-Host "[3/4] Reiniciando servico farmbot..." -ForegroundColor Yellow
-
-ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE `
-    "sudo systemctl restart farmbot" 2>&1
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "  [ERRO] Falha ao reiniciar o servico." -ForegroundColor Red
+if (-not (Test-Path $SSH_KEY)) {
+    Write-Host "  [ERRO] Chave SSH nao encontrada em $SSH_KEY" -ForegroundColor Red
     exit 1
 }
 
-Write-Host "  Comando de restart enviado." -ForegroundColor Green
+Push-Location $LOCAL_DIR
+try {
+    $pendentes = git status --porcelain
+    if ($pendentes) {
+        Write-Host "  [AVISO] Ha alteracoes nao commitadas. Elas NAO serao enviadas:" -ForegroundColor Yellow
+        $pendentes | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow }
+        $resp = Read-Host "  Continuar com o ultimo commit? (s/N)"
+        if ($resp -ne "s") { exit 1 }
+    }
 
-# ── 4. Verificacao de status ──────────────────────────────────────────────────
+    Write-Host "[1/3] Gerando release do commit $(git rev-parse --short HEAD)..." -ForegroundColor Yellow
+    Invoke-Checked "git archive" { git archive --format=tar -o $TAR_LOCAL HEAD }
 
-Write-Host ""
-Write-Host "[4/4] Aguardando inicializacao (3s)..." -ForegroundColor Yellow
-Start-Sleep -Seconds 3
+    Write-Host "[2/3] Enviando para o servidor..." -ForegroundColor Yellow
+    Invoke-Checked "envio da release" { scp @SSH_OPTS $TAR_LOCAL "${REMOTE}:${TAR_REMOTE}" }
+    Invoke-Checked "envio do script" { scp @SSH_OPTS "$PSScriptRoot\remote_deploy.sh" "${REMOTE}:${SCRIPT_REMOTE}" }
 
-$status = ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE `
-    "systemctl is-active farmbot"
-
-Write-Host ""
-Write-Host "======================================" -ForegroundColor Cyan
-
-if ($status -eq "active") {
-    Write-Host "  STATUS: ONLINE" -ForegroundColor Green
-    Write-Host "  Bot subiu com sucesso!" -ForegroundColor Green
-
-    # Exibe as ultimas linhas do log para confirmar
+    Write-Host "[3/3] Aplicando no servidor..." -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "  Ultimas linhas do log:" -ForegroundColor Cyan
-    ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE `
-        "journalctl -u farmbot -n 10 --no-pager --output=cat"
-} else {
-    Write-Host "  STATUS: $($status.ToUpper())" -ForegroundColor Red
-    Write-Host "  Bot nao iniciou corretamente." -ForegroundColor Red
-    Write-Host ""
-    Write-Host "  Log de erro:" -ForegroundColor Red
-    ssh -i $SSH_KEY -o StrictHostKeyChecking=no $REMOTE `
-        "journalctl -u farmbot -n 20 --no-pager --output=cat"
-    exit 1
+    # sed remove CR caso o script tenha sido salvo com quebra de linha do Windows.
+    ssh @SSH_OPTS $REMOTE "sed -i 's/\r$//' $SCRIPT_REMOTE && bash $SCRIPT_REMOTE $TAR_REMOTE; rc=`$?; rm -f $SCRIPT_REMOTE; exit `$rc"
+    $rc = $LASTEXITCODE
+}
+finally {
+    Remove-Item $TAR_LOCAL -ErrorAction SilentlyContinue
+    Pop-Location
 }
 
+Write-Host ""
+Write-Host "======================================" -ForegroundColor Cyan
+if ($rc -eq 0) {
+    Write-Host "  STATUS: ONLINE - deploy concluido." -ForegroundColor Green
+} else {
+    Write-Host "  [ERRO] Deploy falhou (codigo $rc). Veja o log acima." -ForegroundColor Red
+    Write-Host "  Se o bot nao subiu, a versao anterior foi restaurada." -ForegroundColor Red
+}
 Write-Host "======================================" -ForegroundColor Cyan
 Write-Host ""
+exit $rc

@@ -27,6 +27,6 @@ COG_EXTENSIONS = (
     "cogs.recolhimento",
     "cogs.bau_gerentes",
     "cogs.disparo",
-    "cogs.ponto",
     "cogs.cache_fivem",
+    "cogs.backup",
 )
