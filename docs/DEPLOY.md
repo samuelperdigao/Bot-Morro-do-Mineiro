@@ -80,3 +80,18 @@ sudo systemctl start farmbot
 ```
 
 Para o baú, use `bau.db` (na raiz) e `backups/predeploy-bau-*.db.gz`.
+
+Além dos backups de deploy, o bot gera todo dia às 04:00 (Brasília)
+`backups/farm-*.db.gz` e `backups/bau-*.db.gz`, mantendo os 14 mais recentes
+de cada. Administradores podem gerar um na hora com `/backup_agora`. Esses
+arquivos se restauram do mesmo jeito.
+
+## Variáveis opcionais no `.env` do servidor
+
+| Variável | Para que serve |
+|---|---|
+| `CANAL_ERROS_ID` | Canal privado que recebe avisos de erro do bot (1 por erro a cada 10 min) |
+| `CANAL_BACKUP_ID` | Canal privado que recebe o backup diário dos bancos |
+
+Sem elas, erros e backups ficam só no servidor (`logs/` e `backups/`).
+Depois de editar o `.env`, reinicie com `sudo systemctl restart farmbot`.

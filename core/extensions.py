@@ -32,4 +32,5 @@ COG_EXTENSIONS = (
     "cogs.bau_gerentes",
     "cogs.disparo",
     "cogs.cache_fivem",
+    "cogs.backup",
 )

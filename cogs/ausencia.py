@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 from core.config import AUSENCIAS_FILE, BASE_DIR
 from core.logger import get_logger
+from core.error_reporting import proteger_loop
 from core.command_config import is_enabled as _cmd_enabled, get_cog_config as _cog_cfg
 from services.log_service import send_log
 from services.db_service import (
@@ -214,6 +215,7 @@ class AusenciaPanelView(discord.ui.View):
 class Ausencia(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        proteger_loop(self.verificar_ausencias, "ausencia_verificacao", lambda: self.bot)
         self.verificar_ausencias.start()
 
     async def cog_load(self):

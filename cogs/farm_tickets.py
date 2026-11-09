@@ -16,6 +16,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from core.date_utils import format_date_br, format_datetime_br
+from core.error_reporting import proteger_loop
 from core.money import parse_money_br
 from core.nickname import TAG_GERENTE, TAG_VICE, strip_tag
 from core.role_sync import find_role_by_names
@@ -1079,6 +1080,8 @@ class FarmTicketsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         bot.add_view(FarmTicketView())
+        proteger_loop(self.cleanup_task, "farm_tickets_limpeza", lambda: self.bot)
+        proteger_loop(self.deadline_task, "farm_tickets_prazo", lambda: self.bot)
         self.cleanup_task.start()
         self.deadline_task.start()
 

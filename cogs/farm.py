@@ -13,6 +13,7 @@ from discord.ext import commands, tasks
 from core.date_utils import format_date_br, format_week_range_br, week_id_from_date_br
 from core.farm_policy import FARM_TICKET_ONLY_MESSAGE
 from core.logger import get_logger
+from core.error_reporting import proteger_loop
 from core.money import fmt_input_valor, parse_money_br
 from core.permissions import is_lideranca, is_permitido_farm
 from core.role_promotion import promote_role
@@ -1072,11 +1073,15 @@ class FarmCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         init_db()
-        self._ranking_task.start()
-        self._abertura_semana.start()
-        self._aviso_quarta.start()
-        self._aviso_quinta.start()
-        self._fechamento_semana.start()
+        for nome, loop in (
+            ("farm_ranking_domingo", self._ranking_task),
+            ("farm_abertura_semana", self._abertura_semana),
+            ("farm_aviso_quarta", self._aviso_quarta),
+            ("farm_aviso_sabado", self._aviso_quinta),
+            ("farm_fechamento_semana", self._fechamento_semana),
+        ):
+            proteger_loop(loop, nome, lambda: self.bot)
+            loop.start()
         log.info("FarmCog inicializado.")
 
     def cog_unload(self):

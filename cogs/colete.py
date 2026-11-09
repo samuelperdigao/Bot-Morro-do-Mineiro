@@ -30,6 +30,7 @@ from discord.ext import commands, tasks
 
 from core import components_v2 as v2
 from core.logger import get_logger
+from core.error_reporting import proteger_loop
 from features.farm.catalog import MATERIAIS_POR_COLETE
 from infrastructure.repositories.bau import BauRepository, DuplicateOperationError, OperationResult
 from services.bau_service import bau_service
@@ -400,6 +401,7 @@ class ColeteCog(commands.Cog):
         self._bau_sync_lock = asyncio.Lock()
 
     async def cog_load(self):
+        proteger_loop(self._bau_sync_task, "colete_sync_bau", lambda: self.bot)
         self._bau_sync_task.start()
 
     async def cog_unload(self):

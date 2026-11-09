@@ -17,6 +17,7 @@ from core.farm_policy import (
     previous_farm_week_id,
 )
 from core.logger import get_logger
+from core.error_reporting import proteger_loop
 from services.db_service import (
     current_week_id,
     db_farm_report_get,
@@ -427,6 +428,7 @@ class FarmPendingReportCog(commands.Cog):
         self.bot = bot
         self._permissions_reconciled = False
         bot.add_view(FarmPendingReportView())
+        proteger_loop(self.report_refresh_task, "farm_relatorio_refresh", lambda: self.bot)
         self.report_refresh_task.start()
 
     def cog_unload(self):

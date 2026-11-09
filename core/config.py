@@ -46,6 +46,14 @@ APPLICATION_ID = _env_int("APPLICATION_ID")
 CANAL_LOG_ENTRADA_ID = _env_int_optional("CANAL_LOG_ENTRADA_ID", 1474869321187459143)
 CANAL_LOG_PD_ID      = _env_int_optional("CANAL_LOG_PD_ID", 1496346120111259743)
 
+# Canal que recebe avisos de erros do bot (opcional). Sem ele, erros so vao
+# para o arquivo de log.
+CANAL_ERROS_ID       = _env_int_optional("CANAL_ERROS_ID")
+
+# Canal que recebe o backup diario dos bancos (opcional). Sem ele, o backup
+# fica apenas no disco do servidor (pasta backups/).
+CANAL_BACKUP_ID      = _env_int_optional("CANAL_BACKUP_ID")
+
 # ── Arquivos de dados ─────────────────────────────────────────────────────────
 DATA_DIR     = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
