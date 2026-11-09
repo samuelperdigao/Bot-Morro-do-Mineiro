@@ -15,6 +15,7 @@ from services.ponto_service import (
     ponto_abrir,
     ponto_atualizar_ranking_message,
     ponto_fechar,
+    ponto_fechar_expiradas,
     ponto_get_aberto,
     ponto_get_config,
     ponto_ranking_semana,
@@ -39,6 +40,10 @@ COR_SAIDA = 0xE67E22
 COR_INFO = 0x3498DB
 FOOTER = "Morro do Mineiro - Sistema de Ponto"
 
+# Ponto aberto há mais que isso é fechado automaticamente, contando só o teto.
+PONTO_LIMITE_HORAS = 12
+LINHAS_POR_FIELD_RANKING = 10
+
 
 def _fmt_dt(value: str | None) -> str:
     return format_datetime_br(value)
@@ -61,7 +66,8 @@ def _fmt_duration(seconds: int | float | None) -> str:
 
 def _safe_name(member: discord.Member | None, fallback: str, limit: int = 28) -> str:
     name = member.display_name if member else fallback
-    return name if len(name) <= limit else f"{name[: limit - 1]}..."
+    name = name if len(name) <= limit else f"{name[: limit - 1]}..."
+    return discord.utils.escape_markdown(name)
 
 
 def _build_painel_embed() -> discord.Embed:
@@ -129,7 +135,14 @@ def _build_ranking_embed(guild: discord.Guild, guild_id: str, week_id: str) -> d
                 f"`{pos}` **{nome}** - `{_fmt_duration(row['total_segundos'])}` "
                 f"em `{row['sessoes']}` sessao(oes)"
             )
-        embed.add_field(name="Ranking", value="\n".join(linhas), inline=False)
+        # Blocos de 10 linhas: uma linha tem até ~90 caracteres, então cada
+        # field fica bem abaixo do limite de 1024 do Discord.
+        for inicio in range(0, len(linhas), LINHAS_POR_FIELD_RANKING):
+            bloco = linhas[inicio:inicio + LINHAS_POR_FIELD_RANKING]
+            nome_field = "Ranking" if len(linhas) <= LINHAS_POR_FIELD_RANKING else (
+                f"Ranking ({inicio + 1}-{inicio + len(bloco)})"
+            )
+            embed.add_field(name=nome_field, value="\n".join(bloco)[:1024], inline=False)
 
     embed.set_footer(text=FOOTER)
     return embed
@@ -209,9 +222,12 @@ class PontoCog(commands.Cog):
         bot.add_view(PontoPainelView(self))
         proteger_loop(self.atualizar_ranking_diario, "ponto_ranking_diario", lambda: self.bot)
         self.atualizar_ranking_diario.start()
+        proteger_loop(self.fechar_pontos_esquecidos, "ponto_auto_fechamento", lambda: self.bot)
+        self.fechar_pontos_esquecidos.start()
 
     def cog_unload(self):
         self.atualizar_ranking_diario.cancel()
+        self.fechar_pontos_esquecidos.cancel()
 
     async def _fetch_channel(self, guild: discord.Guild, channel_id: int):
         channel = guild.get_channel(channel_id)
@@ -375,6 +391,36 @@ class PontoCog(commands.Cog):
 
     @atualizar_ranking_diario.before_loop
     async def before_atualizar_ranking_diario(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(minutes=5)
+    async def fechar_pontos_esquecidos(self):
+        sessoes = ponto_fechar_expiradas(PONTO_LIMITE_HORAS * 3600)
+        for sessao in sessoes:
+            log.info(
+                "Ponto %s de %s fechado automaticamente (limite %sh)",
+                sessao["id"], sessao["user_id"], PONTO_LIMITE_HORAS,
+            )
+            guild = self.bot.get_guild(int(sessao["guild_id"]))
+            if guild is None:
+                continue
+            member = guild.get_member(int(sessao["user_id"]))
+            alvo = member or discord.Object(id=int(sessao["user_id"]))
+            if member is not None:
+                await self.enviar_log_ponto(guild, member, sessao, "saida")
+                try:
+                    await member.send(
+                        f"⏱️ Seu ponto no **{guild.name}** ficou aberto por mais de "
+                        f"{PONTO_LIMITE_HORAS}h e foi fechado automaticamente, contando "
+                        f"{PONTO_LIMITE_HORAS}h. Lembre de fechar o ponto ao sair."
+                    )
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+            else:
+                log.info("Membro %s não está mais no servidor (ponto %s).", alvo.id, sessao["id"])
+
+    @fechar_pontos_esquecidos.before_loop
+    async def before_fechar_pontos_esquecidos(self):
         await self.bot.wait_until_ready()
 
     @app_commands.command(name="setup_ponto", description="Cria ou recria o painel e canais do sistema de ponto.")
@@ -601,6 +647,9 @@ class PontoCog(commands.Cog):
                 "Voce precisa da permissao Gerenciar Servidor.",
                 ephemeral=True,
             )
+        else:
+            # Demais erros: o handler global registra e responde ao usuário.
+            log.error("Erro em /ponto_abertos: %s", error, exc_info=True)
 
     @app_commands.command(name="ponto_fechar", description="Fecha manualmente o ponto aberto de um membro.")
     @app_commands.describe(membro="Membro que tera o ponto fechado")

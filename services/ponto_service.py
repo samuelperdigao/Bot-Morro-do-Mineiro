@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import sqlite3
 
@@ -152,6 +152,46 @@ def ponto_fechar(
     )
     conn.commit()
     return ponto_get_sessao(aberto["id"])
+
+
+def ponto_fechar_expiradas(limite_segundos: int, agora=None) -> list[sqlite3.Row]:
+    """Fecha pontos abertos há mais de `limite_segundos`.
+
+    A duração registrada fica limitada ao teto (a saída é gravada como
+    entrada + limite), para que um ponto esquecido não infle o ranking.
+    Retorna as sessões fechadas.
+    """
+    conn = get_conn()
+    agora = agora or now_tz()
+    fechadas = []
+    abertas = conn.execute(
+        "SELECT * FROM ponto_sessoes WHERE status=?", (STATUS_ABERTO,),
+    ).fetchall()
+    for sessao in abertas:
+        entrada = _parse_dt(sessao["entrada_em"])
+        if (agora - entrada).total_seconds() < limite_segundos:
+            continue
+        saida = entrada + timedelta(seconds=limite_segundos)
+        horas = limite_segundos // 3600
+        cur = conn.execute(
+            """UPDATE ponto_sessoes
+               SET saida_em=?, duracao_segundos=?, observacao_saida=?,
+                   fechado_por=?, status=?
+               WHERE id=? AND status=?""",
+            (
+                saida.isoformat(),
+                limite_segundos,
+                f"Fechado automaticamente: ponto aberto por mais de {horas}h",
+                "sistema",
+                STATUS_FECHADO,
+                sessao["id"],
+                STATUS_ABERTO,
+            ),
+        )
+        if cur.rowcount:
+            fechadas.append(sessao["id"])
+    conn.commit()
+    return [ponto_get_sessao(sid) for sid in fechadas]
 
 
 def ponto_total_usuario_semana(guild_id: str, week_id: str, user_id: str) -> int:
