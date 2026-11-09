@@ -29,4 +29,5 @@ COG_EXTENSIONS = (
     "cogs.disparo",
     "cogs.ponto",
     "cogs.cache_fivem",
+    "cogs.backup",
 )
