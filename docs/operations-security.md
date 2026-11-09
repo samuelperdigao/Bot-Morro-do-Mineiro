@@ -74,6 +74,10 @@ porque a conexão apresentou um fingerprint diferente.
 
 ## Deploy
 
+O caminho padrão é o deploy automático do GitHub Actions a cada push na
+`main` (`.github/workflows/deploy.yml` + `scripts/remote_deploy.sh`), descrito
+em `docs/DEPLOY.md`. O deploy manual abaixo continua disponível como plano B.
+
 O comando permanece:
 
 ```powershell

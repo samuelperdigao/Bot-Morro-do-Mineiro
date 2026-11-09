@@ -85,7 +85,10 @@ rode o mesmo comando sem alterações locais.
 O fluxo de publicação não atualiza preços nem tokens. Essas operações ficam
 separadas por alterarem recursos independentes.
 
-Para executar apenas o deploy, sem criar commit ou fazer push:
+Todo push na `main` dispara o deploy automático pelo GitHub Actions
+(testes, backup dos bancos e rollback se o bot cair). Veja `docs/DEPLOY.md`.
+
+Para executar apenas o deploy manual (plano B), sem criar commit ou fazer push:
 
 ```powershell
 pwsh scripts/deploy.ps1
