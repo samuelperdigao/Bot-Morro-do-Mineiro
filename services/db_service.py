@@ -1788,12 +1788,55 @@ def db_recolhimento_get_ciclo(ciclo_id: int):
     ).fetchone()
 
 
-def db_recolhimento_marcar_pago(ciclo_id: int, pago_por: str, observacao: str):
+def db_recolhimento_marcar_pago(ciclo_id: int, pago_por: str, observacao: str) -> bool:
+    """Marca o ciclo como pago. Retorna False se ele ja estava pago (idempotente)."""
+    conn = get_conn()
+    cur = conn.execute(
+        "UPDATE recolhimento_ciclos "
+        "SET pago=1, pago_por=?, data_pagamento=?, observacao_pagamento=? "
+        "WHERE id=? AND pago=0",
+        (pago_por, now_tz().isoformat(), observacao, ciclo_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def db_recolhimento_ciclo_por_mensagem(
+    guild_id: str,
+    channel_id: str,
+    tipo: str,
+    message_id: str,
+):
+    """Como db_recolhimento_ciclo_aberto_por_mensagem, mas inclui encerrados."""
+    return get_conn().execute(
+        "SELECT * FROM recolhimento_ciclos "
+        "WHERE guild_id=? AND channel_id=? AND tipo=? AND message_id=?",
+        (guild_id, channel_id, tipo, message_id),
+    ).fetchone()
+
+
+def db_recolhimento_ciclos_vencidos(hoje: str, incluir_hoje: bool) -> list:
+    """Ciclos de painel abertos cuja semana terminou antes de hoje (ou ate hoje).
+
+    Ciclos sem mensagem (criados pelo recolhimento nos tickets de farm) ficam
+    de fora: o saldo do ticket e calculado pelas entregas do ciclo aberto, e
+    encerra-los faria o proximo recolhimento comecar um ciclo novo do zero.
+    """
+    operador = "<=" if incluir_hoje else "<"
+    return get_conn().execute(
+        "SELECT * FROM recolhimento_ciclos "
+        f"WHERE semana_fim {operador} ? AND encerrado=0 AND message_id IS NOT NULL",
+        (hoje,),
+    ).fetchall()
+
+
+def db_recolhimento_excluir_ciclo_vazio(ciclo_id: int) -> None:
+    """Remove um ciclo recem-criado sem entregas (ex.: falha ao postar a mensagem)."""
     conn = get_conn()
     conn.execute(
-        "UPDATE recolhimento_ciclos "
-        "SET pago=1, pago_por=?, data_pagamento=?, observacao_pagamento=? WHERE id=?",
-        (pago_por, now_tz().isoformat(), observacao, ciclo_id),
+        "DELETE FROM recolhimento_ciclos WHERE id=? "
+        "AND NOT EXISTS (SELECT 1 FROM recolhimento_entregas WHERE ciclo_id=?)",
+        (ciclo_id, ciclo_id),
     )
     conn.commit()
 

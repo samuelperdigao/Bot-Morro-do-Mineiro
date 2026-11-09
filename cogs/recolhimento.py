@@ -3,7 +3,8 @@ cogs/recolhimento.py - Sistema de Recolhimento Semanal.
 
 /recolhimento → liderança inicia ciclo de dinheiro sujo ou farm no canal.
 Embeds fixos atualizados a cada entrega via message.edit().
-Task de fechamento todo domingo 23:59 encerra ciclos abertos.
+Task de fechamento (a cada 5 min) encerra os ciclos de painel cuja semana
+terminou; o ciclo encerrado continua pagável até ser marcado como pago.
 """
 
 import datetime
@@ -15,10 +16,10 @@ from discord.ext import commands, tasks
 from core.date_utils import format_date_br
 from core.logger import get_logger
 from core.error_reporting import proteger_loop
+from core.money import parse_money_br
 from core.permissions import is_lideranca
 from services.db_service import (
     DINHEIRO_ITEMS,
-    TZ,
     current_week_id,
     now_tz,
     db_channel_map_get,
@@ -26,7 +27,6 @@ from services.db_service import (
     db_get_lideranca_role_ids,
     db_get_meta,
     db_meta_tipo_efetivo,
-    db_meta_itens,
     db_meta_itens_ativos,
     db_meta_dinheiro_ativo,
     db_meta_dinheiro_itens_ativos,
@@ -34,14 +34,15 @@ from services.db_service import (
     db_lista_progresso,
     db_recolhimento_ciclo_aberto,
     db_recolhimento_ciclo_aberto_por_mensagem,
+    db_recolhimento_ciclo_por_mensagem,
     db_recolhimento_criar_ciclo,
     db_recolhimento_salvar_message_id,
     db_recolhimento_get_ciclo,
     db_recolhimento_marcar_pago,
     db_recolhimento_encerrar,
-    db_recolhimento_ciclos_para_encerrar,
+    db_recolhimento_ciclos_vencidos,
+    db_recolhimento_excluir_ciclo_vazio,
     db_recolhimento_add_entrega_dinheiro,
-    db_recolhimento_add_entrega_farm,
     db_recolhimento_add_entrega_itens,
     db_recolhimento_entrega_itens,
     db_recolhimento_get_entregas,
@@ -56,6 +57,18 @@ _KEY_LABELS = {
     "seringa": "Cobre",
     "agulha": "Plastico",
 }
+# Itens do recolhimento de farm, na ordem exibida. Entregas antigas usam as
+# colunas legadas (sem Ferro, que conta 0); as novas usam itens_json.
+FARM_ITENS = (*_KEY_LABELS.values(), "Ferro")
+
+LIMITE_FIELD = 1024
+# Orçamento de caracteres para a lista de entregas (o embed inteiro tem
+# limite de 6000; o restante fica para título, totais e status).
+ORCAMENTO_ENTREGAS = 4200
+MAX_FIELDS_ENTREGAS = 8
+# Ciclos vencidos há mais tempo que isso são encerrados sem alerta (evita
+# avisos em massa de semanas antigas quando o bot volta do ar).
+DIAS_ALERTA_PENDENCIA = 7
 
 
 # ── Helpers de formatação ─────────────────────────────────────────────────────
@@ -93,10 +106,15 @@ def _total_lancado_para_tipo(tipo: str, prog) -> int | float:
     return sum(qtd for nome, qtd in itens.items() if nome not in DINHEIRO_ITEMS)
 
 
-def _ciclo_da_mensagem(interaction: discord.Interaction, tipo: str):
+def _ciclo_da_mensagem(interaction: discord.Interaction, tipo: str, incluir_encerrado: bool = False):
     if not interaction.message:
         return None
-    return db_recolhimento_ciclo_aberto_por_mensagem(
+    buscar = (
+        db_recolhimento_ciclo_por_mensagem
+        if incluir_encerrado
+        else db_recolhimento_ciclo_aberto_por_mensagem
+    )
+    return buscar(
         str(interaction.guild_id),
         str(interaction.channel_id),
         tipo,
@@ -110,35 +128,116 @@ def _semana_fim_from_inicio(semana_inicio: str) -> str:
     return (inicio + datetime.timedelta(days=6)).isoformat()
 
 
-def _verificar_meta_atingida(ciclo, meta, entregas: list) -> bool:
-    """Retorna True se o total do ciclo atingiu a meta da semana."""
-    if not meta:
-        return False
-    tipo = ciclo["tipo"]
-    tipo_meta = db_meta_tipo_efetivo(meta)
-    if tipo == "dinheiro" and tipo_meta in {"dinheiro", "misto"}:
-        meta_val = meta["meta_dinheiro"] or 0
-        if meta_val <= 0:
-            return False
-        total = sum(e["valor"] or 0 for e in entregas)
-        return total >= meta_val
-    if tipo == "farm" and tipo_meta in {"itens", "misto"}:
-        meta_itens = db_meta_itens(meta)
-        if not meta_itens:
-            return False
-        nome_to_key = {
-            "Borracha": "folha",
-            "Aluminio": "opio",
-            "Cobre": "seringa",
-            "Plastico": "agulha",
-        }
-        totais = {k: sum(e[k] or 0 for e in entregas) for k in ("folha", "opio", "seringa", "agulha")}
-        return all(
-            totais.get(nome_to_key.get(nome, ""), 0) >= qtd
-            for nome, qtd in meta_itens.items()
-            if qtd > 0
+def _valor_dinheiro(entrega) -> float:
+    """Valor de uma entrega de dinheiro (coluna legada ou itens_json)."""
+    valor = _row_get(entrega, "valor")
+    if valor:
+        return float(valor)
+    return float(sum(float(v or 0) for v in db_recolhimento_entrega_itens(entrega).values()))
+
+
+def _itens_farm(entrega) -> dict[str, int]:
+    """Itens de uma entrega de farm (colunas legadas ou itens_json)."""
+    return {
+        nome: int(qtd or 0)
+        for nome, qtd in db_recolhimento_entrega_itens(entrega).items()
+    }
+
+
+def _totais_farm(entregas: list) -> dict[str, int]:
+    totais = {nome: 0 for nome in FARM_ITENS}
+    for entrega in entregas:
+        for nome, qtd in _itens_farm(entrega).items():
+            totais[nome] = totais.get(nome, 0) + qtd
+    return totais
+
+
+def _fmt_itens_farm(itens: dict[str, int]) -> str:
+    extras = sorted(nome for nome in itens if nome not in FARM_ITENS and itens[nome])
+    return " | ".join(f"{nome}: {itens.get(nome, 0)}" for nome in (*FARM_ITENS, *extras))
+
+
+def _dividir_linhas_em_fields(linhas: list[str]) -> tuple[list[str], int]:
+    """Agrupa linhas em blocos de até 1024 caracteres.
+
+    Se tudo não couber no orçamento do embed, mantém as entregas mais
+    recentes e devolve quantas das mais antigas ficaram de fora.
+    """
+    selecionadas: list[str] = []
+    usados = 0
+    for linha in reversed(linhas):
+        custo = min(len(linha), LIMITE_FIELD) + 1
+        if usados + custo > ORCAMENTO_ENTREGAS:
+            break
+        selecionadas.append(linha)
+        usados += custo
+    selecionadas.reverse()
+    omitidas = len(linhas) - len(selecionadas)
+
+    blocos: list[str] = []
+    atual = ""
+    for linha in selecionadas:
+        linha = linha[:LIMITE_FIELD]
+        candidato = f"{atual}\n{linha}" if atual else linha
+        if len(candidato) > LIMITE_FIELD:
+            blocos.append(atual)
+            atual = linha
+        else:
+            atual = candidato
+    if atual:
+        blocos.append(atual)
+    if len(blocos) > MAX_FIELDS_ENTREGAS:
+        excedentes = blocos[:-MAX_FIELDS_ENTREGAS]
+        omitidas += sum(bloco.count("\n") + 1 for bloco in excedentes)
+        blocos = blocos[-MAX_FIELDS_ENTREGAS:]
+    return blocos, omitidas
+
+
+def _adicionar_entregas(embed: discord.Embed, linhas: list[str]) -> None:
+    """Adiciona as entregas em fields de até 1024 caracteres.
+
+    Antes todas iam num field só e o embed parava de atualizar depois de
+    5 a 7 entregas (o Discord recusava o field acima do limite).
+    """
+    if not linhas:
+        return
+    blocos, omitidas = _dividir_linhas_em_fields(linhas)
+    total = len(blocos)
+    for i, bloco in enumerate(blocos, 1):
+        nome = "Entregas" if total == 1 else f"Entregas ({i}/{total})"
+        if i == 1 and omitidas:
+            nome += f" — {omitidas} mais antiga(s) oculta(s)"
+        embed.add_field(name=nome[:256], value=bloco, inline=False)
+
+
+def _adicionar_status(embed: discord.Embed, ciclo) -> None:
+    if ciclo["pago"]:
+        data_pag = _fmt_data_curta(ciclo["data_pagamento"])
+        embed.add_field(
+            name="STATUS",
+            value=(
+                f"🟡 Pago\n"
+                f"Data: {data_pag}\n"
+                f"Pago por: <@{ciclo['pago_por']}>\n"
+                f"Observação: {(ciclo['observacao_pagamento'] or '—')[:300]}"
+            ),
+            inline=False,
         )
-    return False
+    elif ciclo["encerrado"]:
+        embed.add_field(name="STATUS", value="🔒 Encerrado — pagamento pendente", inline=True)
+    else:
+        embed.add_field(name="STATUS", value="⏳ Pendente", inline=True)
+
+
+def _motivo_ciclo_fechado(ciclo) -> str | None:
+    """Mensagem de recusa se o ciclo não aceita mais registros."""
+    if ciclo is None:
+        return "❌ Ciclo não encontrado."
+    if ciclo["pago"]:
+        return "⚠️ Este ciclo já foi pago e não aceita novos registros."
+    if ciclo["encerrado"]:
+        return "⚠️ Este ciclo já foi encerrado e não aceita novos registros."
+    return None
 
 
 # ── Builders de embed ─────────────────────────────────────────────────────────
@@ -155,34 +254,18 @@ def build_embed_dinheiro(ciclo, entregas: list) -> discord.Embed:
     )
 
     total = 0.0
-    if entregas:
-        linhas = []
-        for i, e in enumerate(entregas, 1):
-            data_fmt  = _fmt_data_curta(e["data"])
-            valor_fmt = _fmt_valor(e["valor"] or 0)
-            total    += e["valor"] or 0
-            linhas.append(
-                f"Recolhimento {i:02d} | {data_fmt} | {valor_fmt} | "
-                f"{_fmt_alvo_entrega(e)} | Recolhido por <@{e['registrado_por']}>"
-            )
-        embed.add_field(name="Entregas", value="\n".join(linhas), inline=False)
+    linhas = []
+    for i, e in enumerate(entregas, 1):
+        valor = _valor_dinheiro(e)
+        total += valor
+        linhas.append(
+            f"Recolhimento {i:02d} | {_fmt_data_curta(e['data'])} | {_fmt_valor(valor)} | "
+            f"{_fmt_alvo_entrega(e)} | Recolhido por <@{e['registrado_por']}>"
+        )
+    _adicionar_entregas(embed, linhas)
 
     embed.add_field(name="TOTAL", value=_fmt_valor(total), inline=True)
-
-    if ciclo["pago"]:
-        data_pag = _fmt_data_curta(ciclo["data_pagamento"])
-        embed.add_field(
-            name="STATUS",
-            value=(
-                f"🟡 Pago\n"
-                f"Data: {data_pag}\n"
-                f"Pago por: <@{ciclo['pago_por']}>\n"
-                f"Observação: {ciclo['observacao_pagamento'] or '—'}"
-            ),
-            inline=False,
-        )
-    else:
-        embed.add_field(name="STATUS", value="⏳ Pendente", inline=True)
+    _adicionar_status(embed, ciclo)
 
     embed.set_footer(text=f"ID do ciclo: {ciclo['id']}")
     return embed
@@ -199,40 +282,17 @@ def build_embed_farm(ciclo, entregas: list) -> discord.Embed:
         timestamp=discord.utils.utcnow(),
     )
 
-    total = {"folha": 0, "opio": 0, "seringa": 0, "agulha": 0}
-    if entregas:
-        linhas = []
-        for i, e in enumerate(entregas, 1):
-            data_fmt = _fmt_data_curta(e["data"])
-            partes = []
-            for key in ("folha", "opio", "seringa", "agulha"):
-                val = e[key] or 0
-                total[key] += val
-                partes.append(f"{_KEY_LABELS[key]}: {val}")
-            linhas.append(
-                f"Recolhimento {i:02d} | {data_fmt} | "
-                + " | ".join(partes)
-                + f" | {_fmt_alvo_entrega(e)} | Recolhido por <@{e['registrado_por']}>"
-            )
-        embed.add_field(name="Entregas", value="\n".join(linhas), inline=False)
-
-    total_str = " | ".join(f"{_KEY_LABELS[k]}: {v}" for k, v in total.items())
-    embed.add_field(name="TOTAL", value=total_str, inline=False)
-
-    if ciclo["pago"]:
-        data_pag = _fmt_data_curta(ciclo["data_pagamento"])
-        embed.add_field(
-            name="STATUS",
-            value=(
-                f"🟡 Pago\n"
-                f"Data: {data_pag}\n"
-                f"Pago por: <@{ciclo['pago_por']}>\n"
-                f"Observação: {ciclo['observacao_pagamento'] or '—'}"
-            ),
-            inline=False,
+    linhas = []
+    for i, e in enumerate(entregas, 1):
+        linhas.append(
+            f"Recolhimento {i:02d} | {_fmt_data_curta(e['data'])} | "
+            + _fmt_itens_farm(_itens_farm(e))
+            + f" | {_fmt_alvo_entrega(e)} | Recolhido por <@{e['registrado_por']}>"
         )
-    else:
-        embed.add_field(name="STATUS", value="⏳ Pendente", inline=True)
+    _adicionar_entregas(embed, linhas)
+
+    embed.add_field(name="TOTAL", value=_fmt_itens_farm(_totais_farm(entregas)), inline=False)
+    _adicionar_status(embed, ciclo)
 
     embed.set_footer(text=f"ID do ciclo: {ciclo['id']}")
     return embed
@@ -262,10 +322,12 @@ class RecolhimentoDinheiroModal(discord.ui.Modal, title="💰 Registrar Recolhim
         self.alvo_pasta_id = alvo_pasta_id
 
     async def on_submit(self, interaction: discord.Interaction):
-        raw = self.valor_input.value.strip()
-        raw = raw.replace("R$", "").replace(".", "").replace(",", ".").strip()
+        motivo = _motivo_ciclo_fechado(db_recolhimento_get_ciclo(self.ciclo_id))
+        if motivo:
+            await interaction.response.send_message(motivo, ephemeral=True)
+            return
         try:
-            valor = float(raw)
+            valor = parse_money_br(self.valor_input.value)
             if valor <= 0:
                 raise ValueError
         except ValueError:
@@ -302,6 +364,7 @@ class RecolhimentoFarmModal(discord.ui.Modal, title="Kit Desmanche"):
     opio_input    = discord.ui.TextInput(label="Aluminio",  placeholder="0", required=False, max_length=10)
     seringa_input = discord.ui.TextInput(label="Cobre",     placeholder="0", required=False, max_length=10)
     agulha_input  = discord.ui.TextInput(label="Plastico",  placeholder="0", required=False, max_length=10)
+    ferro_input   = discord.ui.TextInput(label="Ferro",     placeholder="0", required=False, max_length=10)
 
     def __init__(
         self,
@@ -317,37 +380,42 @@ class RecolhimentoFarmModal(discord.ui.Modal, title="Kit Desmanche"):
         self.alvo_pasta_id = alvo_pasta_id
 
     async def on_submit(self, interaction: discord.Interaction):
+        motivo = _motivo_ciclo_fechado(db_recolhimento_get_ciclo(self.ciclo_id))
+        if motivo:
+            await interaction.response.send_message(motivo, ephemeral=True)
+            return
+        campos = (
+            ("Borracha", self.folha_input),
+            ("Aluminio", self.opio_input),
+            ("Cobre", self.seringa_input),
+            ("Plastico", self.agulha_input),
+            ("Ferro", self.ferro_input),
+        )
         try:
-            folha   = max(0, int(self.folha_input.value   or 0))
-            opio    = max(0, int(self.opio_input.value    or 0))
-            seringa = max(0, int(self.seringa_input.value or 0))
-            agulha  = max(0, int(self.agulha_input.value  or 0))
+            quantidades = {nome: max(0, int(campo.value or 0)) for nome, campo in campos}
         except ValueError:
             await interaction.response.send_message(
                 "❌ Valores inválidos. Use números inteiros.", ephemeral=True
             )
             return
 
-        if folha + opio + seringa + agulha == 0:
+        if sum(quantidades.values()) == 0:
             await interaction.response.send_message(
                 "❌ Informe pelo menos um valor acima de zero.", ephemeral=True
             )
             return
 
-        db_recolhimento_add_entrega_farm(
+        db_recolhimento_add_entrega_itens(
             self.ciclo_id,
             str(interaction.user.id),
-            folha,
-            opio,
-            seringa,
-            agulha,
+            {nome: qtd for nome, qtd in quantidades.items() if qtd > 0},
             self.alvo_user_id,
             self.alvo_nome,
             self.alvo_pasta_id,
         )
         await interaction.response.send_message(
             f"✅ Recolhimento registrado para **{self.alvo_nome}**! "
-            f"Borracha: {folha} | Aluminio: {opio} | Cobre: {seringa} | Plastico: {agulha}",
+            + " | ".join(f"{nome}: {qtd}" for nome, qtd in quantidades.items()),
             ephemeral=True,
         )
         cog = interaction.client.get_cog("RecolhimentoCog")
@@ -472,8 +540,11 @@ class RecolhimentoMetaModal(discord.ui.Modal):
         valores = {}
         try:
             for nome, field in zip(self.item_names, self.inputs):
-                raw = (field.value or "0").replace("R$", "").replace(".", "").replace(",", ".").strip()
-                valor = float(raw or 0) if self.meta_tipo == "dinheiro" else int(raw or 0)
+                if self.meta_tipo == "dinheiro":
+                    valor = parse_money_br(field.value)
+                else:
+                    raw = (field.value or "0").replace("R$", "").replace(".", "").replace(",", ".").strip()
+                    valor = int(raw or 0)
                 if valor < 0:
                     raise ValueError
                 if valor > 0:
@@ -576,7 +647,11 @@ class PagamentoModal(discord.ui.Modal, title="💳 Confirmar Pagamento"):
             return
 
         observacao = self.observacao_input.value.strip() or "—"
-        db_recolhimento_marcar_pago(self.ciclo_id, str(interaction.user.id), observacao)
+        if not db_recolhimento_marcar_pago(self.ciclo_id, str(interaction.user.id), observacao):
+            await interaction.response.send_message(
+                "⚠️ Este ciclo já foi marcado como pago.", ephemeral=True
+            )
+            return
         await interaction.response.send_message("✅ Ciclo marcado como pago!", ephemeral=True)
 
         cog = interaction.client.get_cog("RecolhimentoCog")
@@ -593,13 +668,12 @@ class PagamentoModal(discord.ui.Modal, title="💳 Confirmar Pagamento"):
             fim_fmt    = _fmt_data_curta(ciclo["semana_fim"])
 
             if tipo == "dinheiro":
-                total  = sum(e["valor"] or 0 for e in entregas)
+                total  = sum(_valor_dinheiro(e) for e in entregas)
                 resumo = f"Total recolhido: {_fmt_valor(total)}"
                 emoji  = "🔴"
                 label  = "Dinheiro Sujo"
             else:
-                totais = {k: sum(e[k] or 0 for e in entregas) for k in ("folha", "opio", "seringa", "agulha")}
-                resumo = " | ".join(f"{_KEY_LABELS[k]}: {v}" for k, v in totais.items())
+                resumo = _fmt_itens_farm(_totais_farm(entregas))
                 emoji  = "🟢"
                 label  = "Farm"
 
@@ -610,7 +684,7 @@ class PagamentoModal(discord.ui.Modal, title="💳 Confirmar Pagamento"):
                 timestamp=discord.utils.utcnow(),
             )
             notif.add_field(name="Pago por",   value=interaction.user.mention, inline=True)
-            notif.add_field(name="Observação", value=observacao,               inline=True)
+            notif.add_field(name="Observação", value=observacao[:1024],        inline=True)
             await canal.send(embed=notif)
         except Exception as e:
             log.warning("Falha ao enviar notificação de pagamento (ciclo %s): %s", self.ciclo_id, e)
@@ -629,13 +703,8 @@ async def _membros_com_lancamento(guild: discord.Guild, guild_id: str, week_id: 
             continue
 
         user_id = str(prog["user_id"])
+        # Só o cache: um fetch por membro estourava os 3s da interação.
         member = guild.get_member(int(user_id))
-        if member is None:
-            try:
-                member = await guild.fetch_member(int(user_id))
-            except Exception:
-                member = None
-
         nome = member.display_name if member else f"ID {user_id}"
         pasta_id = db_channel_map_get(guild_id, user_id)
         pasta_label = "Sem pasta vinculada"
@@ -804,11 +873,10 @@ class RecolhimentoDinheiroView(discord.ui.View):
         if not is_lideranca(interaction.user, db_get_lideranca_role_ids(guild_id)):
             await interaction.response.send_message("❌ Sem permissão.", ephemeral=True)
             return
-        ciclo = _ciclo_da_mensagem(interaction, "dinheiro")
+        # Ciclo encerrado continua pagável até ser marcado como pago.
+        ciclo = _ciclo_da_mensagem(interaction, "dinheiro", incluir_encerrado=True)
         if not ciclo:
-            await interaction.response.send_message(
-                "❌ Ciclo não encontrado ou já encerrado.", ephemeral=True
-            )
+            await interaction.response.send_message("❌ Ciclo não encontrado.", ephemeral=True)
             return
         if ciclo["pago"]:
             await interaction.response.send_message("⚠️ Este ciclo já foi pago.", ephemeral=True)
@@ -852,16 +920,25 @@ class RecolhimentoFarmView(discord.ui.View):
         if not is_lideranca(interaction.user, db_get_lideranca_role_ids(guild_id)):
             await interaction.response.send_message("❌ Sem permissão.", ephemeral=True)
             return
-        ciclo = _ciclo_da_mensagem(interaction, "farm")
+        # Ciclo encerrado continua pagável até ser marcado como pago.
+        ciclo = _ciclo_da_mensagem(interaction, "farm", incluir_encerrado=True)
         if not ciclo:
-            await interaction.response.send_message(
-                "❌ Ciclo não encontrado ou já encerrado.", ephemeral=True
-            )
+            await interaction.response.send_message("❌ Ciclo não encontrado.", ephemeral=True)
             return
         if ciclo["pago"]:
             await interaction.response.send_message("⚠️ Este ciclo já foi pago.", ephemeral=True)
             return
         await interaction.response.send_modal(PagamentoModal(ciclo["id"]))
+
+
+def _view_para_ciclo(ciclo) -> discord.ui.View | None:
+    """View derivada do estado: sem botões se pago; só "Pagar" se encerrado."""
+    if ciclo["pago"]:
+        return None
+    view = RecolhimentoDinheiroView() if ciclo["tipo"] == "dinheiro" else RecolhimentoFarmView()
+    if ciclo["encerrado"]:
+        view.registrar.disabled = True
+    return view
 
 
 # ── View de escolha do tipo (efêmera, não persistente) ───────────────────────
@@ -963,14 +1040,13 @@ class RecolhimentoCog(commands.Cog):
             return
 
         entregas = db_recolhimento_get_entregas(ciclo_id)
-        tipo     = ciclo["tipo"]
-
-        if tipo == "dinheiro":
+        if ciclo["tipo"] == "dinheiro":
             embed = build_embed_dinheiro(ciclo, entregas)
-            view  = None if remover_view else RecolhimentoDinheiroView()
         else:
             embed = build_embed_farm(ciclo, entregas)
-            view  = None if remover_view else RecolhimentoFarmView()
+        # A view segue o estado do ciclo: nunca reativa botões de um ciclo
+        # pago ou encerrado.
+        view = None if remover_view else _view_para_ciclo(ciclo)
 
         try:
             await msg.edit(embed=embed, view=view)
@@ -978,43 +1054,68 @@ class RecolhimentoCog(commands.Cog):
             log.warning("Falha ao editar mensagem do ciclo %s: %s", ciclo_id, e)
 
     async def _iniciar_ciclo(self, interaction: discord.Interaction, tipo: str):
-        """Cria e posta um novo ciclo no canal."""
+        """Cria e posta um ciclo no canal (no máximo um aberto por tipo/semana/canal)."""
         guild_id    = str(interaction.guild_id)
         channel_id  = str(interaction.channel_id)
         week_inicio = current_week_id()
         week_fim    = _semana_fim_from_inicio(week_inicio)
+        tipo_label  = "Dinheiro Sujo" if tipo == "dinheiro" else "Farm"
 
-        ciclo_id = db_recolhimento_criar_ciclo(
-            guild_id=guild_id,
-            member_id=str(interaction.user.id),
-            channel_id=channel_id,
-            tipo=tipo,
-            semana_inicio=week_inicio,
-            semana_fim=week_fim,
+        # Responde editando a mensagem de escolha: some com os botões (evita
+        # duplo clique criando ciclos repetidos) e responde em menos de 3s.
+        await interaction.response.edit_message(
+            content=f"⏳ Criando ciclo de **{tipo_label}**...", view=None
         )
 
-        ciclo    = db_recolhimento_get_ciclo(ciclo_id)
-        entregas = []
+        existente = db_recolhimento_ciclo_aberto(guild_id, channel_id, tipo, week_inicio)
+        if existente and existente["message_id"]:
+            link = f"https://discord.com/channels/{guild_id}/{channel_id}/{existente['message_id']}"
+            await interaction.edit_original_response(
+                content=f"⚠️ Já existe um ciclo de **{tipo_label}** aberto nesta semana neste canal: {link}"
+            )
+            return
+        if existente:
+            # Ciclo sem mensagem (órfão): reaproveita em vez de duplicar.
+            ciclo_id = existente["id"]
+        else:
+            ciclo_id = db_recolhimento_criar_ciclo(
+                guild_id=guild_id,
+                member_id=str(interaction.user.id),
+                channel_id=channel_id,
+                tipo=tipo,
+                semana_inicio=week_inicio,
+                semana_fim=week_fim,
+            )
 
+        ciclo    = db_recolhimento_get_ciclo(ciclo_id)
+        entregas = db_recolhimento_get_entregas(ciclo_id)
         if tipo == "dinheiro":
             embed = build_embed_dinheiro(ciclo, entregas)
-            view  = RecolhimentoDinheiroView()
         else:
             embed = build_embed_farm(ciclo, entregas)
-            view  = RecolhimentoFarmView()
 
-        canal = interaction.channel
-        if canal is None:
-            canal = interaction.guild.get_channel(int(channel_id)) or \
-                    await interaction.guild.fetch_channel(int(channel_id))
-        msg = await canal.send(embed=embed, view=view)
+        try:
+            canal = interaction.channel
+            if canal is None:
+                canal = interaction.guild.get_channel(int(channel_id)) or \
+                        await interaction.guild.fetch_channel(int(channel_id))
+            msg = await canal.send(embed=embed, view=_view_para_ciclo(ciclo))
+        except discord.Forbidden:
+            db_recolhimento_excluir_ciclo_vazio(ciclo_id)
+            await interaction.edit_original_response(
+                content="❌ O bot não tem permissão para enviar mensagens neste canal."
+            )
+            return
+        except Exception:
+            db_recolhimento_excluir_ciclo_vazio(ciclo_id)
+            raise
         db_recolhimento_salvar_message_id(ciclo_id, str(msg.id))
 
-        tipo_label = "Dinheiro Sujo" if tipo == "dinheiro" else "Farm"
-        await interaction.response.send_message(
-            f"✅ Ciclo de **{tipo_label}** criado!\n"
-            f"Semana: `{format_date_br(week_inicio)}` → `{format_date_br(week_fim)}`",
-            ephemeral=True,
+        await interaction.edit_original_response(
+            content=(
+                f"✅ Ciclo de **{tipo_label}** criado!\n"
+                f"Semana: `{format_date_br(week_inicio)}` → `{format_date_br(week_fim)}`"
+            )
         )
         log.info(
             "Ciclo criado: id=%s tipo=%s guild=%s canal=%s semana=%s",
@@ -1038,50 +1139,62 @@ class RecolhimentoCog(commands.Cog):
             ephemeral=True,
         )
 
-    @tasks.loop(time=datetime.time(hour=23, minute=59, tzinfo=TZ))
+    @tasks.loop(minutes=5)
     async def _fechamento_ciclos(self):
-        dt = now_tz()
-        if dt.weekday() != 6 or dt.hour != 23 or dt.minute != 59:
-            return
+        """Encerra os ciclos de painel cuja semana terminou (domingo 23:59).
 
-        hoje   = now_tz().date().isoformat()
-        ciclos = db_recolhimento_ciclos_para_encerrar(hoje)
+        Roda a cada 5 minutos e logo que o bot liga, então semanas em que o
+        bot estava fora do ar no horário do fechamento também são encerradas.
+        """
+        agora = now_tz()
+        hoje = agora.date()
+        incluir_hoje = hoje.weekday() == 6 and (agora.hour, agora.minute) >= (23, 59)
+        ciclos = db_recolhimento_ciclos_vencidos(hoje.isoformat(), incluir_hoje)
         if not ciclos:
             return
 
         log.info("Task de fechamento: %s ciclo(s) para encerrar em %s", len(ciclos), hoje)
         for ciclo in ciclos:
-            guild = self.bot.get_guild(int(ciclo["guild_id"]))
-            if not guild:
-                db_recolhimento_encerrar(ciclo["id"])
-                continue
+            # Erro num ciclo não impede o fechamento dos demais.
+            try:
+                await self._encerrar_ciclo(ciclo, hoje)
+            except Exception:
+                log.error("Falha ao encerrar ciclo %s", ciclo["id"], exc_info=True)
 
-            entregas     = db_recolhimento_get_entregas(ciclo["id"])
-            meta         = db_get_meta(ciclo["guild_id"], ciclo["semana_inicio"])
-            meta_atingida = _verificar_meta_atingida(ciclo, meta, entregas)
+    async def _encerrar_ciclo(self, ciclo, hoje: datetime.date):
+        db_recolhimento_encerrar(ciclo["id"])
+        log.info("Ciclo encerrado: id=%s guild=%s", ciclo["id"], ciclo["guild_id"])
 
-            if ciclo["message_id"] and meta_atingida and not ciclo["pago"]:
-                try:
-                    canal = guild.get_channel(int(ciclo["channel_id"])) or \
-                            await guild.fetch_channel(int(ciclo["channel_id"]))
-                    tipo_label = "Dinheiro Sujo" if ciclo["tipo"] == "dinheiro" else "Farm"
-                    alerta = discord.Embed(
-                        title="⚠️ Meta Atingida — Pagamento Pendente",
-                        description=(
-                            f"O ciclo de **{tipo_label}** desta semana atingiu a meta,\n"
-                            f"mas ainda **não foi marcado como pago**.\n\n"
-                            f"Use o botão **✅ Marcar como Pago** antes do fechamento."
-                        ),
-                        color=discord.Color.orange(),
-                        timestamp=discord.utils.utcnow(),
-                    )
-                    await canal.send(embed=alerta)
-                except Exception as e:
-                    log.warning("Falha ao enviar alerta de meta (ciclo %s): %s", ciclo["id"], e)
+        guild = self.bot.get_guild(int(ciclo["guild_id"]))
+        if not guild:
+            return
 
-            db_recolhimento_encerrar(ciclo["id"])
-            await self._atualizar_embed_ciclo(guild, ciclo["id"], remover_view=True)
-            log.info("Ciclo encerrado: id=%s guild=%s", ciclo["id"], ciclo["guild_id"])
+        # O botão "Marcar como Pago" continua ativo até o pagamento.
+        await self._atualizar_embed_ciclo(guild, ciclo["id"])
+
+        if ciclo["pago"] or not db_recolhimento_get_entregas(ciclo["id"]):
+            return
+        semana_fim = datetime.date.fromisoformat(ciclo["semana_fim"])
+        if (hoje - semana_fim).days > DIAS_ALERTA_PENDENCIA:
+            return
+        try:
+            canal = guild.get_channel(int(ciclo["channel_id"])) or \
+                    await guild.fetch_channel(int(ciclo["channel_id"]))
+            tipo_label = "Dinheiro Sujo" if ciclo["tipo"] == "dinheiro" else "Farm"
+            alerta = discord.Embed(
+                title="⚠️ Recolhimento Encerrado — Pagamento Pendente",
+                description=(
+                    f"O ciclo de **{tipo_label}** "
+                    f"({_fmt_data_curta(ciclo['semana_inicio'])} → {_fmt_data_curta(ciclo['semana_fim'])}) "
+                    "ainda **não foi marcado como pago**.\n\n"
+                    "O botão **✅ Marcar como Pago** continua disponível na mensagem do ciclo."
+                ),
+                color=discord.Color.orange(),
+                timestamp=discord.utils.utcnow(),
+            )
+            await canal.send(embed=alerta)
+        except Exception as e:
+            log.warning("Falha ao enviar alerta de pendência (ciclo %s): %s", ciclo["id"], e)
 
     @_fechamento_ciclos.before_loop
     async def _before_fechamento(self):

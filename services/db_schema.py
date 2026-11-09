@@ -242,6 +242,15 @@ CREATE TABLE IF NOT EXISTS recolhimento_entregas (
     itens_json     TEXT
 );
 
+CREATE INDEX IF NOT EXISTS idx_recolhimento_ciclos_mensagem
+ON recolhimento_ciclos (guild_id, channel_id, tipo, message_id);
+
+CREATE INDEX IF NOT EXISTS idx_recolhimento_ciclos_abertos
+ON recolhimento_ciclos (encerrado, semana_fim);
+
+CREATE INDEX IF NOT EXISTS idx_recolhimento_entregas_ciclo
+ON recolhimento_entregas (ciclo_id);
+
 CREATE TABLE IF NOT EXISTS lideranca_pendencias (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id        TEXT NOT NULL,
