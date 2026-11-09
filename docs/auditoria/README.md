@@ -6,6 +6,29 @@ Os relatórios completos, com `arquivo:linha`, trecho do código e correção su
 
 ---
 
+## Decisão: bot de servidor único
+
+O bot atende **apenas o servidor do Morro do Mineiro**. IDs fixos no código são intencionais e não são bug. Com isso, ficam descartados o C10 (Ponto), o C11 (Dashboard), o vazamento do log de membros entre servidores, o `guild_id` do baú, o `/status` somando servidores, o painel global do Cache e toda a Onda 3 de multi-servidor. A padronização visual continua válida.
+
+## Status
+
+**Sessão 1 (Onda 1): concluída.**
+
+| Item | Situação |
+|---|---|
+| C1 Backup do banco | ✅ Backup diário às 04:00, `/backup_agora`, backup antes de cada deploy |
+| C1 Deploy seguro | ✅ Release via `git archive`, rollback automático, workflow do GitHub Actions |
+| C2 Hierarquia | ✅ Só atribui cargos abaixo do próprio nível; troca atômica |
+| C3 Disparo | ✅ Restrito à liderança, com log |
+| Slots de gerente do baú | ✅ Restritos à liderança |
+| C4 Baú por categoria | ✅ Navegação pela view, sem modal encadeado |
+| C5 e C6 Farm | ✅ Lembretes corrigidos, parser de R$ estrito, edição sem multiplicar |
+| Tratamento global de erros | ✅ Handlers globais, tasks que se reiniciam, sync protegido |
+
+Próximo passo é a **Sessão 2**: Recolhimento (C9 e parser de R$), atualização do discord.py, estado persistente de Set e Ação (C7 e C8) e embeds paginados.
+
+---
+
 ## 1. Placar geral
 
 | # | Função | Nota | Críticas | Altas | Pior problema |
