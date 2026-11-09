@@ -11,8 +11,42 @@ from discord import app_commands
 from discord.ext import commands
 
 from core.logger import get_logger
+from core.permissions import is_lideranca
+from services.db_service import db_get_lideranca_role_ids
+from services.log_service import send_log
 
 log = get_logger("disparo", "disparo.log")
+
+MSG_SEM_PERMISSAO = "❌ Apenas a liderança pode usar o painel de disparo."
+
+
+def pode_disparar(member: discord.abc.User) -> bool:
+    """Liderança (cargos configurados), administradores e quem gerencia o servidor."""
+    if not isinstance(member, discord.Member):
+        return False
+    return is_lideranca(member, db_get_lideranca_role_ids(str(member.guild.id)))
+
+
+async def _log_disparo(interaction: discord.Interaction, titulo: str, descricao: str) -> None:
+    """Registra o disparo no canal de log (sistema "disparo", senão "lideranca")."""
+    embed = discord.Embed(
+        title=titulo,
+        description=descricao[:4000],
+        color=0xFFD700,
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(
+        name="Executado por",
+        value=f"{interaction.user.mention}\n`{interaction.user.id}`",
+        inline=False,
+    )
+    embed.set_footer(text="Morro do Mineiro — Sistema de Disparo")
+    try:
+        enviado = await send_log(interaction.client, interaction.guild, "disparo", embed)
+        if not enviado:
+            await send_log(interaction.client, interaction.guild, "lideranca", embed)
+    except Exception:
+        log.error("Falha ao registrar log de disparo.", exc_info=True)
 
 BROADCAST_CATEGORY_ID = 1474869322387292362
 BROADCAST_CHANNEL_PATTERN = re.compile(r"^(?:┃📁-)?┃?\d+-.+-\d+$")
@@ -175,7 +209,7 @@ def build_broadcast_embed() -> discord.Embed:
     )
     embed.add_field(
         name="🔓 Permissão",
-        value="Qualquer membro com acesso a este painel pode utilizá-lo.",
+        value="Somente a liderança pode utilizar este painel.",
         inline=False,
     )
     embed.set_footer(text="Morro do Mineiro • Sistema Administrativo")
@@ -197,6 +231,9 @@ class BroadcastModal(discord.ui.Modal, title="Disparo de Mensagem Global"):
                 "❌ Este painel só pode ser usado dentro de um servidor.",
                 ephemeral=True,
             )
+            return
+        if not pode_disparar(interaction.user):
+            await interaction.response.send_message(MSG_SEM_PERMISSAO, ephemeral=True)
             return
 
         category = interaction.guild.get_channel(BROADCAST_CATEGORY_ID)
@@ -293,6 +330,11 @@ class BroadcastModal(discord.ui.Modal, title="Disparo de Mensagem Global"):
             f"✅ Mensagem enviada com sucesso para {sent_count} canais.",
             ephemeral=True,
         )
+        await _log_disparo(
+            interaction,
+            "📨 Disparo enviado",
+            f"**Canais:** {sent_count}/{len(valid_channels)}\n\n**Mensagem:**\n{self.mensagem.value}",
+        )
         log.info(
             "Disparo finalizado por %s (%s): %s/%s canais enviados.",
             interaction.user,
@@ -323,7 +365,7 @@ class DeleteBroadcastConfirmView(discord.ui.View):
         self.requester_id = requester_id
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.requester_id:
+        if interaction.user.id == self.requester_id and pode_disparar(interaction.user):
             return True
 
         await interaction.response.send_message(
@@ -431,6 +473,11 @@ class DeleteBroadcastConfirmView(discord.ui.View):
             f"✅ Mensagens apagadas: {deleted_count}. Falhas: {failed_count}.",
             ephemeral=True,
         )
+        await _log_disparo(
+            interaction,
+            "🗑️ Disparo apagado",
+            f"**Mensagens apagadas:** {deleted_count}\n**Falhas:** {failed_count}",
+        )
 
     @discord.ui.button(
         label="Cancelar",
@@ -462,6 +509,11 @@ class BroadcastView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button,
     ) -> None:
+        # Checagem no proprio callback: o painel V2 (ui/views/disparo.py)
+        # chama este callback direto, sem passar por interaction_check.
+        if not pode_disparar(interaction.user):
+            await interaction.response.send_message(MSG_SEM_PERMISSAO, ephemeral=True)
+            return
         await interaction.response.send_modal(BroadcastModal())
 
     @discord.ui.button(
@@ -480,6 +532,9 @@ class BroadcastView(discord.ui.View):
                 "❌ Este painel só pode ser usado dentro de um servidor.",
                 ephemeral=True,
             )
+            return
+        if not pode_disparar(interaction.user):
+            await interaction.response.send_message(MSG_SEM_PERMISSAO, ephemeral=True)
             return
 
         batch = get_latest_active_broadcast_batch(interaction.guild.id)
@@ -517,6 +572,8 @@ class DisparoCog(commands.Cog):
         description="Posta o painel administrativo de disparo de mensagens.",
     )
     @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def painel_disparo(self, interaction: discord.Interaction) -> None:
         from ui.views.disparo import BroadcastContainerView
 
@@ -536,12 +593,16 @@ class DisparoCog(commands.Cog):
         interaction: discord.Interaction,
         error: app_commands.AppCommandError,
     ) -> None:
-        log.error("Erro em /painel_disparo: %s", error, exc_info=True)
+        if isinstance(error, app_commands.MissingPermissions):
+            mensagem = "❌ Você precisa da permissão **Gerenciar Servidor**."
+        else:
+            log.error("Erro em /painel_disparo: %s", error, exc_info=True)
+            mensagem = "❌ Erro inesperado."
         if interaction.response.is_done():
-            await interaction.followup.send("❌ Erro inesperado.", ephemeral=True)
+            await interaction.followup.send(mensagem, ephemeral=True)
             return
 
-        await interaction.response.send_message("❌ Erro inesperado.", ephemeral=True)
+        await interaction.response.send_message(mensagem, ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:

@@ -13,6 +13,7 @@ from discord.ext import commands, tasks
 from core.date_utils import format_date_br, format_week_range_br, week_id_from_date_br
 from core.farm_policy import FARM_TICKET_ONLY_MESSAGE
 from core.logger import get_logger
+from core.money import fmt_input_valor, parse_money_br
 from core.permissions import is_lideranca, is_permitido_farm
 from core.role_promotion import promote_role
 from core.command_config import is_enabled as _cmd_enabled
@@ -60,9 +61,7 @@ COLETE_PLACEHOLDERS = {
 
 
 def _parse_money(raw: str) -> float:
-    raw = (raw or "0").strip()
-    raw = raw.replace("R$", "").replace(".", "").replace(",", ".").strip()
-    return float(raw or 0)
+    return parse_money_br(raw)
 
 
 def _fmt_money(valor: float) -> str:
@@ -699,7 +698,7 @@ class EditarUltimoModal(discord.ui.Modal, title="Editar Último Lançamento"):
                 label=f"{nome[:26]} (deste lançamento)",
                 placeholder="Quantidade correta deste lançamento",
                 required=False,
-                default=str(val) if val else "0",
+                default=fmt_input_valor(val) if val else "0",
             )
             self.add_item(ti)
             self._inputs.append(ti)
@@ -1524,7 +1523,7 @@ class FarmCog(commands.Cog):
                     continue
                 row = prog_por_uid.get(str(member.id))
                 # Aprovados não recebem aviso
-                if row and (bool(row["aprovada"]) or bool(row.get("aprovacao_antecipada", False))):
+                if row and (bool(row["aprovada"]) or bool(row["aprovacao_antecipada"])):
                     continue
                 # Só envia DM se TODOS os itens estão zerados
                 prog_itens = db_prog_itens(row) if row else {}
@@ -1575,7 +1574,7 @@ class FarmCog(commands.Cog):
                     continue
                 row = prog_por_uid.get(str(member.id))
                 # Aprovados não recebem aviso
-                if row and (bool(row["aprovada"]) or bool(row.get("aprovacao_antecipada", False))):
+                if row and (bool(row["aprovada"]) or bool(row["aprovacao_antecipada"])):
                     continue
                 # Só envia DM se TODOS os itens estão zerados
                 prog_itens = db_prog_itens(row) if row else {}

@@ -16,6 +16,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from core.date_utils import format_date_br, format_datetime_br
+from core.money import parse_money_br
 from core.nickname import TAG_GERENTE, TAG_VICE, strip_tag
 from core.role_sync import find_role_by_names
 from services.db_service import (
@@ -401,8 +402,11 @@ class FarmTicketLaunchModal(discord.ui.Modal):
         values = {}
         try:
             for name, field in zip(self.item_names, self.inputs):
-                raw = (field.value or "0").replace("R$", "").replace(".", "").replace(",", ".").strip()
-                value = float(raw or 0) if meta_type == "dinheiro" else int(raw or 0)
+                if meta_type == "dinheiro":
+                    value = parse_money_br(field.value)
+                else:
+                    raw = (field.value or "0").replace("R$", "").replace(".", "").replace(",", ".").strip()
+                    value = int(raw or 0)
                 if value < 0:
                     raise ValueError
                 if value > 0:
