@@ -18,21 +18,25 @@ def _membro(member_id: int, *cargos: str, bot: bool = False):
 
 
 class HierarquiaPermissaoTests(unittest.TestCase):
-    def test_03_nao_pode_atribuir_cargos_iguais_ou_acima(self):
-        executor = _membro(10, "| 03")
+    def test_gerente_geral_nao_pode_atribuir_cargos_iguais_ou_acima(self):
+        executor = _membro(10, "| Gerente Geral")
         permitidos = _cargos_permitidos(executor)
-        self.assertNotIn("| 03", permitidos)
+        self.assertNotIn("| Gerente Geral", permitidos)
         self.assertNotIn("| 02", permitidos)
         self.assertNotIn("| 01 Dono", permitidos)
-        self.assertIn("| Gerente Geral", permitidos)
+        self.assertIn("| Gerente de Farm", permitidos)
+        self.assertIn("| Membro", permitidos)
+
+    def test_cargo_03_nao_existe_mais(self):
+        self.assertNotIn("| 03", HIERARQUIA_CARGOS)
 
     def test_dono_do_servidor_pode_atribuir_todos(self):
         dono = _membro(OWNER_ID)
         self.assertEqual(_cargos_permitidos(dono), HIERARQUIA_CARGOS)
 
     def test_nao_altera_cargo_igual_ou_superior(self):
-        executor = _membro(10, "| 03")
-        self.assertIsNotNone(_motivo_bloqueio_alvo(executor, _membro(11, "| 03")))
+        executor = _membro(10, "| Gerente Geral")
+        self.assertIsNotNone(_motivo_bloqueio_alvo(executor, _membro(11, "| Gerente Geral")))
         self.assertIsNotNone(_motivo_bloqueio_alvo(executor, _membro(12, "| 01 Dono")))
         self.assertIsNone(_motivo_bloqueio_alvo(executor, _membro(13, "| Membro")))
 

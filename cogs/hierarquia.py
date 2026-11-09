@@ -2,7 +2,8 @@
 cogs/hierarquia.py - Painel de gerenciamento de hierarquia de cargos.
 
 Embed fixo no canal configurado (sistema "hierarquia" via dashboard).
-Quem pode usar: | 01 Dono, | 02, | 03
+Quem pode usar: | 01 Dono, | 02, | Gerente Geral
+(cada um so atribui cargos abaixo do proprio nivel)
 """
 
 import discord
@@ -26,7 +27,6 @@ HIERARQUIA_CARGOS = [
     "| Gerente de Farm",
     "| Gerente de Produção",
     "| Gerente Geral",
-    "| 03",
     "| 02",
     "| 01 Dono",
 ]
@@ -36,7 +36,8 @@ CARGOS_IGNORADOS = {
     "| Server Booster", "| Medal", "| Morro Do Mineiro", "| Advertência",
 }
 
-CARGOS_AUTORIZADOS = {"| 01 Dono", "| 02", "| 03"}
+# O antigo cargo 03 deixou de existir e virou Gerente Geral.
+CARGOS_AUTORIZADOS = {"| 01 Dono", "| 02", "| Gerente Geral"}
 CARGOS_AUTORIZADOS_IDS = {1474869320684146847, 1474869320684146846, 1490821840191619322}
 
 
