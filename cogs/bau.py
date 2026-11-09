@@ -373,16 +373,23 @@ class CategoryQuantityModal(discord.ui.Modal):
                 self.session.quantities.pop(product, None)
         self.session.page = self.page
 
-        if self.forward and self.page < self.session.page_count - 1:
-            await interaction.response.send_modal(
-                CategoryQuantityModal(self.session, self.page + 1, forward=True)
+        # O Discord nao permite abrir um modal em resposta ao envio de outro
+        # modal (MODAL_SUBMIT nao aceita resposta do tipo MODAL). Por isso a
+        # navegacao entre paginas volta para a view, com o botao "Proxima"
+        # em destaque quando ainda ha paginas a preencher.
+        has_next = self.page < self.session.page_count - 1
+        if self.forward and has_next:
+            content = (
+                f"\u2705 Pagina {self.page + 1}/{self.session.page_count} salva. "
+                "Clique em **Proxima** para continuar ou em **Enviar** para concluir."
             )
         else:
-            await interaction.response.edit_message(
-                content="\u2705 Pagina salva.",
-                embed=_build_category_page_embed(self.session),
-                view=CategoryPageView(self.session),
-            )
+            content = "\u2705 Pagina salva."
+        await interaction.response.edit_message(
+            content=content,
+            embed=_build_category_page_embed(self.session),
+            view=CategoryPageView(self.session, highlight_next=self.forward and has_next),
+        )
 
 
 class CategoryMovementView(RequesterView):
@@ -442,11 +449,18 @@ class CategoryMovementView(RequesterView):
 
 
 class CategoryPageView(RequesterView):
-    def __init__(self, session: CategorySession) -> None:
+    def __init__(
+        self,
+        session: CategorySession,
+        highlight_next: bool = False,
+    ) -> None:
         super().__init__(session.requester_id, timeout=600)
         self.session = session
         self.previous.disabled = session.page == 0
         self.next.disabled = session.page >= session.page_count - 1
+        if highlight_next and not self.next.disabled:
+            self.next.style = discord.ButtonStyle.primary
+            self.edit_page.style = discord.ButtonStyle.secondary
 
     @discord.ui.button(label="Anterior", style=discord.ButtonStyle.secondary)
     async def previous(
@@ -475,7 +489,7 @@ class CategoryPageView(RequesterView):
         button: discord.ui.Button,
     ) -> None:
         await interaction.response.send_modal(
-            CategoryQuantityModal(self.session, self.session.page + 1, forward=False)
+            CategoryQuantityModal(self.session, self.session.page + 1, forward=True)
         )
 
     @discord.ui.button(label="Enviar", style=discord.ButtonStyle.success)

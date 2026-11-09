@@ -1,6 +1,8 @@
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import discord
 
@@ -19,6 +21,7 @@ from cogs.bau import (
     UndoView,
 )
 from cogs.bau_core import (
+    BauRepository,
     CATEGORIAS,
     MovementLine,
     OperationResult,
@@ -28,6 +31,46 @@ from cogs.bau_core import (
 
 
 class BauViewTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # Usa um banco temporario: os testes nunca devem tocar no bau.db real.
+        self._tmp = tempfile.TemporaryDirectory()
+        test_repo = BauRepository(Path(self._tmp.name) / "bau_test.db")
+        test_repo.initialize()
+        self._repo_patch = patch("cogs.bau.repo", test_repo)
+        self._repo_patch.start()
+
+    def tearDown(self):
+        self._repo_patch.stop()
+        self._tmp.cleanup()
+
+    async def test_submitting_page_never_opens_another_modal(self):
+        session = CategorySession(
+            "Teste",
+            "entrada",
+            123,
+            tuple(f"Produto {index}" for index in range(6)),
+        )
+        modal = CategoryQuantityModal(session)
+        for _product, text_input in modal.inputs:
+            text_input._value = "2"
+        response = SimpleNamespace(
+            send_modal=AsyncMock(),
+            edit_message=AsyncMock(),
+        )
+        interaction = SimpleNamespace(response=response)
+
+        await modal.on_submit(interaction)
+
+        response.send_modal.assert_not_called()
+        response.edit_message.assert_awaited_once()
+        view = response.edit_message.await_args.kwargs["view"]
+        self.assertIsInstance(view, CategoryPageView)
+        self.assertFalse(view.next.disabled)
+        self.assertEqual(view.next.style, discord.ButtonStyle.primary)
+        self.assertEqual(len(session.items()), 5)
+        modal.stop()
+        view.stop()
+
     async def test_individual_log_uses_classic_layout(self):
         result = OperationResult(
             "operation-id",
