@@ -8,6 +8,7 @@ from discord.ext import commands, tasks
 
 from core.date_utils import format_date_br, format_datetime_br
 from core.logger import get_logger
+from core.error_reporting import proteger_loop
 from services.db_service import current_week_id, now_tz
 from services.ponto_service import (
     ponto_all_configs,
@@ -206,6 +207,7 @@ class PontoCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         bot.add_view(PontoPainelView(self))
+        proteger_loop(self.atualizar_ranking_diario, "ponto_ranking_diario", lambda: self.bot)
         self.atualizar_ranking_diario.start()
 
     def cog_unload(self):

@@ -14,6 +14,7 @@ from discord.ext import commands, tasks
 
 from core.date_utils import format_date_br
 from core.logger import get_logger
+from core.error_reporting import proteger_loop
 from core.permissions import is_lideranca
 from services.db_service import (
     DINHEIRO_ITEMS,
@@ -691,6 +692,7 @@ class RecolhimentoCog(commands.Cog):
         self.bot = bot
         bot.add_view(RecolhimentoDinheiroView())
         bot.add_view(RecolhimentoFarmView())
+        proteger_loop(self._fechamento_ciclos, "recolhimento_fechamento", lambda: self.bot)
         self._fechamento_ciclos.start()
         log.info("RecolhimentoCog inicializado.")
 
