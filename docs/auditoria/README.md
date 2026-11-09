@@ -30,13 +30,13 @@ O bot atende **apenas o servidor do Morro do Mineiro**. IDs fixos no código sã
 | Item | Situação |
 |---|---|
 | C9 Recolhimento | ✅ Entregas divididas em fields, parser de R$ comum, fechamento resiliente, ciclo encerrado continua pagável, sem ciclo duplicado |
-| Ponto | ✅ Auto-fechamento de ponto esquecido (12h), ranking em blocos |
+| Ponto | 🗑️ Removido do bot (não é mais usado) |
 | Ausência | ✅ Fuso de Brasília, grava só depois de publicar, listagem dentro do limite |
 | discord.py | ✅ 2.3.2 → 2.7.1 |
 | C7 Set | ✅ Pedidos persistidos, botões persistentes, reserva atômica, pedidos antigos atendidos |
 | C8 Ação | ✅ Ações e inscritos persistidos, painéis simultâneos independentes |
 
-Pendências de decisão: regra da meta do Recolhimento (hoje compara o total do ciclo com a meta por membro) e item Ferro sem campo no Recolhimento.
+Decisões: o Recolhimento não tem meta (o alerta de "meta atingida" foi removido) e passou a ter o campo Ferro. O Ponto foi retirado do bot.
 
 ---
 
