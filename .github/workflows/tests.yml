@@ -2,6 +2,8 @@ name: Tests
 
 on:
   pull_request:
+  # Reutilizado pelo deploy.yml antes de publicar.
+  workflow_call:
 
 jobs:
   pytest:

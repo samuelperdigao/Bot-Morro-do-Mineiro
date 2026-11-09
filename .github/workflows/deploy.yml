@@ -1,0 +1,95 @@
+name: Deploy
+
+# Roda os testes e, se passarem, publica o bot no servidor Oracle.
+# Dispara sozinho a cada push na main (ex.: merge de PR) e pode ser
+# disparado manualmente em Actions > Deploy > Run workflow.
+#
+# Secrets (Settings > Secrets and variables > Actions):
+#   ORACLE_SSH_KEY      conteudo da chave privada oracle.key
+#   ORACLE_KNOWN_HOSTS  saida de `ssh-keyscan 163.176.143.142` (fixa a
+#                       identidade do servidor)
+# Variable opcional:
+#   ORACLE_HOST         padrao ubuntu@163.176.143.142
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-producao
+  cancel-in-progress: false
+
+jobs:
+  testes:
+    uses: ./.github/workflows/tests.yml
+
+  deploy:
+    name: Publicar no servidor
+    needs: testes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ORACLE_HOST: ${{ vars.ORACLE_HOST || 'ubuntu@163.176.143.142' }}
+      RELEASE: /tmp/farmbot-release-${{ github.sha }}.tar
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Conferir configuracao
+        id: config
+        env:
+          ORACLE_SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+          ORACLE_KNOWN_HOSTS: ${{ secrets.ORACLE_KNOWN_HOSTS }}
+        run: |
+          faltando=""
+          [ -n "$ORACLE_SSH_KEY" ] || faltando="$faltando ORACLE_SSH_KEY"
+          [ -n "$ORACLE_KNOWN_HOSTS" ] || faltando="$faltando ORACLE_KNOWN_HOSTS"
+          if [ -n "$faltando" ]; then
+            MSG="Secrets nao configurados:$faltando. Cadastre em Settings > Secrets and variables > Actions (veja docs/DEPLOY.md)."
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "::error::$MSG"
+              exit 1
+            fi
+            # Push na main sem secrets: nao falha, apenas nao publica.
+            echo "::warning::$MSG Deploy nao executado."
+            echo "pronto=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "pronto=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Preparar SSH
+        if: steps.config.outputs.pronto == 'true'
+        env:
+          ORACLE_SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+          ORACLE_KNOWN_HOSTS: ${{ secrets.ORACLE_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$ORACLE_SSH_KEY" | tr -d '\r' > ~/.ssh/oracle.key
+          chmod 600 ~/.ssh/oracle.key
+          printf '%s\n' "$ORACLE_KNOWN_HOSTS" | tr -d '\r' > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Gerar release (somente arquivos versionados)
+        if: steps.config.outputs.pronto == 'true'
+        run: git archive --format=tar -o release.tar HEAD
+
+      - name: Enviar e aplicar no servidor
+        if: steps.config.outputs.pronto == 'true'
+        run: |
+          SSH_OPTS="-i $HOME/.ssh/oracle.key -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20"
+          scp $SSH_OPTS release.tar "$ORACLE_HOST:$RELEASE"
+          ssh $SSH_OPTS "$ORACLE_HOST" "bash -s -- '$RELEASE'" < scripts/remote_deploy.sh
+
+      - name: Resumo
+        if: steps.config.outputs.pronto == 'true'
+        run: echo "Publicado o commit \`${GITHUB_SHA::12}\` em producao." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Limpar chave
+        if: always()
+        run: rm -f ~/.ssh/oracle.key
