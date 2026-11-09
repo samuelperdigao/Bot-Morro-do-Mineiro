@@ -12,8 +12,10 @@ from discord import app_commands
 from discord.ext import commands
 
 from core.logger import get_logger
+from core.permissions import is_lideranca
 from core.settings import LEGACY_FIXED_IDS
 from services.bau_service import bau_service
+from services.db_service import db_get_lideranca_role_ids
 
 log = get_logger("bau_gerentes", "bau.log")
 
@@ -247,9 +249,25 @@ class MembroSelectView(discord.ui.View):
 
 # ── Painel principal (persistente) ─────────────────────────────────────────────
 
+def pode_gerenciar_slots(member: discord.abc.User) -> bool:
+    """Liderança (cargos configurados), administradores e quem gerencia o servidor."""
+    if not isinstance(member, discord.Member):
+        return False
+    return is_lideranca(member, db_get_lideranca_role_ids(str(member.guild.id)))
+
+
 class BauGerentesPainelView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if pode_gerenciar_slots(interaction.user):
+            return True
+        await interaction.response.send_message(
+            "❌ Apenas a liderança pode gerenciar os slots de gerentes.",
+            ephemeral=True,
+        )
+        return False
 
     @discord.ui.button(
         label="Adicionar Slot",
